@@ -2,6 +2,8 @@ import { useState, useCallback } from 'react';
 import { api } from '../lib/api';
 import { Upload, FileText, Download, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
 type ImportType = 'transactions' | 'accounts' | 'loading';
 
 interface ImportResult {
@@ -47,7 +49,7 @@ export default function ImportData() {
 
   const downloadTemplate = async (type: ImportType) => {
     try {
-      const res = await fetch(`/api/import/template/${type}`, {
+      const res = await fetch(`${API_BASE}/import/template/${type}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
       });
       const blob = await res.blob();

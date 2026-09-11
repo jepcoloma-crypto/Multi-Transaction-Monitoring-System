@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { Trash2, RefreshCw, Database, Upload } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
 interface BackupFile {
   filename: string;
   size: number;
@@ -53,7 +55,7 @@ export default function Backup() {
   const handleDownload = async (filename: string) => {
     try {
       const token = localStorage.getItem('accessToken');
-      const response = await fetch(`/api/backup/download/${filename}`, {
+      const response = await fetch(`${API_BASE}/backup/download/${filename}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (!response.ok) throw new Error('Download failed');

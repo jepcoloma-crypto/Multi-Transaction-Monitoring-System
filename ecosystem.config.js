@@ -7,7 +7,6 @@ module.exports = {
       cwd: 'C:\\Projects\\Mutli-Account Balance & Transaction Monitoring System',
       interpreter: 'none',
       env: {
-        NODE_ENV: 'production',
         PORT: 3001,
       },
       max_memory_restart: '256M',

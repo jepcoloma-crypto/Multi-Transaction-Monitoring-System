@@ -3,6 +3,8 @@ import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
 type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated';
 
 interface Account { id: string; name: string; masked_account_number: string; }
@@ -44,7 +46,7 @@ export default function Reports() {
       if (filters.endDate) params.append('endDate', filters.endDate);
       params.append('format', 'csv');
       const qs = params.toString();
-      const res = await fetch(`/api/reports/export/${type}?${qs}`, {
+      const res = await fetch(`${API_BASE}/reports/export/${type}?${qs}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
       });
       const blob = await res.blob();

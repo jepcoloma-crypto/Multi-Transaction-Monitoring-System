@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
 import { User, Lock, Clock, Shield, Edit, Camera, Trash2 } from 'lucide-react';
 
+const API_BASE = import.meta.env.VITE_API_URL || '/api';
+
 interface Profile {
   id: string; email: string; first_name: string; last_name: string; is_active: boolean;
   last_login_at: string; created_at: string; roles: string[]; permissions: string[];
@@ -39,7 +41,7 @@ export default function Profile() {
     try {
       const formData = new FormData();
       formData.append('avatar', file);
-      const res = await fetch('/api/profile/avatar', {
+      const res = await fetch(`${API_BASE}/profile/avatar`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` },
         body: formData,
