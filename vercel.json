@@ -3,5 +3,11 @@
   "installCommand": "npm install",
   "buildCommand": "npm run build:frontend",
   "outputDirectory": "packages/frontend/dist",
-  "framework": "vite"
+  "framework": "vite",
+  "rewrites": [
+    {
+      "source": "/((?!assets/).*)",
+      "destination": "/index.html"
+    }
+  ]
 }
