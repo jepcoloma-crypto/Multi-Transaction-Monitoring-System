@@ -1,0 +1,3 @@
+ALTER TABLE users ADD COLUMN username VARCHAR(50) UNIQUE;
+UPDATE users SET username = SPLIT_PART(email, '@', 1);
+ALTER TABLE users ALTER COLUMN username SET NOT NULL;
