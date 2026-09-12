@@ -71,9 +71,9 @@ export default function Customers() {
     try {
       const params = new URLSearchParams({ page: String(page), limit: '20' });
       if (txSearch) params.set('search', txSearch);
-      const result = await api.get<{ data: { data: TxCustomer[]; pagination: any } }>(`/customers/from-transactions?${params}`);
-      setTxCustomers(result.data.data);
-      setTxPagination(result.data.pagination);
+      const result = await api.get<{ data: TxCustomer[]; pagination: any }>(`/customers/from-transactions?${params}`);
+      setTxCustomers(result.data);
+      setTxPagination(result.pagination);
     } catch (err) { console.error('Tx customers load error:', err); } finally { setLoading(false); }
   };
 
