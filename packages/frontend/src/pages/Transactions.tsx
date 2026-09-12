@@ -26,6 +26,12 @@ interface Transaction {
   notes: string | null;
 }
 
+interface CustomerHistory {
+  customerName: string;
+  transactions: Transaction[];
+  summary: { totalTransactions: number; totalMoneyIn: number; totalMoneyOut: number; totalFees: number };
+}
+
 interface FeeRule {
   id: string; name: string; fee_type: string; fee_value: number;
   min_fee: number; max_fee: number | null; is_active: boolean;
@@ -61,6 +67,8 @@ export default function Transactions() {
     feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select' as 'select' | 'manual', customerPhone: '',
   });
   const [error, setError] = useState('');
+  const [customerHistory, setCustomerHistory] = useState<CustomerHistory | null>(null);
+  const [showCustomerHistory, setShowCustomerHistory] = useState(false);
 
   const fetchTransactions = async (page = 1) => {
     setLoading(true);
@@ -106,6 +114,14 @@ export default function Transactions() {
   };
 
   useEffect(() => { fetchTransactions(); fetchSummary(); fetchMeta(); }, []);
+
+  const fetchCustomerHistory = async (name: string) => {
+    try {
+      const result = await api.get<CustomerHistory>(`/transactions/by-customer-name?name=${encodeURIComponent(name)}`);
+      setCustomerHistory(result);
+      setShowCustomerHistory(true);
+    } catch (err) { console.error('Customer history error:', err); }
+  };
 
   const selectedRule = feeRules.find(r => r.id === formData.feeRuleId);
   const selectedAccount = accounts.find(a => a.id === formData.accountId);
@@ -331,6 +347,7 @@ export default function Transactions() {
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee</th>
               <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee Handling</th>
@@ -340,9 +357,9 @@ export default function Transactions() {
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={9} className="text-center py-8 text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={10} className="text-center py-8 text-gray-500">Loading...</td></tr>
             ) : transactions.length === 0 ? (
-              <tr><td colSpan={9} className="text-center py-8 text-gray-500">No transactions found</td></tr>
+              <tr><td colSpan={10} className="text-center py-8 text-gray-500">No transactions found</td></tr>
             ) : (
               transactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-gray-50">
@@ -354,6 +371,13 @@ export default function Transactions() {
                       {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                       <span>{tx.type_name}</span>
                     </div>
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {tx.customer_name ? (
+                      <button onClick={() => fetchCustomerHistory(tx.customer_name!)} className="text-primary-600 hover:text-primary-700 hover:underline text-left">
+                        {tx.customer_name}
+                      </button>
+                    ) : <span className="text-gray-400">-</span>}
                   </td>
                   <td className={`px-4 py-3 text-sm text-right font-medium ${tx.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
                     {tx.direction === 'in' ? '+' : '-'}{formatCurrency(tx.amount)}
@@ -691,6 +715,59 @@ export default function Transactions() {
                 <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!!hasInsufficientBalance || !formData.referenceNumber.trim()}>Create Transaction</button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showCustomerHistory && customerHistory && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-4 border-b">
+              <div>
+                <h3 className="text-lg font-semibold">Customer: {customerHistory.customerName}</h3>
+                <p className="text-sm text-gray-500">{customerHistory.summary.totalTransactions} transaction(s) found</p>
+              </div>
+              <button onClick={() => { setShowCustomerHistory(false); setCustomerHistory(null); }}><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-4">
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div className="card py-3 text-center">
+                  <p className="text-xs text-gray-500">Money In</p>
+                  <p className="text-lg font-bold text-green-600">{formatCurrency(customerHistory.summary.totalMoneyIn)}</p>
+                </div>
+                <div className="card py-3 text-center">
+                  <p className="text-xs text-gray-500">Money Out</p>
+                  <p className="text-lg font-bold text-red-600">{formatCurrency(customerHistory.summary.totalMoneyOut)}</p>
+                </div>
+                <div className="card py-3 text-center">
+                  <p className="text-xs text-gray-500">Total Fees</p>
+                  <p className="text-lg font-bold text-yellow-600">{formatCurrency(customerHistory.summary.totalFees)}</p>
+                </div>
+              </div>
+              {customerHistory.transactions.length === 0 ? (
+                <p className="text-center text-gray-500 py-8">No transactions found for this customer</p>
+              ) : (
+                <div className="space-y-2">
+                  {customerHistory.transactions.map((tx) => (
+                    <div key={tx.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100">
+                      <div className="flex items-center gap-3">
+                        {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
+                        <div>
+                          <p className="text-sm font-medium">#{tx.transaction_number} — {tx.type_name}</p>
+                          <p className="text-xs text-gray-500">{tx.account_name} • {new Date(tx.transaction_date).toLocaleDateString()}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-sm font-bold ${tx.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
+                          {tx.direction === 'in' ? '+' : '-'}{formatCurrency(tx.amount)}
+                        </p>
+                        <p className="text-xs text-gray-500">{tx.fee > 0 ? `Fee: ${formatCurrency(tx.fee)}` : ''}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

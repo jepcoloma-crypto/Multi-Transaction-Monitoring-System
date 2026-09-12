@@ -170,6 +170,53 @@ router.get('/today', authorize('transactions.read'), async (req: Request, res: R
   }
 });
 
+router.get('/by-customer-name', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const name = req.query.name as string;
+    if (!name) throw createError(400, 'Customer name is required');
+
+    const transactions = await query(
+      `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
+              t.reference_number, t.description, t.additional_charges, t.customer_name, t.customer_id,
+              tt.name as type_name, tt.direction, a.name as account_name
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       JOIN accounts a ON t.account_id = a.id
+       WHERE t.customer_name ILIKE $1
+       ORDER BY t.transaction_date DESC`,
+      [`%${name}%`]
+    );
+
+    const summary = await queryOne(
+      `SELECT
+        COUNT(*) as total_count,
+        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_in,
+        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_out,
+        COALESCE(SUM(t.fee), 0) as total_fees
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.customer_name ILIKE $1 AND t.status = 'completed'`,
+      [`%${name}%`]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        customerName: name,
+        transactions,
+        summary: {
+          totalTransactions: parseInt(summary?.total_count || '0'),
+          totalMoneyIn: parseFloat(summary?.total_in || '0'),
+          totalMoneyOut: parseFloat(summary?.total_out || '0'),
+          totalFees: parseFloat(summary?.total_fees || '0'),
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/:id', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const transaction = await queryOne(
