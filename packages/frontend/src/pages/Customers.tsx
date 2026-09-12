@@ -21,14 +21,36 @@ interface Customer {
   totalTransactions?: number;
 }
 
+interface TxCustomer {
+  customer_name: string;
+  transaction_count: number;
+  total_in: number;
+  total_out: number;
+  total_fees: number;
+  last_transaction_date: string;
+  first_transaction_date: string;
+  phone?: string | null;
+}
+
+interface TxDetail {
+  customerName: string;
+  transactions: any[];
+  summary: { totalTransactions: number; totalMoneyIn: number; totalMoneyOut: number; totalFees: number };
+}
+
 export default function Customers() {
+  const [tab, setTab] = useState<'registered' | 'from-transactions'>('registered');
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [txCustomers, setTxCustomers] = useState<TxCustomer[]>([]);
   const [loading, setLoading] = useState(true);
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
+  const [txPagination, setTxPagination] = useState({ page: 1, totalPages: 1, total: 0 });
   const [search, setSearch] = useState('');
+  const [txSearch, setTxSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<Customer | null>(null);
   const [detail, setDetail] = useState<Customer | null>(null);
+  const [txDetail, setTxDetail] = useState<TxDetail | null>(null);
   const [formData, setFormData] = useState({
     firstName: '', lastName: '', email: '', phone: '', address: '', idType: '', idNumber: '', notes: '',
   });
@@ -44,7 +66,21 @@ export default function Customers() {
     } catch (err) { console.error('Customers load error:', err); } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchCustomers(); }, []);
+  const fetchTxCustomers = async (page = 1) => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ page: String(page), limit: '20' });
+      if (txSearch) params.set('search', txSearch);
+      const result = await api.get<{ data: { data: TxCustomer[]; pagination: any } }>(`/customers/from-transactions?${params}`);
+      setTxCustomers(result.data.data);
+      setTxPagination(result.data.pagination);
+    } catch (err) { console.error('Tx customers load error:', err); } finally { setLoading(false); }
+  };
+
+  useEffect(() => {
+    if (tab === 'registered') fetchCustomers();
+    else fetchTxCustomers();
+  }, [tab]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,6 +122,13 @@ export default function Customers() {
     } catch (err: any) { alert(err.message); }
   };
 
+  const handleViewTxDetail = async (name: string) => {
+    try {
+      const result = await api.get<TxDetail>(`/customers/from-transactions/${encodeURIComponent(name)}`);
+      setTxDetail(result);
+    } catch (err: any) { alert(err.message); }
+  };
+
   const openCreate = () => {
     setEditing(null);
     setFormData({ firstName: '', lastName: '', email: '', phone: '', address: '', idType: '', idNumber: '', notes: '' });
@@ -96,82 +139,160 @@ export default function Customers() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Customers</h2>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-2"><Plus className="w-4 h-4" /> Add Customer</button>
-      </div>
-
-      <div className="flex gap-2">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-          <input type="text" placeholder="Search customers..." value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && fetchCustomers(1)}
-            className="input pl-10" />
-        </div>
-        <button onClick={() => fetchCustomers(1)} className="btn-secondary">Search</button>
-      </div>
-
-      <div className="card overflow-x-auto">
-        <table className="w-full min-w-[800px]">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Name</th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Contact</th>
-              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">ID</th>
-              <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
-              <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-200">
-            {loading ? (
-              <tr><td colSpan={5} className="text-center py-8 text-gray-500">Loading...</td></tr>
-            ) : customers.length === 0 ? (
-              <tr><td colSpan={5} className="text-center py-8 text-gray-500">No customers found</td></tr>
-            ) : (
-              customers.map((c) => (
-                <tr key={c.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3">
-                    <button onClick={() => handleViewDetail(c)} className="text-left hover:text-primary-600">
-                      <p className="text-sm font-medium text-gray-900">{c.last_name}, {c.first_name}</p>
-                      {c.notes && <p className="text-xs text-gray-400 truncate max-w-[200px]">{c.notes}</p>}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {c.phone && <p className="flex items-center gap-1"><Phone className="w-3 h-3" /> {c.phone}</p>}
-                    {c.email && <p className="flex items-center gap-1"><Mail className="w-3 h-3" /> {c.email}</p>}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">
-                    {c.id_type && <p>{c.id_type}: {c.id_number}</p>}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${c.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-                      {c.status}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <button onClick={() => handleEdit(c)} className="text-gray-400 hover:text-primary-600"><Edit2 className="w-4 h-4" /></button>
-                      {c.status === 'active' && (
-                        <button onClick={() => handleDeactivate(c.id)} className="text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-        {pagination.totalPages > 1 && (
-          <div className="flex items-center justify-between px-4 py-3 border-t">
-            <p className="text-sm text-gray-500">Page {pagination.page} of {pagination.totalPages} ({pagination.total} total)</p>
-            <div className="flex gap-2">
-              <button onClick={() => fetchCustomers(pagination.page - 1)} disabled={pagination.page <= 1} className="btn-secondary text-sm disabled:opacity-50">Prev</button>
-              <button onClick={() => fetchCustomers(pagination.page + 1)} disabled={pagination.page >= pagination.totalPages} className="btn-secondary text-sm disabled:opacity-50">Next</button>
-            </div>
-          </div>
+        {tab === 'registered' && (
+          <button onClick={openCreate} className="btn-primary flex items-center gap-2"><Plus className="w-4 h-4" /> Add Customer</button>
         )}
       </div>
 
-      {/* Detail Modal */}
+      {/* Tabs */}
+      <div className="flex border-b border-gray-200">
+        <button onClick={() => { setTab('registered'); setSearch(''); }}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === 'registered' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          Registered Customers
+        </button>
+        <button onClick={() => { setTab('from-transactions'); setTxSearch(''); }}
+          className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === 'from-transactions' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          From Transactions
+        </button>
+      </div>
+
+      {tab === 'registered' ? (
+        <>
+          <div className="flex gap-2">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input type="text" placeholder="Search customers..." value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && fetchCustomers(1)}
+                className="input pl-10" />
+            </div>
+            <button onClick={() => fetchCustomers(1)} className="btn-secondary">Search</button>
+          </div>
+
+          <div className="card overflow-x-auto">
+            <table className="w-full min-w-[800px]">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Name</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Contact</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">ID</th>
+                  <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {loading ? (
+                  <tr><td colSpan={5} className="text-center py-8 text-gray-500">Loading...</td></tr>
+                ) : customers.length === 0 ? (
+                  <tr><td colSpan={5} className="text-center py-8 text-gray-500">No customers found</td></tr>
+                ) : (
+                  customers.map((c) => (
+                    <tr key={c.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3">
+                        <button onClick={() => handleViewDetail(c)} className="text-left hover:text-primary-600">
+                          <p className="text-sm font-medium text-gray-900">{c.last_name}, {c.first_name}</p>
+                          {c.notes && <p className="text-xs text-gray-400 truncate max-w-[200px]">{c.notes}</p>}
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600">
+                        {c.phone && <p className="flex items-center gap-1"><Phone className="w-3 h-3" /> {c.phone}</p>}
+                        {c.email && <p className="flex items-center gap-1"><Mail className="w-3 h-3" /> {c.email}</p>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600">
+                        {c.id_type && <p>{c.id_type}: {c.id_number}</p>}
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${c.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                          {c.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <button onClick={() => handleEdit(c)} className="text-gray-400 hover:text-primary-600"><Edit2 className="w-4 h-4" /></button>
+                          {c.status === 'active' && (
+                            <button onClick={() => handleDeactivate(c.id)} className="text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+            {pagination.totalPages > 1 && (
+              <div className="flex items-center justify-between px-4 py-3 border-t">
+                <p className="text-sm text-gray-500">Page {pagination.page} of {pagination.totalPages} ({pagination.total} total)</p>
+                <div className="flex gap-2">
+                  <button onClick={() => fetchCustomers(pagination.page - 1)} disabled={pagination.page <= 1} className="btn-secondary text-sm disabled:opacity-50">Prev</button>
+                  <button onClick={() => fetchCustomers(pagination.page + 1)} disabled={pagination.page >= pagination.totalPages} className="btn-secondary text-sm disabled:opacity-50">Next</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex gap-2">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+              <input type="text" placeholder="Search by name..." value={txSearch}
+                onChange={(e) => setTxSearch(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && fetchTxCustomers(1)}
+                className="input pl-10" />
+            </div>
+            <button onClick={() => fetchTxCustomers(1)} className="btn-secondary">Search</button>
+          </div>
+
+          <div className="card overflow-x-auto">
+            <table className="w-full min-w-[900px]">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer Name</th>
+                  <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transactions</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total In</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total Out</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fees</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">First Transaction</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Last Transaction</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {loading ? (
+                  <tr><td colSpan={7} className="text-center py-8 text-gray-500">Loading...</td></tr>
+                ) : txCustomers.length === 0 ? (
+                  <tr><td colSpan={7} className="text-center py-8 text-gray-500">No manually-typed customers found</td></tr>
+                ) : (
+                  txCustomers.map((c, i) => (
+                    <tr key={i} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleViewTxDetail(c.customer_name)}>
+                      <td className="px-4 py-3">
+                        <p className="text-sm font-medium text-primary-600 hover:underline">{c.customer_name}</p>
+                        {c.phone && <p className="text-xs text-gray-400">{c.phone}</p>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-center">{c.transaction_count}</td>
+                      <td className="px-4 py-3 text-sm text-right text-green-600">{formatCurrency(c.total_in)}</td>
+                      <td className="px-4 py-3 text-sm text-right text-red-600">{formatCurrency(c.total_out)}</td>
+                      <td className="px-4 py-3 text-sm text-right text-yellow-600">{formatCurrency(c.total_fees)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-500">{new Date(c.first_transaction_date).toLocaleDateString()}</td>
+                      <td className="px-4 py-3 text-sm text-gray-500">{new Date(c.last_transaction_date).toLocaleDateString()}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+            {txPagination.totalPages > 1 && (
+              <div className="flex items-center justify-between px-4 py-3 border-t">
+                <p className="text-sm text-gray-500">Page {txPagination.page} of {txPagination.totalPages} ({txPagination.total} total)</p>
+                <div className="flex gap-2">
+                  <button onClick={() => fetchTxCustomers(txPagination.page - 1)} disabled={txPagination.page <= 1} className="btn-secondary text-sm disabled:opacity-50">Prev</button>
+                  <button onClick={() => fetchTxCustomers(txPagination.page + 1)} disabled={txPagination.page >= txPagination.totalPages} className="btn-secondary text-sm disabled:opacity-50">Next</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Registered Customer Detail Modal */}
       {detail && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg w-full max-w-2xl max-h-[90vh] overflow-y-auto">
@@ -192,8 +313,6 @@ export default function Customers() {
                   <p className="text-xs text-gray-400">Created by: {detail.created_by_email}</p>
                 </div>
               </div>
-
-              {/* Transaction History */}
               <div className="border-t pt-4">
                 <h4 className="text-sm font-semibold text-gray-900 mb-2">Transaction History ({detail.totalTransactions || 0})</h4>
                 {(!detail.linkedTransactions?.length && !detail.nameMatchedTransactions?.length) ? (
@@ -253,6 +372,60 @@ export default function Customers() {
             <div className="flex justify-end gap-2 p-4 border-t">
               <button onClick={() => { setDetail(null); handleEdit(detail); }} className="btn-secondary text-sm">Edit</button>
               <button onClick={() => setDetail(null)} className="btn-secondary text-sm">Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* From Transactions Detail Modal */}
+      {txDetail && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-4 border-b">
+              <div>
+                <h3 className="text-lg font-semibold">Customer: {txDetail.customerName}</h3>
+                <p className="text-sm text-gray-500">{txDetail.summary.totalTransactions} transaction(s) found</p>
+              </div>
+              <button onClick={() => setTxDetail(null)}><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-4">
+              <div className="grid grid-cols-3 gap-4 mb-4">
+                <div className="card py-3 text-center">
+                  <p className="text-xs text-gray-500">Money In</p>
+                  <p className="text-lg font-bold text-green-600">{formatCurrency(txDetail.summary.totalMoneyIn)}</p>
+                </div>
+                <div className="card py-3 text-center">
+                  <p className="text-xs text-gray-500">Money Out</p>
+                  <p className="text-lg font-bold text-red-600">{formatCurrency(txDetail.summary.totalMoneyOut)}</p>
+                </div>
+                <div className="card py-3 text-center">
+                  <p className="text-xs text-gray-500">Total Fees</p>
+                  <p className="text-lg font-bold text-yellow-600">{formatCurrency(txDetail.summary.totalFees)}</p>
+                </div>
+              </div>
+              {txDetail.transactions.length === 0 ? (
+                <p className="text-center text-gray-500 py-8">No transactions found for this customer</p>
+              ) : (
+                <div className="space-y-2">
+                  {txDetail.transactions.map((tx: any) => (
+                    <div key={tx.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100">
+                      <div className="flex items-center gap-3">
+                        {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
+                        <div>
+                          <p className="text-sm font-medium">#{tx.transaction_number} — {tx.type_name}</p>
+                          <p className="text-xs text-gray-500">{tx.account_name} • {new Date(tx.transaction_date).toLocaleDateString()}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className={`text-sm font-bold ${tx.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
+                          {tx.direction === 'in' ? '+' : '-'}{formatCurrency(tx.amount)}
+                        </p>
+                        <p className="text-xs text-gray-500">{tx.fee > 0 ? `Fee: ${formatCurrency(tx.fee)}` : ''}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>

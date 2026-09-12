@@ -58,6 +58,108 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
   }
 });
 
+router.get('/from-transactions', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = (page - 1) * limit;
+    const search = req.query.search as string;
+
+    const conditions: string[] = ['t.customer_name IS NOT NULL AND t.customer_name != \'\''];
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    if (search) {
+      conditions.push(`t.customer_name ILIKE $${paramIndex++}`);
+      params.push(`%${search}%`);
+    }
+
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
+
+    const countResult = await queryOne<{ count: string }>(
+      `SELECT COUNT(DISTINCT t.customer_name) as count FROM transactions t ${whereClause}`,
+      params
+    );
+
+    const customers = await query(
+      `SELECT t.customer_name,
+              COUNT(*) as transaction_count,
+              COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_in,
+              COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_out,
+              COALESCE(SUM(t.fee), 0) as total_fees,
+              MAX(t.transaction_date) as last_transaction_date,
+              MIN(t.transaction_date) as first_transaction_date
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       ${whereClause}
+       GROUP BY t.customer_name
+       ORDER BY MAX(t.transaction_date) DESC
+       LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
+      [...params, limit, offset]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        data: customers,
+        pagination: {
+          page, limit,
+          total: parseInt(countResult?.count || '0'),
+          totalPages: Math.ceil(parseInt(countResult?.count || '0') / limit),
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/from-transactions/:name', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const customerName = decodeURIComponent(req.params.name);
+
+    const transactions = await query(
+      `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
+              t.reference_number, t.description, t.additional_charges, t.customer_contact,
+              tt.name as type_name, tt.direction, a.name as account_name
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       JOIN accounts a ON t.account_id = a.id
+       WHERE t.customer_name = $1
+       ORDER BY t.transaction_date DESC`,
+      [customerName]
+    );
+
+    const summary = await queryOne(
+      `SELECT
+        COUNT(*) as total_count,
+        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_in,
+        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_out,
+        COALESCE(SUM(t.fee), 0) as total_fees
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.customer_name = $1 AND t.status = 'completed'`,
+      [customerName]
+    );
+
+    res.json({
+      success: true,
+      data: {
+        customerName,
+        transactions,
+        summary: {
+          totalTransactions: parseInt(summary?.total_count || '0'),
+          totalMoneyIn: parseFloat(summary?.total_in || '0'),
+          totalMoneyOut: parseFloat(summary?.total_out || '0'),
+          totalFees: parseFloat(summary?.total_fees || '0'),
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get('/:id', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const customer = await queryOne(
