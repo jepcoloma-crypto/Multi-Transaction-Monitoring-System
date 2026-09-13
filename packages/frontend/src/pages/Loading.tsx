@@ -175,20 +175,32 @@ export default function Loading() {
           ) : (
             <div className="card overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="table">
-                  <thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Qty</th><th>Revenue</th><th>Cost</th><th>Profit</th><th>Account</th><th>Status</th></tr></thead>
-                  <tbody>
+                <table className="w-full min-w-[800px]">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase w-12">#</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Product</th>
+                      <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase w-12">Qty</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Revenue</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Cost</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Profit</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                      <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
                     {filteredTxns.map(t => (
-                      <tr key={t.id}>
-                        <td className="font-mono text-sm">{t.transaction_number}</td>
-                        <td className="text-sm">{t.customer_number}</td>
-                        <td className="text-sm">{t.product_name}</td>
-                        <td className="text-sm">{t.quantity}</td>
-                        <td className="text-sm text-finance-green font-medium">{formatCurrency(t.total_revenue)}</td>
-                        <td className="text-sm text-finance-red">{formatCurrency(t.total_cost)}</td>
-                        <td className="text-sm font-medium">{formatCurrency(t.profit)}</td>
-                        <td className="text-sm text-gray-600">{t.account_name}</td>
-                        <td><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
+                      <tr key={t.id} className="hover:bg-gray-50">
+                        <td className="px-4 py-3 font-mono text-sm">{t.transaction_number}</td>
+                        <td className="px-4 py-3 text-sm">{t.customer_number}</td>
+                        <td className="px-4 py-3 text-sm">{t.product_name}</td>
+                        <td className="px-4 py-3 text-sm text-center">{t.quantity}</td>
+                        <td className="px-4 py-3 text-sm text-right text-finance-green font-medium">{formatCurrency(t.total_revenue)}</td>
+                        <td className="px-4 py-3 text-sm text-right text-finance-red">{formatCurrency(t.total_cost)}</td>
+                        <td className="px-4 py-3 text-sm text-right font-medium">{formatCurrency(t.profit)}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{t.account_name}</td>
+                        <td className="px-4 py-3 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
                       </tr>
                     ))}
                   </tbody>
@@ -222,18 +234,18 @@ export default function Loading() {
           ) : (
             <div className="card overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full min-w-[900px]">
+                <table className="w-full min-w-[850px]">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Product Name</th>
-                      <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Provider</th>
-                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Cost Price</th>
-                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Selling Price</th>
-                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Margin</th>
-                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Conv. Fee</th>
-                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Co. Charge</th>
-                      <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
-                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Product Name</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Provider</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Cost</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Selling</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Margin</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Conv. Fee</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Co. Charge</th>
+                      <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
@@ -242,24 +254,23 @@ export default function Loading() {
                       const marginPct = p.cost_price > 0 ? ((margin / p.cost_price) * 100).toFixed(1) : '0';
                       return (
                         <tr key={p.id} className="hover:bg-gray-50">
-                          <td className="px-6 py-3.5 text-sm font-medium text-gray-900 whitespace-nowrap">{p.name}</td>
-                          <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{p.provider_name}</td>
-                          <td className="px-6 py-3.5 text-sm text-right whitespace-nowrap">{formatCurrency(p.cost_price)}</td>
-                          <td className="px-6 py-3.5 text-sm text-right font-medium text-finance-green whitespace-nowrap">{formatCurrency(p.selling_price)}</td>
-                          <td className="px-6 py-3.5 text-sm text-right whitespace-nowrap">
+                          <td className="px-4 py-3 text-sm font-medium text-gray-900 whitespace-nowrap">{p.name}</td>
+                          <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{p.provider_name}</td>
+                          <td className="px-4 py-3 text-sm text-right whitespace-nowrap">{formatCurrency(p.cost_price)}</td>
+                          <td className="px-4 py-3 text-sm text-right font-medium text-finance-green whitespace-nowrap">{formatCurrency(p.selling_price)}</td>
+                          <td className="px-4 py-3 text-sm text-right whitespace-nowrap">
                             <span className={`font-medium ${margin >= 0 ? 'text-finance-green' : 'text-finance-red'}`}>
                               {formatCurrency(margin)} ({marginPct}%)
                             </span>
                           </td>
-                          <td className="px-6 py-3.5 text-sm text-right text-orange-600 whitespace-nowrap">{formatCurrency(p.provider_convenience_fee)}</td>
-                          <td className="px-6 py-3.5 text-sm text-right text-blue-600 whitespace-nowrap">{formatCurrency(p.company_additional_charge)}</td>
-                          <td className="px-6 py-3.5 text-sm text-right text-gray-600 whitespace-nowrap">{p.denomination ? formatCurrency(p.denomination) : '-'}</td>
-                          <td className="px-6 py-3.5 text-center">
+                          <td className="px-4 py-3 text-sm text-right text-orange-600 whitespace-nowrap">{formatCurrency(p.provider_convenience_fee)}</td>
+                          <td className="px-4 py-3 text-sm text-right text-blue-600 whitespace-nowrap">{formatCurrency(p.company_additional_charge)}</td>
+                          <td className="px-4 py-3 text-center">
                             <button onClick={() => handleToggleProduct(p)} className={`inline-flex px-2 py-1 rounded-full text-xs font-medium cursor-pointer ${p.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                               {p.is_active ? 'Active' : 'Inactive'}
                             </button>
                           </td>
-                          <td className="px-6 py-3.5 text-right">
+                          <td className="px-4 py-3 text-right">
                             <button onClick={() => openEditProduct(p)} className="p-1 text-gray-400 hover:text-primary-600"><Edit2 className="w-4 h-4" /></button>
                           </td>
                         </tr>
