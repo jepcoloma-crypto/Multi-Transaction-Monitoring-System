@@ -11,8 +11,8 @@ interface LoadingTx {
   status: string; created_at: string; created_by_email: string;
 }
 
-interface Product { id: string; name: string; provider_name: string; provider_id: string; cost_price: number; selling_price: number; denomination: number | null; company_additional_charge: number; is_active: boolean; notes: string | null; }
-interface Provider { id: string; name: string; code: string; convenience_fee: number; }
+interface Product { id: string; name: string; provider_name: string; provider_id: string; cost_price: number; selling_price: number; denomination: number | null; provider_convenience_fee: number; company_additional_charge: number; is_active: boolean; notes: string | null; }
+interface Provider { id: string; name: string; code: string; }
 interface Account { id: string; name: string; masked_account_number: string; current_balance: number; }
 interface LoadingSummary { totalSales: number; totalRevenue: number; totalCost: number; totalProfit: number; totalConvenienceFees: number; totalCompanyCharges: number; }
 
@@ -31,7 +31,7 @@ export default function Loading() {
   const [productSearch, setProductSearch] = useState('');
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
   const [form, setForm] = useState({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '' });
-  const [productForm, setProductForm] = useState({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', companyAdditionalCharge: '', notes: '' });
+  const [productForm, setProductForm] = useState({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', providerConvenienceFee: '', companyAdditionalCharge: '', notes: '' });
   const [submitting, setSubmitting] = useState(false);
 
   const loadData = async (page = 1) => {
@@ -80,7 +80,7 @@ export default function Loading() {
 
   const openCreateProduct = () => {
     setEditingProduct(null);
-    setProductForm({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', companyAdditionalCharge: '', notes: '' });
+    setProductForm({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', providerConvenienceFee: '', companyAdditionalCharge: '', notes: '' });
     setShowProductModal(true);
   };
 
@@ -89,7 +89,8 @@ export default function Loading() {
     setProductForm({
       name: p.name, providerId: p.provider_id,
       costPrice: String(p.cost_price), sellingPrice: String(p.selling_price),
-      denomination: p.denomination ? String(p.denomination) : '', companyAdditionalCharge: String(p.company_additional_charge || 0),
+      denomination: p.denomination ? String(p.denomination) : '', providerConvenienceFee: String(p.provider_convenience_fee || 0),
+      companyAdditionalCharge: String(p.company_additional_charge || 0),
       notes: p.notes || '',
     });
     setShowProductModal(true);
@@ -98,7 +99,7 @@ export default function Loading() {
   const handleProductSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const body = { ...productForm, costPrice: parseFloat(productForm.costPrice), sellingPrice: parseFloat(productForm.sellingPrice), denomination: productForm.denomination ? parseFloat(productForm.denomination) : undefined, companyAdditionalCharge: parseFloat(productForm.companyAdditionalCharge || '0') };
+      const body = { ...productForm, costPrice: parseFloat(productForm.costPrice), sellingPrice: parseFloat(productForm.sellingPrice), denomination: productForm.denomination ? parseFloat(productForm.denomination) : undefined, providerConvenienceFee: parseFloat(productForm.providerConvenienceFee || '0'), companyAdditionalCharge: parseFloat(productForm.companyAdditionalCharge || '0') };
       if (editingProduct) {
         await api.put(`/loading/products/${editingProduct.id}`, body);
       } else {
@@ -106,7 +107,7 @@ export default function Loading() {
       }
       setShowProductModal(false);
       setEditingProduct(null);
-      setProductForm({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', companyAdditionalCharge: '', notes: '' });
+      setProductForm({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', providerConvenienceFee: '', companyAdditionalCharge: '', notes: '' });
       loadData();
     } catch (err: any) { alert(err.message || 'Failed'); }
   };
@@ -229,8 +230,8 @@ export default function Loading() {
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Cost Price</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Selling Price</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Margin</th>
+                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Conv. Fee</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Co. Charge</th>
-                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Denomination</th>
                       <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
                     </tr>
@@ -250,6 +251,7 @@ export default function Loading() {
                               {formatCurrency(margin)} ({marginPct}%)
                             </span>
                           </td>
+                          <td className="px-6 py-3.5 text-sm text-right text-orange-600 whitespace-nowrap">{formatCurrency(p.provider_convenience_fee)}</td>
                           <td className="px-6 py-3.5 text-sm text-right text-blue-600 whitespace-nowrap">{formatCurrency(p.company_additional_charge)}</td>
                           <td className="px-6 py-3.5 text-sm text-right text-gray-600 whitespace-nowrap">{p.denomination ? formatCurrency(p.denomination) : '-'}</td>
                           <td className="px-6 py-3.5 text-center">
@@ -321,8 +323,7 @@ export default function Loading() {
                   <p>Unit Price: <span className="font-medium">{formatCurrency(selectedProduct.selling_price)}</span></p>
                   <p>Unit Cost: <span className="font-medium">{formatCurrency(selectedProduct.cost_price)}</span></p>
                   {(() => {
-                    const selectedProvider = providers.find(p => p.id === selectedProduct.provider_id);
-                    const convFee = selectedProvider?.convenience_fee || 0;
+                    const convFee = selectedProduct.provider_convenience_fee || 0;
                     const companyCharge = selectedProduct.company_additional_charge || 0;
                     const qty = parseInt(form.quantity || '1');
                     const totalConvFee = convFee * qty;
@@ -383,10 +384,17 @@ export default function Loading() {
                 <label className="form-label">Denomination</label>
                 <input type="number" step="0.01" min="0" value={productForm.denomination} onChange={e => setProductForm({ ...productForm, denomination: e.target.value })} className="input-field" placeholder="Optional" />
               </div>
-              <div>
-                <label className="form-label">Company Additional Charge</label>
-                <input type="number" step="0.01" min="0" value={productForm.companyAdditionalCharge} onChange={e => setProductForm({ ...productForm, companyAdditionalCharge: e.target.value })} className="input-field" placeholder="0.00" />
-                <p className="text-xs text-gray-500 mt-1">Charge to customer (revenue for the company)</p>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="form-label">Provider Conv. Fee (per unit)</label>
+                  <input type="number" step="0.01" min="0" value={productForm.providerConvenienceFee} onChange={e => setProductForm({ ...productForm, providerConvenienceFee: e.target.value })} className="input-field" placeholder="0.00" />
+                  <p className="text-xs text-gray-500 mt-1">Fee charged by provider to us</p>
+                </div>
+                <div>
+                  <label className="form-label">Company Additional Charge</label>
+                  <input type="number" step="0.01" min="0" value={productForm.companyAdditionalCharge} onChange={e => setProductForm({ ...productForm, companyAdditionalCharge: e.target.value })} className="input-field" placeholder="0.00" />
+                  <p className="text-xs text-gray-500 mt-1">Charge to customer (revenue)</p>
+                </div>
               </div>
               <div>
                 <label className="form-label">Notes</label>

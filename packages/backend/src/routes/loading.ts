@@ -23,14 +23,14 @@ router.get('/products', authorize('loading.read'), async (req: Request, res: Res
 
 router.post('/products', authorize('loading.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, providerId, costPrice, sellingPrice, denomination, companyAdditionalCharge, notes } = req.body;
+    const { name, providerId, costPrice, sellingPrice, denomination, providerConvenienceFee, companyAdditionalCharge, notes } = req.body;
     if (!name || !providerId || costPrice === undefined || sellingPrice === undefined) throw createError(400, 'Name, provider, cost price, and selling price are required');
 
     const product = await queryOne(
-      `INSERT INTO loading_products (name, provider_id, cost_price, selling_price, denomination, company_additional_charge, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      `INSERT INTO loading_products (name, provider_id, cost_price, selling_price, denomination, provider_convenience_fee, company_additional_charge, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
       [name, providerId, parseFloat(costPrice), parseFloat(sellingPrice), denomination ? parseFloat(denomination) : null,
-       parseFloat(companyAdditionalCharge || '0'), notes || null]
+       parseFloat(providerConvenienceFee || '0'), parseFloat(companyAdditionalCharge || '0'), notes || null]
     );
 
     await createAuditLog({ userId: req.user!.userId, action: 'loading_product.created', entity: 'loading_product', entityId: product!.id, ipAddress: req.ip });
@@ -40,19 +40,21 @@ router.post('/products', authorize('loading.write'), async (req: Request, res: R
 
 router.put('/products/:id', authorize('loading.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, costPrice, sellingPrice, denomination, companyAdditionalCharge, isActive, notes } = req.body;
+    const { name, costPrice, sellingPrice, denomination, providerConvenienceFee, companyAdditionalCharge, isActive, notes } = req.body;
     const product = await queryOne('SELECT * FROM loading_products WHERE id = $1', [req.params.id]);
     if (!product) throw createError(404, 'Product not found');
 
     const updated = await queryOne(
       `UPDATE loading_products SET name = COALESCE($1, name), cost_price = COALESCE($2, cost_price),
        selling_price = COALESCE($3, selling_price), denomination = COALESCE($4, denomination),
-       company_additional_charge = COALESCE($5, company_additional_charge),
-       is_active = COALESCE($6, is_active), notes = COALESCE($7, notes), updated_at = NOW()
-       WHERE id = $8 RETURNING *`,
+       provider_convenience_fee = COALESCE($5, provider_convenience_fee),
+       company_additional_charge = COALESCE($6, company_additional_charge),
+       is_active = COALESCE($7, is_active), notes = COALESCE($8, notes), updated_at = NOW()
+       WHERE id = $9 RETURNING *`,
       [name || product.name, costPrice !== undefined ? parseFloat(costPrice) : product.cost_price,
        sellingPrice !== undefined ? parseFloat(sellingPrice) : product.selling_price,
        denomination !== undefined ? (denomination ? parseFloat(denomination) : null) : product.denomination,
+       providerConvenienceFee !== undefined ? parseFloat(providerConvenienceFee) : product.provider_convenience_fee,
        companyAdditionalCharge !== undefined ? parseFloat(companyAdditionalCharge) : product.company_additional_charge,
        isActive, notes !== undefined ? notes : product.notes, req.params.id]
     );
@@ -138,18 +140,15 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     if (!acct.rows[0]) throw createError(404, 'Account not found');
     if (acct.rows[0].status !== 'active') throw createError(400, 'Account is not active');
 
-    // Get provider convenience fee
-    const provider = await client.query('SELECT convenience_fee FROM providers WHERE id = $1', [product.rows[0].provider_id]);
-    const providerConvenienceFee = parseFloat(provider.rows[0]?.convenience_fee || '0');
-
     const qty = parseInt(quantity || '1');
     const unitCost = parseFloat(product.rows[0].cost_price);
     const unitPrice = parseFloat(product.rows[0].selling_price);
     const totalCost = unitCost * qty;
     const totalRevenue = unitPrice * qty;
     const profit = totalRevenue - totalCost;
+    const providerConvenienceFee = parseFloat(product.rows[0].provider_convenience_fee || '0') * qty;
     const companyAdditionalCharge = parseFloat(product.rows[0].company_additional_charge || '0');
-    const totalCustomerCharge = companyAdditionalCharge; // convenience fee is passed through, company charge is revenue
+    const totalCustomerCharge = providerConvenienceFee + companyAdditionalCharge;
     const totalBalanceDeduction = totalCost + providerConvenienceFee;
 
     if (parseFloat(acct.rows[0].current_balance) < totalBalanceDeduction) throw createError(400, 'Insufficient balance for loading purchase');
