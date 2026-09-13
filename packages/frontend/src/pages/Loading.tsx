@@ -331,15 +331,15 @@ export default function Loading() {
               </div>
               {selectedProduct && (
                 <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
-                  <p>Unit Price: <span className="font-medium">{formatCurrency(selectedProduct.selling_price)}</span></p>
                   <p>Unit Cost: <span className="font-medium">{formatCurrency(selectedProduct.cost_price)}</span></p>
+                  <p>Unit Price: <span className="font-medium">{formatCurrency(selectedProduct.selling_price)}</span></p>
                   {(() => {
                     const convFee = selectedProduct.provider_convenience_fee || 0;
                     const companyCharge = selectedProduct.company_additional_charge || 0;
                     const qty = parseInt(form.quantity || '1');
                     const totalConvFee = convFee * qty;
                     const totalCompanyCharge = companyCharge;
-                    const totalCustomerCharge = totalConvFee + totalCompanyCharge;
+                    const totalCustomerCharge = (selectedProduct.selling_price * qty) + totalConvFee + totalCompanyCharge;
                     const totalBalanceDeduction = (selectedProduct.cost_price * qty) + totalConvFee;
                     return (
                       <>
@@ -348,6 +348,7 @@ export default function Loading() {
                         <p>Expected Profit: <span className="font-medium text-finance-green">{formatCurrency((selectedProduct.selling_price - selectedProduct.cost_price) * qty)}</span></p>
                         <p className="border-t pt-1">Balance Deduction: <span className="font-bold">{formatCurrency(totalBalanceDeduction)}</span></p>
                         <p>Customer Pays: <span className="font-bold text-primary-600">{formatCurrency(totalCustomerCharge)}</span></p>
+                        <p className="text-xs text-gray-500">(Selling Price + Conv. Fee + Company Charge)</p>
                       </>
                     );
                   })()}
