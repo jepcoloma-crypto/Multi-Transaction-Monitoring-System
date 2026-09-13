@@ -23,13 +23,14 @@ router.get('/products', authorize('loading.read'), async (req: Request, res: Res
 
 router.post('/products', authorize('loading.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, providerId, costPrice, sellingPrice, denomination, notes } = req.body;
+    const { name, providerId, costPrice, sellingPrice, denomination, companyAdditionalCharge, notes } = req.body;
     if (!name || !providerId || costPrice === undefined || sellingPrice === undefined) throw createError(400, 'Name, provider, cost price, and selling price are required');
 
     const product = await queryOne(
-      `INSERT INTO loading_products (name, provider_id, cost_price, selling_price, denomination, notes)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [name, providerId, parseFloat(costPrice), parseFloat(sellingPrice), denomination ? parseFloat(denomination) : null, notes || null]
+      `INSERT INTO loading_products (name, provider_id, cost_price, selling_price, denomination, company_additional_charge, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
+      [name, providerId, parseFloat(costPrice), parseFloat(sellingPrice), denomination ? parseFloat(denomination) : null,
+       parseFloat(companyAdditionalCharge || '0'), notes || null]
     );
 
     await createAuditLog({ userId: req.user!.userId, action: 'loading_product.created', entity: 'loading_product', entityId: product!.id, ipAddress: req.ip });
@@ -39,18 +40,20 @@ router.post('/products', authorize('loading.write'), async (req: Request, res: R
 
 router.put('/products/:id', authorize('loading.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, costPrice, sellingPrice, denomination, isActive, notes } = req.body;
+    const { name, costPrice, sellingPrice, denomination, companyAdditionalCharge, isActive, notes } = req.body;
     const product = await queryOne('SELECT * FROM loading_products WHERE id = $1', [req.params.id]);
     if (!product) throw createError(404, 'Product not found');
 
     const updated = await queryOne(
       `UPDATE loading_products SET name = COALESCE($1, name), cost_price = COALESCE($2, cost_price),
        selling_price = COALESCE($3, selling_price), denomination = COALESCE($4, denomination),
-       is_active = COALESCE($5, is_active), notes = COALESCE($6, notes), updated_at = NOW()
-       WHERE id = $7 RETURNING *`,
+       company_additional_charge = COALESCE($5, company_additional_charge),
+       is_active = COALESCE($6, is_active), notes = COALESCE($7, notes), updated_at = NOW()
+       WHERE id = $8 RETURNING *`,
       [name || product.name, costPrice !== undefined ? parseFloat(costPrice) : product.cost_price,
        sellingPrice !== undefined ? parseFloat(sellingPrice) : product.selling_price,
        denomination !== undefined ? (denomination ? parseFloat(denomination) : null) : product.denomination,
+       companyAdditionalCharge !== undefined ? parseFloat(companyAdditionalCharge) : product.company_additional_charge,
        isActive, notes !== undefined ? notes : product.notes, req.params.id]
     );
 
@@ -101,7 +104,9 @@ router.get('/summary', authorize('loading.read'), async (req: Request, res: Resp
 
     const summary = await queryOne(
       `SELECT COUNT(*) as total, COALESCE(SUM(total_revenue), 0) as total_revenue,
-              COALESCE(SUM(total_cost), 0) as total_cost, COALESCE(SUM(profit), 0) as total_profit
+              COALESCE(SUM(total_cost), 0) as total_cost, COALESCE(SUM(profit), 0) as total_profit,
+              COALESCE(SUM(provider_convenience_fee), 0) as total_convenience_fees,
+              COALESCE(SUM(company_additional_charge), 0) as total_company_charges
        FROM loading_transactions lt ${wc}`, params
     );
 
@@ -112,7 +117,7 @@ router.get('/summary', authorize('loading.read'), async (req: Request, res: Resp
     );
 
     res.json({ success: true, data: {
-      summary: { totalSales: parseInt(summary?.total || '0'), totalRevenue: parseFloat(summary?.total_revenue || '0'), totalCost: parseFloat(summary?.total_cost || '0'), totalProfit: parseFloat(summary?.total_profit || '0') },
+      summary: { totalSales: parseInt(summary?.total || '0'), totalRevenue: parseFloat(summary?.total_revenue || '0'), totalCost: parseFloat(summary?.total_cost || '0'), totalProfit: parseFloat(summary?.total_profit || '0'), totalConvenienceFees: parseFloat(summary?.total_convenience_fees || '0'), totalCompanyCharges: parseFloat(summary?.total_company_charges || '0') },
       byProvider
     }});
   } catch (error) { next(error); }
@@ -133,32 +138,41 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     if (!acct.rows[0]) throw createError(404, 'Account not found');
     if (acct.rows[0].status !== 'active') throw createError(400, 'Account is not active');
 
+    // Get provider convenience fee
+    const provider = await client.query('SELECT convenience_fee FROM providers WHERE id = $1', [product.rows[0].provider_id]);
+    const providerConvenienceFee = parseFloat(provider.rows[0]?.convenience_fee || '0');
+
     const qty = parseInt(quantity || '1');
     const unitCost = parseFloat(product.rows[0].cost_price);
     const unitPrice = parseFloat(product.rows[0].selling_price);
     const totalCost = unitCost * qty;
     const totalRevenue = unitPrice * qty;
     const profit = totalRevenue - totalCost;
+    const companyAdditionalCharge = parseFloat(product.rows[0].company_additional_charge || '0');
+    const totalCustomerCharge = companyAdditionalCharge; // convenience fee is passed through, company charge is revenue
+    const totalBalanceDeduction = totalCost + providerConvenienceFee;
 
-    if (parseFloat(acct.rows[0].current_balance) < totalCost) throw createError(400, 'Insufficient balance for loading purchase');
+    if (parseFloat(acct.rows[0].current_balance) < totalBalanceDeduction) throw createError(400, 'Insufficient balance for loading purchase');
 
     const txNum = await client.query("SELECT nextval('loading_transactions_transaction_number_seq') as nextval");
     const loadingTx = (await client.query(
       `INSERT INTO loading_transactions (transaction_number, account_id, product_id, customer_number, quantity,
-       unit_cost, unit_price, total_cost, total_revenue, profit, payment_method, reference_number, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+       unit_cost, unit_price, total_cost, total_revenue, profit, provider_convenience_fee, company_additional_charge,
+       payment_method, reference_number, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
       [txNum.rows[0].nextval, accountId, productId, customerNumber, qty, unitCost, unitPrice, totalCost, totalRevenue, profit,
+       providerConvenienceFee, companyAdditionalCharge,
        paymentMethod || 'cash', referenceNumber || null, req.user!.userId]
     )).rows[0];
 
-    // Deduct from account
-    const newBalance = parseFloat(acct.rows[0].current_balance) - totalCost;
+    // Deduct from account: cost + provider convenience fee
+    const newBalance = parseFloat(acct.rows[0].current_balance) - totalBalanceDeduction;
     await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, accountId]);
 
     await client.query(
       `INSERT INTO ledger_entries (account_id, entry_type, amount, balance_after, description, entry_date)
        VALUES ($1, 'debit', $2, $3, $4, NOW())`,
-      [accountId, totalCost, newBalance, `Loading sale to ${customerNumber}: ${product.rows[0].name}`]
+      [accountId, totalBalanceDeduction, newBalance, `Loading sale to ${customerNumber}: ${product.rows[0].name}${providerConvenienceFee > 0 ? ` (incl. ₱${providerConvenienceFee} conv. fee)` : ''}`]
     );
 
     await client.query('COMMIT');

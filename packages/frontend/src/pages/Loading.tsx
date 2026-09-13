@@ -11,10 +11,10 @@ interface LoadingTx {
   status: string; created_at: string; created_by_email: string;
 }
 
-interface Product { id: string; name: string; provider_name: string; provider_id: string; cost_price: number; selling_price: number; denomination: number | null; is_active: boolean; notes: string | null; }
-interface Provider { id: string; name: string; code: string; }
+interface Product { id: string; name: string; provider_name: string; provider_id: string; cost_price: number; selling_price: number; denomination: number | null; company_additional_charge: number; is_active: boolean; notes: string | null; }
+interface Provider { id: string; name: string; code: string; convenience_fee: number; }
 interface Account { id: string; name: string; masked_account_number: string; current_balance: number; }
-interface LoadingSummary { totalSales: number; totalRevenue: number; totalCost: number; totalProfit: number; }
+interface LoadingSummary { totalSales: number; totalRevenue: number; totalCost: number; totalProfit: number; totalConvenienceFees: number; totalCompanyCharges: number; }
 
 export default function Loading() {
   const [txns, setTxns] = useState<LoadingTx[]>([]);
@@ -31,7 +31,7 @@ export default function Loading() {
   const [productSearch, setProductSearch] = useState('');
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
   const [form, setForm] = useState({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '' });
-  const [productForm, setProductForm] = useState({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', notes: '' });
+  const [productForm, setProductForm] = useState({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', companyAdditionalCharge: '', notes: '' });
   const [submitting, setSubmitting] = useState(false);
 
   const loadData = async (page = 1) => {
@@ -80,7 +80,7 @@ export default function Loading() {
 
   const openCreateProduct = () => {
     setEditingProduct(null);
-    setProductForm({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', notes: '' });
+    setProductForm({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', companyAdditionalCharge: '', notes: '' });
     setShowProductModal(true);
   };
 
@@ -89,7 +89,8 @@ export default function Loading() {
     setProductForm({
       name: p.name, providerId: p.provider_id,
       costPrice: String(p.cost_price), sellingPrice: String(p.selling_price),
-      denomination: p.denomination ? String(p.denomination) : '', notes: p.notes || '',
+      denomination: p.denomination ? String(p.denomination) : '', companyAdditionalCharge: String(p.company_additional_charge || 0),
+      notes: p.notes || '',
     });
     setShowProductModal(true);
   };
@@ -97,7 +98,7 @@ export default function Loading() {
   const handleProductSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const body = { ...productForm, costPrice: parseFloat(productForm.costPrice), sellingPrice: parseFloat(productForm.sellingPrice), denomination: productForm.denomination ? parseFloat(productForm.denomination) : undefined };
+      const body = { ...productForm, costPrice: parseFloat(productForm.costPrice), sellingPrice: parseFloat(productForm.sellingPrice), denomination: productForm.denomination ? parseFloat(productForm.denomination) : undefined, companyAdditionalCharge: parseFloat(productForm.companyAdditionalCharge || '0') };
       if (editingProduct) {
         await api.put(`/loading/products/${editingProduct.id}`, body);
       } else {
@@ -105,7 +106,7 @@ export default function Loading() {
       }
       setShowProductModal(false);
       setEditingProduct(null);
-      setProductForm({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', notes: '' });
+      setProductForm({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', companyAdditionalCharge: '', notes: '' });
       loadData();
     } catch (err: any) { alert(err.message || 'Failed'); }
   };
@@ -146,11 +147,13 @@ export default function Loading() {
       {activeTab === 'sales' && (
         <>
           {summary && (
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
               <div className="card"><p className="text-sm text-gray-600">Total Sales</p><p className="text-xl font-bold mt-1">{summary.totalSales}</p></div>
               <div className="card"><p className="text-sm text-gray-600">Total Revenue</p><p className="text-xl font-bold text-finance-green mt-1">{formatCurrency(summary.totalRevenue)}</p></div>
               <div className="card"><p className="text-sm text-gray-600">Total Cost</p><p className="text-xl font-bold text-finance-red mt-1">{formatCurrency(summary.totalCost)}</p></div>
               <div className="card"><p className="text-sm text-gray-600">Total Profit</p><p className="text-xl font-bold text-finance-blue mt-1">{formatCurrency(summary.totalProfit)}</p></div>
+              <div className="card"><p className="text-sm text-gray-600">Conv. Fees</p><p className="text-xl font-bold text-orange-600 mt-1">{formatCurrency(summary.totalConvenienceFees)}</p></div>
+              <div className="card"><p className="text-sm text-gray-600">Company Charges</p><p className="text-xl font-bold text-blue-600 mt-1">{formatCurrency(summary.totalCompanyCharges)}</p></div>
             </div>
           )}
 
@@ -226,6 +229,7 @@ export default function Loading() {
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Cost Price</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Selling Price</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Margin</th>
+                      <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Co. Charge</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Denomination</th>
                       <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
                       <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
@@ -246,6 +250,7 @@ export default function Loading() {
                               {formatCurrency(margin)} ({marginPct}%)
                             </span>
                           </td>
+                          <td className="px-6 py-3.5 text-sm text-right text-blue-600 whitespace-nowrap">{formatCurrency(p.company_additional_charge)}</td>
                           <td className="px-6 py-3.5 text-sm text-right text-gray-600 whitespace-nowrap">{p.denomination ? formatCurrency(p.denomination) : '-'}</td>
                           <td className="px-6 py-3.5 text-center">
                             <button onClick={() => handleToggleProduct(p)} className={`inline-flex px-2 py-1 rounded-full text-xs font-medium cursor-pointer ${p.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
@@ -315,8 +320,25 @@ export default function Loading() {
                 <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
                   <p>Unit Price: <span className="font-medium">{formatCurrency(selectedProduct.selling_price)}</span></p>
                   <p>Unit Cost: <span className="font-medium">{formatCurrency(selectedProduct.cost_price)}</span></p>
-                  <p>Expected Profit: <span className="font-medium text-finance-green">{formatCurrency((selectedProduct.selling_price - selectedProduct.cost_price) * parseInt(form.quantity || '1'))}</span></p>
-                  <p>Total: <span className="font-bold">{formatCurrency(selectedProduct.selling_price * parseInt(form.quantity || '1'))}</span></p>
+                  {(() => {
+                    const selectedProvider = providers.find(p => p.id === selectedProduct.provider_id);
+                    const convFee = selectedProvider?.convenience_fee || 0;
+                    const companyCharge = selectedProduct.company_additional_charge || 0;
+                    const qty = parseInt(form.quantity || '1');
+                    const totalConvFee = convFee * qty;
+                    const totalCompanyCharge = companyCharge;
+                    const totalCustomerCharge = totalConvFee + totalCompanyCharge;
+                    const totalBalanceDeduction = (selectedProduct.cost_price * qty) + totalConvFee;
+                    return (
+                      <>
+                        {convFee > 0 && <p>Provider Conv. Fee: <span className="font-medium text-orange-600">{formatCurrency(convFee)} × {qty} = {formatCurrency(totalConvFee)}</span></p>}
+                        {companyCharge > 0 && <p>Company Charge: <span className="font-medium text-blue-600">{formatCurrency(companyCharge)}</span></p>}
+                        <p>Expected Profit: <span className="font-medium text-finance-green">{formatCurrency((selectedProduct.selling_price - selectedProduct.cost_price) * qty)}</span></p>
+                        <p className="border-t pt-1">Balance Deduction: <span className="font-bold">{formatCurrency(totalBalanceDeduction)}</span></p>
+                        <p>Customer Pays: <span className="font-bold text-primary-600">{formatCurrency(totalCustomerCharge)}</span></p>
+                      </>
+                    );
+                  })()}
                 </div>
               )}
               <div className="flex gap-3 justify-end">
@@ -360,6 +382,11 @@ export default function Loading() {
               <div>
                 <label className="form-label">Denomination</label>
                 <input type="number" step="0.01" min="0" value={productForm.denomination} onChange={e => setProductForm({ ...productForm, denomination: e.target.value })} className="input-field" placeholder="Optional" />
+              </div>
+              <div>
+                <label className="form-label">Company Additional Charge</label>
+                <input type="number" step="0.01" min="0" value={productForm.companyAdditionalCharge} onChange={e => setProductForm({ ...productForm, companyAdditionalCharge: e.target.value })} className="input-field" placeholder="0.00" />
+                <p className="text-xs text-gray-500 mt-1">Charge to customer (revenue for the company)</p>
               </div>
               <div>
                 <label className="form-label">Notes</label>

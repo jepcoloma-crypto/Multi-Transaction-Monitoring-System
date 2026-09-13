@@ -41,7 +41,7 @@ router.get('/:id', async (req: Request, res: Response, next: NextFunction) => {
 
 router.post('/', authorize('accounts.write', 'administrator'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, code, type, notes } = req.body;
+    const { name, code, type, convenienceFee, notes } = req.body;
     if (!name || !code || !type) {
       throw createError(400, 'Name, code, and type are required');
     }
@@ -52,8 +52,8 @@ router.post('/', authorize('accounts.write', 'administrator'), async (req: Reque
     }
 
     const provider = await queryOne(
-      'INSERT INTO providers (name, code, type, notes) VALUES ($1, $2, $3, $4) RETURNING *',
-      [name, code, type, notes || null]
+      'INSERT INTO providers (name, code, type, convenience_fee, notes) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [name, code, type, parseFloat(convenienceFee || '0'), notes || null]
     );
 
     await createAuditLog({
@@ -73,7 +73,7 @@ router.post('/', authorize('accounts.write', 'administrator'), async (req: Reque
 
 router.put('/:id', authorize('accounts.write', 'administrator'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { name, code, type, isActive, notes } = req.body;
+    const { name, code, type, convenienceFee, isActive, notes } = req.body;
     const provider = await queryOne('SELECT * FROM providers WHERE id = $1', [req.params.id]);
     if (!provider) {
       throw createError(404, 'Provider not found');
@@ -81,10 +81,13 @@ router.put('/:id', authorize('accounts.write', 'administrator'), async (req: Req
 
     const updated = await queryOne(
       `UPDATE providers SET name = COALESCE($1, name), code = COALESCE($2, code),
-       type = COALESCE($3, type), is_active = COALESCE($4, is_active),
-       notes = COALESCE($5, notes), updated_at = NOW()
-       WHERE id = $6 RETURNING *`,
-      [name || provider.name, code || provider.code, type || provider.type, isActive, notes !== undefined ? notes : provider.notes, req.params.id]
+       type = COALESCE($3, type), convenience_fee = COALESCE($4, convenience_fee),
+       is_active = COALESCE($5, is_active),
+       notes = COALESCE($6, notes), updated_at = NOW()
+       WHERE id = $7 RETURNING *`,
+      [name || provider.name, code || provider.code, type || provider.type,
+       convenienceFee !== undefined ? parseFloat(convenienceFee) : provider.convenience_fee,
+       isActive, notes !== undefined ? notes : provider.notes, req.params.id]
     );
 
     await createAuditLog({

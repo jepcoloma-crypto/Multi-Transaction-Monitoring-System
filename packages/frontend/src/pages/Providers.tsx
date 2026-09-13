@@ -7,6 +7,7 @@ interface Provider {
   name: string;
   code: string;
   type: string;
+  convenience_fee: number;
   is_active: boolean;
   notes: string | null;
   created_at: string;
@@ -17,7 +18,7 @@ export default function Providers() {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
-  const [formData, setFormData] = useState({ name: '', code: '', type: 'e-wallet', notes: '' });
+  const [formData, setFormData] = useState({ name: '', code: '', type: 'e-wallet', convenienceFee: '', notes: '' });
   const [error, setError] = useState('');
 
   const fetchProviders = async () => {
@@ -36,14 +37,14 @@ export default function Providers() {
 
   const openCreate = () => {
     setEditingProvider(null);
-    setFormData({ name: '', code: '', type: 'e-wallet', notes: '' });
+    setFormData({ name: '', code: '', type: 'e-wallet', convenienceFee: '', notes: '' });
     setShowModal(true);
     setError('');
   };
 
   const openEdit = (provider: Provider) => {
     setEditingProvider(provider);
-    setFormData({ name: provider.name, code: provider.code, type: provider.type, notes: provider.notes || '' });
+    setFormData({ name: provider.name, code: provider.code, type: provider.type, convenienceFee: String(provider.convenience_fee || 0), notes: provider.notes || '' });
     setShowModal(true);
     setError('');
   };
@@ -118,6 +119,9 @@ export default function Providers() {
                 <span className={provider.is_active ? 'badge-green' : 'badge-red'}>
                   {provider.is_active ? 'Active' : 'Inactive'}
                 </span>
+                {provider.convenience_fee > 0 && (
+                  <span className="ml-2 text-xs text-orange-600">Conv. Fee: ₱{provider.convenience_fee}</span>
+                )}
               </div>
               {provider.notes && <p className="text-xs text-gray-500 mt-2">{provider.notes}</p>}
             </div>
@@ -150,6 +154,11 @@ export default function Providers() {
                   <option value="telecom">Telecom</option>
                   <option value="other">Other</option>
                 </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Convenience Fee (per load transaction)</label>
+                <input type="number" step="0.01" min="0" value={formData.convenienceFee} onChange={(e) => setFormData({ ...formData, convenienceFee: e.target.value })} className="input" placeholder="0.00" />
+                <p className="text-xs text-gray-500 mt-1">Fee charged by provider to operator (deducted from balance)</p>
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
