@@ -334,8 +334,8 @@ export default function Loading() {
                   <p>Unit Cost: <span className="font-medium">{formatCurrency(selectedProduct.cost_price)}</span></p>
                   <p>Unit Price: <span className="font-medium">{formatCurrency(selectedProduct.selling_price)}</span></p>
                   {(() => {
-                    const convFee = selectedProduct.provider_convenience_fee || 0;
-                    const companyCharge = selectedProduct.company_additional_charge || 0;
+                    const convFee = Number(selectedProduct.provider_convenience_fee) || 0;
+                    const companyCharge = Number(selectedProduct.company_additional_charge) || 0;
                     const qty = parseInt(form.quantity || '1');
                     const totalConvFee = convFee * qty;
                     const totalCompanyCharge = companyCharge;
