@@ -319,7 +319,7 @@ export default function Loading() {
                 <label className="form-label">Account *</label>
                 <select required value={form.accountId} onChange={e => setForm({ ...form, accountId: e.target.value })} className="input-field">
                   <option value="">Select account</option>
-                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}) - {formatCurrency(a.current_balance)}</option>)}
+                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}{a.masked_account_number ? ` · ${a.masked_account_number}` : ''}) - {formatCurrency(a.current_balance)}</option>)}
                 </select>
               </div>
               <div>

@@ -11,7 +11,7 @@ interface Transfer {
   created_by_email: string; completed_at: string; notes: string; fee_deducted_from_amount: boolean;
 }
 
-interface Account { id: string; name: string; masked_account_number: string; current_balance: number; }
+interface Account { id: string; name: string; masked_account_number: string; current_balance: number; provider_name: string; status: string; }
 
 export default function FundTransfers() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -193,15 +193,15 @@ export default function FundTransfers() {
                 <label className="form-label">Source Account *</label>
                 <select required value={form.sourceAccountId} onChange={e => setForm({ ...form, sourceAccountId: e.target.value })} className="input-field">
                   <option value="">Select source account</option>
-                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name} ({a.masked_account_number}) - {formatCurrency(a.current_balance)}</option>)}
+                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}{a.masked_account_number ? ` · ${a.masked_account_number}` : ''}) - {formatCurrency(a.current_balance)}</option>)}
                 </select>
               </div>
               <div>
                 <label className="form-label">Destination Account *</label>
                 <select required value={form.destinationAccountId} onChange={e => setForm({ ...form, destinationAccountId: e.target.value })} className="input-field">
                   <option value="">Select destination account</option>
-                  {accounts.filter(a => a.id !== form.sourceAccountId).map(a => (
-                    <option key={a.id} value={a.id}>{a.name} ({a.masked_account_number}) - {formatCurrency(a.current_balance)}</option>
+                  {accounts.filter(a => a.status === 'active' && a.id !== form.sourceAccountId).map(a => (
+                    <option key={a.id} value={a.id}>{a.name} ({a.provider_name}{a.masked_account_number ? ` · ${a.masked_account_number}` : ''}) - {formatCurrency(a.current_balance)}</option>
                   ))}
                 </select>
               </div>

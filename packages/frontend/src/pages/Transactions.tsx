@@ -41,7 +41,7 @@ interface FeeRule {
   base_amount: number; step_amount: number; step_fee: number;
   tiers?: { id: string; min_amount: number; max_amount: number | null; fee_value: number; fee_type: string }[];
 }
-interface Account { id: string; name: string; provider_name: string; status: string; current_balance: number; }
+interface Account { id: string; name: string; provider_name: string; status: string; current_balance: number; masked_account_number: string; }
 interface CustomerOption { id: string; first_name: string; last_name: string; phone: string | null; }
 interface Summary { totalMoneyIn: number; totalMoneyOut: number; totalFees: number; transactionCount: number; netMovement: number; }
 
@@ -558,7 +558,7 @@ export default function Transactions() {
                 <label className="block text-sm font-medium text-gray-700 mb-1">Account *</label>
                 <select required value={formData.accountId} onChange={(e) => setFormData({ ...formData, accountId: e.target.value })} className="input">
                   <option value="">Select account</option>
-                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}) - {formatCurrency(a.current_balance)}</option>)}
+                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}{a.masked_account_number ? ` · ${a.masked_account_number}` : ''}) - {formatCurrency(a.current_balance)}</option>)}
                 </select>
               </div>
               <div>
