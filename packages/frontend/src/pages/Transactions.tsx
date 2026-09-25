@@ -85,6 +85,7 @@ export default function Transactions() {
   const [showDetail, setShowDetail] = useState<Transaction | null>(null);
   const [editingCharges, setEditingCharges] = useState(false);
   const [chargeItems, setChargeItems] = useState<{ description: string; amount: string }[]>([]);
+  const [feeMode, setFeeMode] = useState<'auto' | 'manual'>('auto');
   const [createCharges, setCreateCharges] = useState<{ description: string; amount: string }[]>([]);
   const [chargeTypes, setChargeTypes] = useState<{ id: string; name: string; default_amount: number }[]>([]);
   const [formData, setFormData] = useState({
@@ -237,13 +238,13 @@ export default function Transactions() {
   const handleRuleChange = (ruleId: string) => {
     const rule = feeRules.find(r => r.id === ruleId);
     const amount = parseFloat(formData.amount) || 0;
-    const autoFee = rule && amount > 0 ? String(calculateFee(rule, amount)) : '0';
+    const autoFee = (feeMode === 'auto' && rule && amount > 0) ? String(calculateFee(rule, amount)) : formData.fee;
     setFormData({ ...formData, feeRuleId: ruleId, fee: autoFee });
   };
 
   const handleAmountChange = (amount: string) => {
     const amt = parseFloat(amount) || 0;
-    const autoFee = selectedRule && amt > 0 ? String(calculateFee(selectedRule, amt)) : '0';
+    const autoFee = (feeMode === 'auto' && selectedRule && amt > 0) ? String(calculateFee(selectedRule, amt)) : formData.fee;
     setFormData({ ...formData, amount: amount, fee: autoFee });
   };
 
@@ -254,6 +255,7 @@ export default function Transactions() {
       transactionDate: new Date().toISOString().slice(0, 16), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
     });
     setCreateCharges([]);
+    setFeeMode('auto');
     setShowModal(true);
     setError('');
   };
@@ -658,7 +660,14 @@ export default function Transactions() {
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Fee</label>
-                  <input type="number" step="0.01" min="0" value={formData.fee} readOnly className="input bg-gray-50 text-gray-500 cursor-not-allowed" />
+                  <input
+                    type="number" step="0.01" min="0" required
+                    value={formData.fee}
+                    readOnly={feeMode === 'auto'}
+                    onChange={(e) => setFormData({ ...formData, fee: e.target.value })}
+                    className={`input ${feeMode === 'auto' ? 'bg-gray-50 text-gray-500 cursor-not-allowed' : 'bg-white'}`}
+                    placeholder={feeMode === 'manual' ? 'Enter fee amount' : ''}
+                  />
                 </div>
               </div>
               <div className="flex items-center gap-3">
@@ -668,6 +677,14 @@ export default function Transactions() {
                 </label>
                 <span className="text-sm text-gray-700">Fee Handling</span>
                 <span className="text-xs text-gray-500">({formData.feeAddedToBalance ? 'Fee paid separately by customer' : 'Fee deducted from transaction amount'})</span>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" checked={feeMode === 'manual'} onChange={(e) => { const m = e.target.checked ? 'manual' : 'auto'; setFeeMode(m); if (m === 'auto' && selectedRule) { const amt = parseFloat(formData.amount) || 0; setFormData({ ...formData, fee: amt > 0 ? String(calculateFee(selectedRule, amt)) : '0' }); } }} className="sr-only peer" />
+                  <div className="w-9 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
+                </label>
+                <span className="text-sm text-gray-700">Manual Fee</span>
+                <span className="text-xs text-gray-500">({feeMode === 'auto' ? 'Fee auto-calculated from rule' : 'You decide the fee amount'})</span>
               </div>
               {selectedRule && parseFloat(formData.amount) > 0 && (
                 <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
