@@ -5,6 +5,7 @@ import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction } from '../services/balance';
+import { calculateTieredFee } from '../services/feeCalc';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -315,8 +316,8 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     if (feeNum < 0) throw createError(400, 'Fee cannot be negative');
 
     if (!fee || feeNum === 0) {
-      const feeConfigs = await query<{ id: string; fee_type: string; fee_value: number; min_fee: number; max_fee: number | null }>(
-        `SELECT id, fee_type, fee_value, min_fee, max_fee FROM transaction_fees
+      const feeConfigs = await query<{ id: string; fee_type: string; fee_value: number; min_fee: number; max_fee: number | null; calculation_method: string }>(
+        `SELECT id, fee_type, fee_value, min_fee, max_fee, calculation_method FROM transaction_fees
          WHERE transaction_type_id = $1 AND is_active = true
          AND (transaction_category_id IS NULL OR transaction_category_id = $2)`,
         [resolvedTypeId, resolvedCategoryId]
@@ -329,24 +330,17 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
         let totalFee = 0;
         for (const fc of feeConfigs) {
           const configTiers = feeTiers.filter((t: any) => t.fee_id === fc.id);
-          let matchedTier = configTiers.find((t: any) => amountNum >= parseFloat(t.min_amount) && (t.max_amount === null || amountNum <= parseFloat(t.max_amount)));
-          if (!matchedTier && configTiers.length > 0 && amountNum >= parseFloat(configTiers[0].min_amount)) {
-            matchedTier =
-              configTiers.find((t: any) => amountNum < parseFloat(t.min_amount)) ||
-              configTiers.filter((t: any) => amountNum >= parseFloat(t.min_amount)).pop();
-          }
+          const tierResult = calculateTieredFee(fc, configTiers, amountNum);
           let calcFee: number;
-          if (matchedTier) {
-            calcFee = matchedTier.fee_type === 'percentage'
-              ? (amountNum * parseFloat(matchedTier.fee_value) / 100)
-              : parseFloat(matchedTier.fee_value);
+          if (tierResult !== null) {
+            calcFee = tierResult;
+          } else if (fc.fee_type === 'percentage') {
+            calcFee = (amountNum * Number(fc.fee_value)) / 100;
           } else {
-            calcFee = fc.fee_type === 'percentage'
-              ? (amountNum * fc.fee_value / 100)
-              : fc.fee_value;
+            calcFee = Number(fc.fee_value);
           }
-          if (fc.min_fee && calcFee < fc.min_fee) calcFee = fc.min_fee;
-          if (fc.max_fee && calcFee > fc.max_fee) calcFee = fc.max_fee;
+          if (fc.min_fee && calcFee < Number(fc.min_fee)) calcFee = Number(fc.min_fee);
+          if (fc.max_fee && calcFee > Number(fc.max_fee)) calcFee = Number(fc.max_fee);
           totalFee += calcFee;
         }
         feeNum = Math.round(totalFee * 100) / 100;

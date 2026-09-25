@@ -3,6 +3,7 @@ import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
+import { calculateTieredFee } from '../services/feeCalc';
 
 const router = Router();
 router.use(authenticate);
@@ -60,20 +61,12 @@ router.get('/calculate/:typeId', authorize('transactions.read'), async (req: Req
         } else {
           calculatedFee = parseFloat(fee.fee_value);
         }
-      } else if (tiers.length > 0) {
-        let matchedTier = tiers.find((tier: any) =>
-          amount >= parseFloat(tier.min_amount) &&
-          (tier.max_amount === null || amount <= parseFloat(tier.max_amount))
-        );
-        if (!matchedTier && amount >= parseFloat(tiers[0].min_amount)) {
-          matchedTier =
-            tiers.find((tier: any) => amount < parseFloat(tier.min_amount)) ||
-            tiers.filter((tier: any) => amount >= parseFloat(tier.min_amount)).pop();
-        }
-        if (matchedTier) {
-          calculatedFee = matchedTier.fee_type === 'percentage'
-            ? (amount * parseFloat(matchedTier.fee_value) / 100)
-            : parseFloat(matchedTier.fee_value);
+      } else {
+        const tierFeeResult = calculateTieredFee(fee, tiers, amount);
+        if (tierFeeResult !== null) {
+          calculatedFee = tierFeeResult;
+        } else if (fee.fee_type === 'percentage') {
+          calculatedFee = (amount * parseFloat(fee.fee_value)) / 100;
         }
       }
       if (fee.min_fee && calculatedFee < fee.min_fee) calculatedFee = fee.min_fee;
@@ -100,7 +93,7 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
 router.post('/', authorize('settings.write'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
-    const { transactionTypeId, transactionCategoryId, name, feeType, feeValue, minFee, maxFee, description, tiers, baseAmount, stepAmount, stepFee } = req.body;
+    const { transactionTypeId, transactionCategoryId, name, feeType, feeValue, minFee, maxFee, description, tiers, baseAmount, stepAmount, stepFee, calculationMethod } = req.body;
 
     if (!transactionTypeId || !name || feeValue === undefined) {
       throw createError(400, 'Transaction type, name, and fee value are required');
@@ -108,6 +101,10 @@ router.post('/', authorize('settings.write'), async (req: Request, res: Response
 
     if (!['fixed', 'percentage'].includes(feeType)) {
       throw createError(400, 'Fee type must be "fixed" or "percentage"');
+    }
+
+    if (calculationMethod !== undefined && !['bracket', 'per_amount'].includes(calculationMethod)) {
+      throw createError(400, 'Calculation method must be "bracket" or "per_amount"');
     }
 
     if (feeType === 'percentage' && (feeValue < 0 || feeValue > 100)) {
@@ -125,9 +122,9 @@ router.post('/', authorize('settings.write'), async (req: Request, res: Response
     await client.query('BEGIN');
 
     const fee = (await client.query(
-      `INSERT INTO transaction_fees (transaction_type_id, transaction_category_id, name, fee_type, fee_value, min_fee, max_fee, description, base_amount, step_amount, step_fee)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [transactionTypeId, transactionCategoryId || null, name, feeType || 'fixed', parseFloat(feeValue), parseFloat(minFee || '0'), maxFee ? parseFloat(maxFee) : null, description || null, parseFloat(baseAmount || '0'), parseFloat(stepAmount || '0'), parseFloat(stepFee || '0')]
+      `INSERT INTO transaction_fees (transaction_type_id, transaction_category_id, name, fee_type, fee_value, min_fee, max_fee, description, base_amount, step_amount, step_fee, calculation_method)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
+      [transactionTypeId, transactionCategoryId || null, name, feeType || 'fixed', parseFloat(feeValue), parseFloat(minFee || '0'), maxFee ? parseFloat(maxFee) : null, description || null, parseFloat(baseAmount || '0'), parseFloat(stepAmount || '0'), parseFloat(stepFee || '0'), calculationMethod || 'bracket']
     )).rows[0];
 
     if (tiers && Array.isArray(tiers) && tiers.length > 0) {
@@ -159,10 +156,14 @@ router.post('/', authorize('settings.write'), async (req: Request, res: Response
 router.put('/:id', authorize('settings.write'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
-    const { transactionCategoryId, name, feeType, feeValue, minFee, maxFee, isActive, description, tiers, baseAmount, stepAmount, stepFee } = req.body;
+    const { transactionCategoryId, name, feeType, feeValue, minFee, maxFee, isActive, description, tiers, baseAmount, stepAmount, stepFee, calculationMethod } = req.body;
 
     const existing = await queryOne('SELECT * FROM transaction_fees WHERE id = $1', [req.params.id]);
     if (!existing) throw createError(404, 'Fee configuration not found');
+
+    if (calculationMethod !== undefined && !['bracket', 'per_amount'].includes(calculationMethod)) {
+      throw createError(400, 'Calculation method must be "bracket" or "per_amount"');
+    }
 
     if (feeType && !['fixed', 'percentage', 'flat_per_step'].includes(feeType)) {
       throw createError(400, 'Fee type must be "fixed", "percentage", or "flat_per_step"');
@@ -181,7 +182,8 @@ router.put('/:id', authorize('settings.write'), async (req: Request, res: Respon
         fee_value = COALESCE($4, fee_value), min_fee = COALESCE($5, min_fee),
         max_fee = $6, is_active = COALESCE($7, is_active),
         description = $8, updated_at = NOW(),
-        base_amount = $9, step_amount = $10, step_fee = $11
+        base_amount = $9, step_amount = $10, step_fee = $11,
+        calculation_method = COALESCE($13, calculation_method)
        WHERE id = $12 RETURNING *`,
       [
         transactionCategoryId !== undefined ? transactionCategoryId : existing.transaction_category_id,
@@ -194,6 +196,7 @@ router.put('/:id', authorize('settings.write'), async (req: Request, res: Respon
         stepAmount !== undefined ? parseFloat(stepAmount) : (existing.step_amount || 0),
         stepFee !== undefined ? parseFloat(stepFee) : (existing.step_fee || 0),
         req.params.id,
+        calculationMethod !== undefined ? calculationMethod : null,
       ]
     )).rows[0];
 

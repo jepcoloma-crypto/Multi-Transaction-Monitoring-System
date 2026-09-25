@@ -13,6 +13,7 @@ interface FeeConfig {
   type_name: string; type_code: string; direction: string;
   category_name: string | null; category_code: string | null;
   base_amount: number; step_amount: number; step_fee: number;
+  calculation_method: string;
   tiers?: { id: string; min_amount: number; max_amount: number | null; fee_value: number }[];
 }
 
@@ -26,7 +27,7 @@ export default function TransactionFees() {
   const [filter, setFilter] = useState('');
   const [form, setForm] = useState({
     transactionTypeId: '', transactionCategoryId: '', name: '', feeType: 'fixed', feeValue: '',
-    minFee: '', maxFee: '', description: '', baseAmount: '', stepAmount: '', stepFee: '',
+    minFee: '', maxFee: '', description: '', baseAmount: '', stepAmount: '', stepFee: '', calculationMethod: 'bracket',
   });
   const [tiers, setTiers] = useState<FeeTier[]>([]);
   const [error, setError] = useState('');
@@ -50,7 +51,7 @@ export default function TransactionFees() {
 
   const openCreate = () => {
     setEditing(null);
-    setForm({ transactionTypeId: '', transactionCategoryId: '', name: '', feeType: 'fixed', feeValue: '', minFee: '', maxFee: '', description: '', baseAmount: '', stepAmount: '', stepFee: '' });
+    setForm({ transactionTypeId: '', transactionCategoryId: '', name: '', feeType: 'fixed', feeValue: '', minFee: '', maxFee: '', description: '', baseAmount: '', stepAmount: '', stepFee: '', calculationMethod: 'bracket' });
     setTiers([]);
     setShowModal(true);
     setError('');
@@ -64,6 +65,7 @@ export default function TransactionFees() {
       feeValue: String(fee.fee_value), minFee: String(fee.min_fee || ''),
       maxFee: fee.max_fee ? String(fee.max_fee) : '', description: fee.description || '',
       baseAmount: String(fee.base_amount || ''), stepAmount: String(fee.step_amount || ''), stepFee: String(fee.step_fee || ''),
+      calculationMethod: fee.calculation_method || 'bracket',
     });
     setTiers(fee.tiers?.map(t => ({
       minAmount: String(t.min_amount),
@@ -90,6 +92,7 @@ export default function TransactionFees() {
         baseAmount: form.baseAmount ? parseFloat(form.baseAmount) : undefined,
         stepAmount: form.stepAmount ? parseFloat(form.stepAmount) : undefined,
         stepFee: form.stepFee ? parseFloat(form.stepFee) : undefined,
+        calculationMethod: form.calculationMethod,
         tiers: editing ? validTiers.map(t => ({
           minAmount: t.minAmount,
           maxAmount: t.maxAmount || undefined,
@@ -214,13 +217,13 @@ export default function TransactionFees() {
                       <td className="px-4 py-3">
                         <span className="inline-flex items-center gap-1 text-sm">
                           {fee.fee_type === 'percentage' ? <Percent className="w-3 h-3" /> : <DollarSign className="w-3 h-3" />}
-                          {fee.fee_type === 'percentage' ? 'Percentage' : fee.fee_type === 'flat_per_step' ? 'Flat + Per Step' : 'Fixed'}
+                          {fee.calculation_method === 'per_amount' ? 'Per amount (tiered)' : fee.fee_type === 'percentage' ? 'Percentage' : fee.fee_type === 'flat_per_step' ? 'Flat + Per Step' : 'Fixed'}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-sm text-right font-medium">
                         {fee.fee_type === 'flat_per_step'
                           ? `${formatCurrency(fee.fee_value)} + ${formatCurrency(fee.step_fee)}/${formatCurrency(fee.step_amount)}`
-                          : fee.fee_type === 'percentage' ? `${fee.fee_value}%` : formatCurrency(fee.fee_value)}
+                          : fee.calculation_method === 'per_amount' ? <span className="text-gray-400 italic text-xs">By tier</span> : fee.fee_type === 'percentage' ? `${fee.fee_value}%` : formatCurrency(fee.fee_value)}
                       </td>
                       <td className="px-4 py-3 text-sm text-right text-gray-500">
                         {fee.min_fee > 0 ? (fee.fee_type === 'percentage' ? `${fee.min_fee}%` : formatCurrency(fee.min_fee)) : '-'}
@@ -357,8 +360,15 @@ export default function TransactionFees() {
               )}
 
               {tiers.length > 0 && (
-                <div className="bg-blue-50 border border-blue-200 rounded px-3 py-1.5 text-xs text-blue-700">
-                  Fee type and value are determined by tiered rules below.
+                <div className="bg-blue-50 border border-blue-200 rounded px-3 py-2 text-xs text-blue-700 space-y-1.5">
+                  <p>Fee type and value are determined by tiered rules below.</p>
+                  <label className="flex items-center gap-2">
+                    <span className="font-medium">Calculation:</span>
+                    <select value={form.calculationMethod} onChange={e => setForm({ ...form, calculationMethod: e.target.value })} className="input py-1 text-xs w-auto">
+                      <option value="bracket">Single bracket (matched tier only)</option>
+                      <option value="per_amount">Per amount (each full ₱1,000 + remainder tier)</option>
+                    </select>
+                  </label>
                 </div>
               )}
 
