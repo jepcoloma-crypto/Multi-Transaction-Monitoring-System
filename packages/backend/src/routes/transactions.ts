@@ -311,7 +311,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     await client.query('BEGIN');
 
     const {
-      accountId, transactionTypeId, transactionCategoryId, feeRuleId, amount, fee,
+      accountId, transactionTypeId, transactionCategoryId, feeRuleId, amount, fee, manualFee,
       referenceNumber, externalReference, transactionDate, description,
       customerName, customerContact, status, feeAddedToBalance, additionalCharges, notes, customerId,
     } = req.body;
@@ -345,7 +345,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
        AND (transaction_category_id IS NULL OR transaction_category_id = $2)`,
       [resolvedTypeId, resolvedCategoryId]
     );
-    if (feeConfigs.length > 0) {
+    if (feeConfigs.length > 0 && !manualFee) {
       const feeTiers = await query<any>(
         'SELECT * FROM transaction_fee_tiers WHERE fee_id = ANY($1::uuid[]) ORDER BY min_amount',
         [feeConfigs.map((f) => f.id)]

@@ -269,7 +269,9 @@ export default function Transactions() {
         .map(c => ({ description: c.description.trim(), amount: Math.round(parseFloat(c.amount) * 100) / 100 }));
       await api.post('/transactions', {
         accountId: formData.accountId,
-        feeRuleId: formData.feeRuleId || undefined,
+        transactionTypeId: feeMode === 'manual' && selectedRule ? selectedRule.transaction_type_id : undefined,
+        feeRuleId: feeMode === 'auto' ? (formData.feeRuleId || undefined) : undefined,
+        manualFee: feeMode === 'manual',
         amount: parseFloat(formData.amount),
         fee: parseFloat(formData.fee),
         referenceNumber: formData.referenceNumber || undefined,
