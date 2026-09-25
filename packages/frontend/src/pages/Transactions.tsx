@@ -4,6 +4,27 @@ import { formatCurrency } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2 } from 'lucide-react';
 import AccountSelect from '../components/AccountSelect';
 
+const DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1, 0.25, 0.1, 0.05, 0.01];
+
+const breakdownCash = (value: number): { denom: number; count: number }[] => {
+  let cents = Math.round(value * 100);
+  const parts: { denom: number; count: number }[] = [];
+  for (const denom of DENOMINATIONS) {
+    const denomCents = Math.round(denom * 100);
+    const count = Math.floor(cents / denomCents);
+    if (count > 0) {
+      parts.push({ denom, count });
+      cents -= count * denomCents;
+    }
+  }
+  return parts;
+};
+
+const formatBreakdown = (value: number): string =>
+  breakdownCash(value)
+    .map(p => `${p.count} × ${p.denom % 1 === 0 ? `₱${p.denom.toLocaleString('en-PH')}` : formatCurrency(p.denom)}`)
+    .join(' + ');
+
 interface Transaction {
   id: string;
   transaction_number: number;
@@ -40,6 +61,7 @@ interface FeeRule {
   category_name: string | null; category_code: string | null;
   transaction_type_id: string; transaction_category_id: string | null;
   base_amount: number; step_amount: number; step_fee: number;
+  calculation_method: string;
   tiers?: { id: string; min_amount: number; max_amount: number | null; fee_value: number; fee_type: string }[];
 }
 interface Account { id: string; name: string; provider_name: string; status: string; current_balance: number; masked_account_number: string; }
@@ -154,14 +176,38 @@ export default function Transactions() {
     let calcFee: number | null = null;
     if (rule.tiers && rule.tiers.length > 0) {
       const sorted = [...rule.tiers].sort((a, b) => a.min_amount - b.min_amount);
-      let matchedTier = sorted.find(t => amount >= t.min_amount && (t.max_amount === null || amount <= t.max_amount));
-      if (!matchedTier && sorted.length > 0 && amount >= sorted[0].min_amount) {
-        matchedTier = sorted.find(t => amount < t.min_amount) || sorted.filter(t => amount >= t.min_amount).pop();
-      }
-      if (matchedTier) {
-        calcFee = matchedTier.fee_type === 'percentage'
-          ? (amount * matchedTier.fee_value / 100)
-          : matchedTier.fee_value;
+      const matchTier = (amt: number) => {
+        let t = sorted.find(x => amt >= x.min_amount && (x.max_amount === null || amt <= x.max_amount));
+        if (!t && amt >= sorted[0].min_amount) {
+          t = sorted.find(x => amt < x.min_amount) || sorted.filter(x => amt >= x.min_amount).pop();
+        }
+        return t;
+      };
+      const tierFeeOf = (t: { fee_type: string; fee_value: number }, amt: number) =>
+        t.fee_type === 'percentage' ? (amt * t.fee_value) / 100 : t.fee_value;
+
+      if (rule.calculation_method === 'per_amount') {
+        const bounded = sorted.filter(t => t.max_amount !== null);
+        if (bounded.length > 0) {
+          const chunkTier = [...bounded].sort((a, b) => (b.max_amount as number) - (a.max_amount as number))[0];
+          const chunk = chunkTier.max_amount as number;
+          const full = Math.floor(amount / chunk);
+          const remainder = amount - full * chunk;
+          if (full > 0) {
+            calcFee = full * tierFeeOf(chunkTier, chunk);
+            const remTier = matchTier(remainder);
+            if (remTier) calcFee += tierFeeOf(remTier, remainder);
+          } else {
+            const remTier = matchTier(remainder);
+            if (remTier) calcFee = tierFeeOf(remTier, remainder);
+          }
+        } else {
+          const t = matchTier(amount);
+          if (t) calcFee = tierFeeOf(t, amount);
+        }
+      } else {
+        const matchedTier = matchTier(amount);
+        if (matchedTier) calcFee = tierFeeOf(matchedTier, amount);
       }
     }
     if (calcFee === null) {
@@ -582,13 +628,13 @@ export default function Transactions() {
                   <option value="">Select fee rule</option>
                   {feeRules.map(r => (
                     <option key={r.id} value={r.id}>
-                      [{r.direction.toUpperCase()}] {r.type_name}{r.category_name ? ` / ${r.category_name}` : ''} &mdash; {r.name} ({r.fee_type === 'percentage' ? `${r.fee_value}%` : formatCurrency(r.fee_value)})
+                      [{r.direction.toUpperCase()}] {r.type_name}{r.category_name ? ` / ${r.category_name}` : ''} &mdash; {r.name} ({r.calculation_method === 'per_amount' ? 'per amount' : r.fee_type === 'percentage' ? `${r.fee_value}%` : formatCurrency(r.fee_value)})
                     </option>
                   ))}
                 </select>
                 {selectedRule && (
                   <p className="text-xs text-gray-500 mt-1">
-                    Type: {selectedRule.type_name}{selectedRule.category_name ? ` > ${selectedRule.category_name}` : ''} &bull; {selectedRule.tiers && selectedRule.tiers.length > 0 ? `${selectedRule.tiers.length} tier(s)` : selectedRule.fee_type === 'flat_per_step' ? `${formatCurrency(selectedRule.fee_value)} + ${formatCurrency(selectedRule.step_fee)}/${formatCurrency(selectedRule.step_amount)}` : `Fee: ${selectedRule.fee_type === 'percentage' ? `${selectedRule.fee_value}%` : formatCurrency(selectedRule.fee_value)}`}
+                    Type: {selectedRule.type_name}{selectedRule.category_name ? ` > ${selectedRule.category_name}` : ''} &bull; {selectedRule.tiers && selectedRule.tiers.length > 0 ? `${selectedRule.tiers.length} tier(s)${selectedRule.calculation_method === 'per_amount' ? ' · per amount' : ''}` : selectedRule.fee_type === 'flat_per_step' ? `${formatCurrency(selectedRule.fee_value)} + ${formatCurrency(selectedRule.step_fee)}/${formatCurrency(selectedRule.step_amount)}` : `Fee: ${selectedRule.fee_type === 'percentage' ? `${selectedRule.fee_value}%` : formatCurrency(selectedRule.fee_value)}`}
                   </p>
                 )}
               </div>
@@ -596,6 +642,14 @@ export default function Transactions() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
                   <input type="number" step="0.01" min="0" required value={formData.amount} onChange={(e) => handleAmountChange(e.target.value)} className="input" />
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {[100, 500, 1000, 5000, 10000].map(v => (
+                      <button key={v} type="button" onClick={() => handleAmountChange(String(v))}
+                        className="px-2 py-0.5 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-100">
+                        {formatCurrency(v).replace(/\.00$/, '')}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Fee</label>
@@ -613,12 +667,18 @@ export default function Transactions() {
               {selectedRule && parseFloat(formData.amount) > 0 && (
                 <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
                   <p>Amount: <span className="font-medium">{formatCurrency(parseFloat(formData.amount))}</span></p>
+                  {inputAmount >= 0.01 && (
+                    <p className="text-xs text-gray-500">Cash: {formatBreakdown(inputAmount)}</p>
+                  )}
                   {createCharges.some(c => parseFloat(c.amount) > 0) && (
                     <p>Additional Charges: <span className="font-medium text-orange-600">{formatCurrency(createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0))}</span></p>
                   )}
                   <p>Fee (company income): <span className="font-medium text-yellow-600">{formatCurrency(
                     parseFloat(formData.fee) + createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0)
                   )}</span></p>
+                  {feeAmount >= 1 && (
+                    <p className="text-xs text-gray-500">Fee cash: {formatBreakdown(feeAmount)}</p>
+                  )}
                   <p className="border-t pt-1">
                     <span className="font-semibold">Account movement: </span>
                     <span className={`font-bold ${selectedDirection === 'out' ? '' : 'text-green-600'}`}>
@@ -630,6 +690,13 @@ export default function Transactions() {
                         : '(credited to account)'}
                     </span>
                   </p>
+                  {formData.feeAddedToBalance && selectedDirection === 'in' && (
+                    <p className="border-t pt-1">
+                      <span className="font-semibold">Customer pays: </span>
+                      <span className="font-bold text-green-700">{formatCurrency(inputAmount + chargesTotal + feeAmount)}</span>
+                      <span className="text-xs text-gray-500 ml-1">({formatBreakdown(inputAmount + chargesTotal + feeAmount)})</span>
+                    </p>
+                  )}
                 </div>
               )}
               {selectedAccount && totalOutflow > 0 && (
