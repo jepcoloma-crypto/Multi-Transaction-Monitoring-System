@@ -21,7 +21,7 @@ router.get('/', authorize('users.read', 'administrator'), async (req: Request, r
     const params: any[] = [];
 
     if (search) {
-      whereClause = `WHERE u.email ILIKE $1 OR u.first_name ILIKE $1 OR u.last_name ILIKE $1`;
+      whereClause = `WHERE u.email ILIKE $1 OR u.username ILIKE $1 OR u.first_name ILIKE $1 OR u.last_name ILIKE $1`;
       params.push(`%${search}%`);
     }
 
@@ -31,7 +31,7 @@ router.get('/', authorize('users.read', 'administrator'), async (req: Request, r
     );
 
     const users = await query(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.is_active, u.last_login_at, u.created_at, u.updated_at,
+      `SELECT u.id, u.email, u.username, u.first_name, u.last_name, u.is_active, u.last_login_at, u.created_at, u.updated_at,
               COALESCE(ARRAY_AGG(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') as roles
        FROM users u
        LEFT JOIN user_roles ur ON u.id = ur.user_id
@@ -62,7 +62,7 @@ router.get('/', authorize('users.read', 'administrator'), async (req: Request, r
 router.get('/:id', authorize('users.read', 'administrator'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const user = await queryOne(
-      `SELECT u.id, u.email, u.first_name, u.last_name, u.is_active, u.last_login_at, u.created_at, u.updated_at,
+      `SELECT u.id, u.email, u.username, u.first_name, u.last_name, u.is_active, u.last_login_at, u.created_at, u.updated_at,
               COALESCE(ARRAY_AGG(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') as roles
        FROM users u
        LEFT JOIN user_roles ur ON u.id = ur.user_id

@@ -34,7 +34,7 @@ export default function Users() {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [formData, setFormData] = useState({ email: '', username: '', password: '', firstName: '', lastName: '', roleIds: [] as string[] });
+  const [formData, setFormData] = useState({ email: '', username: '', password: '', currentPassword: '', firstName: '', lastName: '', roleIds: [] as string[] });
   const [error, setError] = useState('');
 
   const fetchUsers = async (page = 1) => {
@@ -70,7 +70,7 @@ export default function Users() {
 
   const openCreate = () => {
     setEditingUser(null);
-    setFormData({ email: '', username: '', password: '', firstName: '', lastName: '', roleIds: [] });
+    setFormData({ email: '', username: '', password: '', currentPassword: '', firstName: '', lastName: '', roleIds: [] });
     setShowModal(true);
     setError('');
   };
@@ -81,9 +81,10 @@ export default function Users() {
       email: user.email,
       username: user.username,
       password: '',
+      currentPassword: '',
       firstName: user.first_name,
       lastName: user.last_name,
-      roleIds: [],
+      roleIds: roles.filter((r) => user.roles?.includes(r.name)).map((r) => r.id),
     });
     setShowModal(true);
     setError('');
@@ -99,6 +100,12 @@ export default function Users() {
           lastName: formData.lastName,
           roleIds: formData.roleIds,
         });
+        if (formData.password) {
+          await api.post(`/users/${editingUser.id}/change-password`, {
+            newPassword: formData.password,
+            ...(formData.currentPassword ? { currentPassword: formData.currentPassword } : {}),
+          });
+        }
       } else {
         await api.post('/users', {
           email: formData.email,
@@ -177,9 +184,9 @@ export default function Users() {
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={6} className="text-center py-8 text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={7} className="text-center py-8 text-gray-500">Loading...</td></tr>
             ) : users.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-8 text-gray-500">No users found</td></tr>
+              <tr><td colSpan={7} className="text-center py-8 text-gray-500">No users found</td></tr>
             ) : (
               users.map((user) => (
                 <tr key={user.id} className="hover:bg-gray-50">
@@ -261,6 +268,18 @@ export default function Users() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
                   <input type="password" required minLength={8} value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} className="input" />
+                </div>
+              )}
+              {editingUser && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">New Password</label>
+                  <input type="password" minLength={8} value={formData.password} onChange={(e) => setFormData({ ...formData, password: e.target.value })} className="input" placeholder="Leave blank to keep current password" />
+                </div>
+              )}
+              {editingUser && editingUser.id === currentUser?.id && formData.password && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Current Password</label>
+                  <input type="password" required value={formData.currentPassword} onChange={(e) => setFormData({ ...formData, currentPassword: e.target.value })} className="input" />
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4">
