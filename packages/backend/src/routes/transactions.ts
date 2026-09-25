@@ -379,7 +379,11 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     );
     if (!txType) throw createError(404, 'Transaction type not found');
 
-    const netAmount = amountNum;
+    const deductFee = feeAddedToBalance === false && feeNum > 0;
+    if (deductFee && amountNum < feeNum) {
+      throw createError(400, 'Fee cannot exceed the transaction amount when deducted from transaction amount');
+    }
+    const netAmount = deductFee ? Math.round((amountNum - feeNum) * 100) / 100 : amountNum;
     const totalCharges = (additionalCharges || []).reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
     const totalAmount = netAmount + totalCharges;
     const entryType = txType.direction === 'in' || txType.direction === 'adjustment' ? 'credit' : 'debit';
@@ -574,7 +578,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
     const { reason } = req.body;
 
     const originalCharges = original.additional_charges || [];
-    const totalOriginalAmount = parseFloat(original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+    const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
 
     await client.query(
       `UPDATE transactions SET status = 'reversed', updated_at = NOW() WHERE id = $1`,
