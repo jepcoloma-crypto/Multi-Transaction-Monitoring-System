@@ -8,6 +8,7 @@ export interface JwtPayload {
   email: string;
   username: string;
   roles: string[];
+  permissions?: string[];
 }
 
 export interface PaginationQuery {

@@ -139,6 +139,7 @@ export default function FundTransfers() {
                   <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Fee Handling</th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
                   <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Created By</th>
                   <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
@@ -159,6 +160,7 @@ export default function FundTransfers() {
                     </td>
                     <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{new Date(t.transfer_date).toLocaleDateString()}</td>
                     <td className="px-6 py-3.5 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${statusColor(t.status)}`}>{t.status}</span></td>
+                    <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{t.created_by_email || '-'}</td>
                     <td className="px-6 py-3.5 text-right">
                       <div className="flex gap-1 justify-end">
                         <button onClick={() => viewDetail(t)} className="p-1 hover:bg-gray-100 rounded"><Eye className="w-4 h-4" /></button>

@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
+import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -22,6 +23,12 @@ router.get('/', authorize('transfers.read'), async (req: Request, res: Response,
 
     if (status) { conditions.push(`t.status = $${pi++}`); params.push(status); }
     if (accountId) { conditions.push(`(t.source_account_id = $${pi} OR t.destination_account_id = $${pi})`); params.push(accountId); pi++; }
+    const scope = ownerClause(req, 't', 'transfers.read_all', pi);
+    if (scope.clause) {
+      conditions.push(scope.clause);
+      params.push(...scope.params);
+      pi = scope.paramIndex;
+    }
 
     const wc = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -53,6 +60,12 @@ router.get('/summary', authorize('transfers.read'), async (req: Request, res: Re
     let pi = 1;
     if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
     if (endDate) { conds.push(`t.transfer_date <= $${pi++}`); params.push(endDate); }
+    const scope = ownerClause(req, 't', 'transfers.read_all', pi);
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+      pi = scope.paramIndex;
+    }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
     const summary = await queryOne(
@@ -74,6 +87,7 @@ router.get('/:id', authorize('transfers.read'), async (req: Request, res: Respon
        LEFT JOIN users u1 ON t.created_by = u1.id LEFT JOIN users u2 ON t.approved_by = u2.id WHERE t.id = $1`, [req.params.id]
     );
     if (!transfer) throw createError(404, 'Transfer not found');
+    assertOwner(req, transfer, 'transfers.read_all', 'Transfer not found');
 
     const entries = await query(`SELECT * FROM transfer_entries WHERE transfer_id = $1 ORDER BY created_at`, [req.params.id]);
     res.json({ success: true, data: { ...transfer, entries } });
@@ -97,12 +111,14 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
 
     const feeDeducted = feeDeductedFromAmount === true;
 
-    const srcAcct = await client.query('SELECT id, name, current_balance, status FROM accounts WHERE id = $1 FOR UPDATE', [sourceAccountId]);
+    const srcAcct = await client.query('SELECT id, name, current_balance, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [sourceAccountId]);
     if (!srcAcct.rows[0]) throw createError(404, 'Source account not found');
+    assertOwner(req, srcAcct.rows[0], 'accounts.write_all', 'Source account not found');
     if (srcAcct.rows[0].status !== 'active') throw createError(400, 'Source account is not active');
 
-    const dstAcct = await client.query('SELECT id, name, status FROM accounts WHERE id = $1 FOR UPDATE', [destinationAccountId]);
+    const dstAcct = await client.query('SELECT id, name, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [destinationAccountId]);
     if (!dstAcct.rows[0]) throw createError(404, 'Destination account not found');
+    assertOwner(req, dstAcct.rows[0], 'accounts.write_all', 'Destination account not found');
     if (dstAcct.rows[0].status !== 'active') throw createError(400, 'Destination account is not active');
 
     let totalDeduction: number;
@@ -175,6 +191,7 @@ router.post('/:id/approve', authorize('transfers.approve'), async (req: Request,
   try {
     const transfer = await queryOne('SELECT * FROM transfers WHERE id = $1', [req.params.id]);
     if (!transfer) throw createError(404, 'Transfer not found');
+    assertOwner(req, transfer, 'transfers.write_all', 'Transfer not found');
     if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be approved');
 
     const updated = await queryOne(
@@ -195,6 +212,7 @@ router.delete('/:id', authorize('transfers.write'), async (req: Request, res: Re
 
     const transfer = (await client.query('SELECT * FROM transfers WHERE id = $1', [req.params.id])).rows[0];
     if (!transfer) throw createError(404, 'Transfer not found');
+    assertOwner(req, transfer, 'transfers.write_all', 'Transfer not found');
     if (transfer.status === 'reversed') throw createError(400, 'Reversed transfers cannot be deleted — its reversal is already recorded');
 
     const movesFunds = !['draft', 'pending', 'failed'].includes(transfer.status);

@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
+import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -40,6 +41,12 @@ router.get('/', authorize('accounts.read'), async (req: Request, res: Response, 
       conditions.push(`a.account_type_id = $${paramIndex++}`);
       params.push(typeId);
     }
+    const scope = ownerClause(req, 'a', 'accounts.read_all', paramIndex);
+    if (scope.clause) {
+      conditions.push(scope.clause);
+      params.push(...scope.params);
+      paramIndex = scope.paramIndex;
+    }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
@@ -50,10 +57,11 @@ router.get('/', authorize('accounts.read'), async (req: Request, res: Response, 
 
     const accounts = await query(
       `SELECT a.*, p.name as provider_name, p.code as provider_code, p.type as provider_type,
-              at.name as type_name, at.code as type_code
+              at.name as type_name, at.code as type_code, u.email as created_by_email
        FROM accounts a
        JOIN providers p ON a.provider_id = p.id
        JOIN account_types at ON a.account_type_id = at.id
+       LEFT JOIN users u ON a.created_by = u.id
        ${whereClause}
        ORDER BY a.name
        LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
@@ -76,7 +84,7 @@ router.get('/', authorize('accounts.read'), async (req: Request, res: Response, 
   }
 });
 
-router.get('/summary', authorize('accounts.read'), async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/summary', authorize('accounts.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const summary = await queryOne<{
       total_accounts: string;
@@ -89,7 +97,8 @@ router.get('/summary', authorize('accounts.read'), async (_req: Request, res: Re
         COALESCE(SUM(current_balance), 0) as total_balance,
         COUNT(*) FILTER (WHERE status = 'active') as active_accounts,
         COUNT(*) FILTER (WHERE current_balance <= minimum_balance AND status = 'active') as low_balance_count
-       FROM accounts`
+       FROM accounts${canSeeAll(req, 'accounts.read_all') ? '' : ` WHERE created_by = $1`}`,
+      canSeeAll(req, 'accounts.read_all') ? [] : [req.user!.userId]
     );
 
     const byProvider = await query(
@@ -97,10 +106,11 @@ router.get('/summary', authorize('accounts.read'), async (_req: Request, res: Re
               COUNT(a.id) as account_count,
               COALESCE(SUM(a.current_balance), 0) as total_balance
        FROM providers p
-       LEFT JOIN accounts a ON p.id = a.provider_id AND a.status = 'active'
+       LEFT JOIN accounts a ON p.id = a.provider_id AND a.status = 'active'${canSeeAll(req, 'accounts.read_all') ? '' : ' AND a.created_by = $1'}
        GROUP BY p.id, p.name, p.code
        HAVING COUNT(a.id) > 0
-       ORDER BY total_balance DESC`
+       ORDER BY total_balance DESC`,
+      canSeeAll(req, 'accounts.read_all') ? [] : [req.user!.userId]
     );
 
     const byType = await query(
@@ -108,10 +118,11 @@ router.get('/summary', authorize('accounts.read'), async (_req: Request, res: Re
               COUNT(a.id) as account_count,
               COALESCE(SUM(a.current_balance), 0) as total_balance
        FROM account_types at
-       LEFT JOIN accounts a ON at.id = a.account_type_id AND a.status = 'active'
+       LEFT JOIN accounts a ON at.id = a.account_type_id AND a.status = 'active'${canSeeAll(req, 'accounts.read_all') ? '' : ' AND a.created_by = $1'}
        GROUP BY at.id, at.name, at.code
        HAVING COUNT(a.id) > 0
-       ORDER BY total_balance DESC`
+       ORDER BY total_balance DESC`,
+      canSeeAll(req, 'accounts.read_all') ? [] : [req.user!.userId]
     );
 
     res.json({
@@ -149,6 +160,7 @@ router.get('/:id', authorize('accounts.read'), async (req: Request, res: Respons
     if (!account) {
       throw createError(404, 'Account not found');
     }
+    assertOwner(req, account, 'accounts.read_all', 'Account not found');
 
     res.json({ success: true, data: account });
   } catch (error) {
@@ -227,6 +239,7 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
     if (!existing) {
       throw createError(404, 'Account not found');
     }
+    assertOwner(req, existing, 'accounts.write_all', 'Account not found');
 
     if (existing.status === 'closed') {
       throw createError(400, 'Cannot modify a closed account');
@@ -282,6 +295,12 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
 
 router.get('/:id/balance-history', authorize('accounts.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const account = await queryOne<{ created_by: string | null }>(
+      'SELECT created_by FROM accounts WHERE id = $1',
+      [req.params.id]
+    );
+    assertOwner(req, account, 'accounts.read_all', 'Account not found');
+
     const history = await query(
       `SELECT abh.*, u.email as recorded_by_email
        FROM account_balance_history abh
@@ -300,10 +319,11 @@ router.get('/:id/balance-history', authorize('accounts.read'), async (req: Reque
 
 router.delete('/:id', authorize('accounts.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const account = await queryOne<{ id: string; name: string; status: string }>(
-      'SELECT id, name, status FROM accounts WHERE id = $1', [req.params.id]
+    const account = await queryOne<{ id: string; name: string; status: string; created_by: string | null }>(
+      'SELECT id, name, status, created_by FROM accounts WHERE id = $1', [req.params.id]
     );
     if (!account) throw createError(404, 'Account not found');
+    assertOwner(req, account, 'accounts.write_all', 'Account not found');
 
     const usage = await queryOne<{ count: string }>(
       `SELECT (

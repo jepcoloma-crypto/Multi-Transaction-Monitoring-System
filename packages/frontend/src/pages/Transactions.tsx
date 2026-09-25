@@ -361,14 +361,15 @@ export default function Transactions() {
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee</th>
               <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee Handling</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Created By</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={10} className="text-center py-8 text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={11} className="text-center py-8 text-gray-500">Loading...</td></tr>
             ) : transactions.length === 0 ? (
-              <tr><td colSpan={10} className="text-center py-8 text-gray-500">No transactions found</td></tr>
+              <tr><td colSpan={11} className="text-center py-8 text-gray-500">No transactions found</td></tr>
             ) : (
               transactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-gray-50">
@@ -402,6 +403,7 @@ export default function Transactions() {
                   <td className="px-4 py-3">
                     <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' ? 'red' : 'yellow'}`}>{tx.status}</span>
                   </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_email || <span className="text-gray-400">-</span>}</td>
                   <td className="px-4 py-3 text-right">
                     <button onClick={() => setShowDetail(tx)} className="p-1 text-gray-400 hover:text-primary-600"><Eye className="w-4 h-4" /></button>
                     <button onClick={() => handleDelete(tx.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>

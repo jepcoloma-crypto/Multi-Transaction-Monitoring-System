@@ -46,11 +46,21 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
 
     const roleNames = roles.map(r => r.name);
 
+    const permissions = await query<{ name: string }>(
+      `SELECT DISTINCT p.name FROM permissions p
+       JOIN role_permissions rp ON rp.permission_id = p.id
+       JOIN user_roles ur ON ur.role_id = rp.role_id
+       WHERE ur.user_id = $1`,
+      [user.id]
+    );
+    const permissionNames = permissions.map(p => p.name);
+
     const tokenPayload: JwtPayload = {
       userId: user.id,
       email: user.email,
       username: user.username,
       roles: roleNames,
+      permissions: permissionNames,
     };
 
     const accessToken = jwt.sign(tokenPayload, config.jwt.secret, {
@@ -132,8 +142,28 @@ router.post('/refresh', async (req: Request, res: Response, next: NextFunction) 
 
     const decoded = jwt.verify(refreshToken, config.jwt.secret) as JwtPayload;
 
+    const roles = await query<{ name: string }>(
+      `SELECT r.name FROM roles r
+       JOIN user_roles ur ON r.id = ur.role_id
+       WHERE ur.user_id = $1`,
+      [decoded.userId]
+    );
+    const permissions = await query<{ name: string }>(
+      `SELECT DISTINCT p.name FROM permissions p
+       JOIN role_permissions rp ON rp.permission_id = p.id
+       JOIN user_roles ur ON ur.role_id = rp.role_id
+       WHERE ur.user_id = $1`,
+      [decoded.userId]
+    );
+
     const newAccessToken = jwt.sign(
-      { userId: decoded.userId, email: decoded.email, roles: decoded.roles },
+      {
+        userId: decoded.userId,
+        email: decoded.email,
+        username: decoded.username,
+        roles: roles.map(r => r.name),
+        permissions: permissions.map(p => p.name),
+      },
       config.jwt.secret,
       { expiresIn: config.jwt.expiresIn as any }
     );

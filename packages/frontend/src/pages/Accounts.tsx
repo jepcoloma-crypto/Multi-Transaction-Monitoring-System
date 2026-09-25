@@ -23,6 +23,7 @@ interface Account {
   status: string;
   notes: string | null;
   created_at: string;
+  created_by_email: string | null;
 }
 
 interface Provider { id: string; name: string; code: string; }
@@ -263,16 +264,17 @@ export default function Accounts() {
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Balance</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Min Balance</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Created By</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={7} className="text-center py-8 text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={8} className="text-center py-8 text-gray-500">Loading...</td></tr>
             ) : error ? (
-              <tr><td colSpan={7} className="text-center py-8 text-red-500">{error}</td></tr>
+              <tr><td colSpan={8} className="text-center py-8 text-red-500">{error}</td></tr>
             ) : accounts.length === 0 ? (
-              <tr><td colSpan={7} className="text-center py-8 text-gray-500">
+              <tr><td colSpan={8} className="text-center py-8 text-gray-500">
                 <Wallet className="w-12 h-12 mx-auto mb-3 opacity-50" />
                 No accounts found
               </td></tr>
@@ -300,6 +302,7 @@ export default function Accounts() {
                       {account.status}
                     </span>
                   </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{account.created_by_email || '-'}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
                       <button onClick={() => { setAddFundsAccount(account); setShowAddFunds(true); }} className="p-1 text-gray-400 hover:text-green-600" title="Add Funds">

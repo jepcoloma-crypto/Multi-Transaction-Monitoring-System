@@ -203,6 +203,7 @@ export default function Loading() {
                       <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Profit</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
                       <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Created By</th>
                       <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
                     </tr>
                   </thead>
@@ -218,6 +219,7 @@ export default function Loading() {
                         <td className="px-4 py-3 text-sm text-right font-medium">{formatCurrency(t.profit)}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{t.account_name}</td>
                         <td className="px-4 py-3 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{t.created_by_email || '-'}</td>
                         <td className="px-4 py-3 text-right">
                           <button onClick={() => handleDeleteTx(t.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                         </td>

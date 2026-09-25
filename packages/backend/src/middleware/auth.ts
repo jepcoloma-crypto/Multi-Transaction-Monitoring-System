@@ -44,7 +44,9 @@ export function authorize(...requiredPermissions: string[]) {
     }
 
     const hasPermission = requiredPermissions.every(
-      p => req.user!.roles.includes('administrator') || req.user!.roles.includes(p)
+      p => req.user!.roles.includes('administrator')
+        || req.user!.roles.includes(p)
+        || (req.user!.permissions ?? []).includes(p)
     );
 
     if (!hasPermission) {

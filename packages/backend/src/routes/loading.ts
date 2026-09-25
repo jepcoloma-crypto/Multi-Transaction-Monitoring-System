@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
+import { ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -77,6 +78,12 @@ router.get('/', authorize('loading.read'), async (req: Request, res: Response, n
     let pi = 1;
     if (accountId) { conds.push(`lt.account_id = $${pi++}`); params.push(accountId); }
     if (productId) { conds.push(`lt.product_id = $${pi++}`); params.push(productId); }
+    const scope = ownerClause(req, 'lt', 'loading.read_all', pi);
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+      pi = scope.paramIndex;
+    }
     const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
 
     const countResult = await queryOne<{ count: string }>(`SELECT COUNT(*) as count FROM loading_transactions lt ${wc}`, params);
@@ -102,6 +109,12 @@ router.get('/summary', authorize('loading.read'), async (req: Request, res: Resp
     let pi = 1;
     if (startDate) { conds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
     if (endDate) { conds.push(`lt.created_at <= $${pi++}`); params.push(endDate); }
+    const scope = ownerClause(req, 'lt', 'loading.read_all', pi);
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+      pi = scope.paramIndex;
+    }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
     const summary = await queryOne(
@@ -136,8 +149,9 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     const product = await client.query('SELECT * FROM loading_products WHERE id = $1 AND is_active = true', [productId]);
     if (!product.rows[0]) throw createError(404, 'Product not found');
 
-    const acct = await client.query('SELECT id, name, current_balance, status FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
+    const acct = await client.query('SELECT id, name, current_balance, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
     if (!acct.rows[0]) throw createError(404, 'Account not found');
+    assertOwner(req, acct.rows[0], 'accounts.write_all', 'Account not found');
     if (acct.rows[0].status !== 'active') throw createError(400, 'Account is not active');
 
     const qty = parseInt(quantity || '1');
@@ -212,6 +226,7 @@ router.delete('/:id', authorize('loading.write'), async (req: Request, res: Resp
 
     const loadingTx = (await client.query('SELECT * FROM loading_transactions WHERE id = $1', [req.params.id])).rows[0];
     if (!loadingTx) throw createError(404, 'Loading transaction not found');
+    assertOwner(req, loadingTx, 'loading.write_all', 'Loading transaction not found');
     if (loadingTx.status === 'reversed') throw createError(400, 'Reversed loading transactions cannot be deleted');
 
     const entryAmount = parseFloat(loadingTx.total_cost) + parseFloat(loadingTx.provider_convenience_fee || '0');

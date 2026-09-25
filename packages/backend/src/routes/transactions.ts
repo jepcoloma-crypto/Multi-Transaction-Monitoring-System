@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
+import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction } from '../services/balance';
@@ -37,6 +38,12 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
       conditions.push(`(t.reference_number ILIKE $${paramIndex} OR t.description ILIKE $${paramIndex} OR t.customer_name ILIKE $${paramIndex} OR CAST(t.transaction_number AS TEXT) ILIKE $${paramIndex})`);
       params.push(`%${search}%`);
       paramIndex++;
+    }
+    const scope = ownerClause(req, 't', 'transactions.read_all', paramIndex);
+    if (scope.clause) {
+      conditions.push(scope.clause);
+      params.push(...scope.params);
+      paramIndex = scope.paramIndex;
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -90,6 +97,12 @@ router.get('/summary', authorize('transactions.read'), async (req: Request, res:
     if (startDate) { conditions.push(`t.transaction_date >= $${paramIndex++}`); params.push(startDate); }
     if (endDate) { conditions.push(`t.transaction_date <= $${paramIndex++}`); params.push(endDate); }
     if (accountId) { conditions.push(`t.account_id = $${paramIndex++}`); params.push(accountId); }
+    const scope = ownerClause(req, 't', 'transactions.read_all', paramIndex);
+    if (scope.clause) {
+      conditions.push(scope.clause);
+      params.push(...scope.params);
+      paramIndex = scope.paramIndex;
+    }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
@@ -136,6 +149,12 @@ router.get('/summary', authorize('transactions.read'), async (req: Request, res:
 router.get('/today', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const today = new Date().toISOString().slice(0, 10);
+    const todayParams: any[] = [today];
+    let todayWhere = `WHERE DATE(t.transaction_date) = $1`;
+    if (!canSeeAll(req, 'transactions.read_all')) {
+      todayWhere += ` AND t.created_by = $2`;
+      todayParams.push(req.user!.userId);
+    }
     const summary = await queryOne(
       `SELECT
         COUNT(*) as transaction_count,
@@ -147,8 +166,8 @@ router.get('/today', authorize('transactions.read'), async (req: Request, res: R
         COUNT(CASE WHEN t.status = 'reversed' THEN 1 END) as reversed_count
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
-       WHERE DATE(t.transaction_date) = $1`,
-      [today]
+       ${todayWhere}`,
+      todayParams
     );
 
     res.json({
@@ -175,6 +194,18 @@ router.get('/by-customer-name', authorize('transactions.read'), async (req: Requ
     const name = req.query.name as string;
     if (!name) throw createError(400, 'Customer name is required');
 
+    const seeAll = canSeeAll(req, 'transactions.read_all');
+    const nameParams: any[] = [`%${name}%`];
+    const nameSummaryParams: any[] = [`%${name}%`];
+    let listWhere = `WHERE t.customer_name ILIKE $1`;
+    let summaryWhere = `WHERE t.customer_name ILIKE $1 AND t.status = 'completed'`;
+    if (!seeAll) {
+      listWhere += ` AND t.created_by = $2`;
+      summaryWhere += ` AND t.created_by = $2`;
+      nameParams.push(req.user!.userId);
+      nameSummaryParams.push(req.user!.userId);
+    }
+
     const transactions = await query(
       `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
               t.reference_number, t.description, t.additional_charges, t.customer_name, t.customer_id,
@@ -182,9 +213,9 @@ router.get('/by-customer-name', authorize('transactions.read'), async (req: Requ
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
-       WHERE t.customer_name ILIKE $1
+       ${listWhere}
        ORDER BY t.transaction_date DESC`,
-      [`%${name}%`]
+      nameParams
     );
 
     const summary = await queryOne(
@@ -195,8 +226,8 @@ router.get('/by-customer-name', authorize('transactions.read'), async (req: Requ
         COALESCE(SUM(t.fee), 0) as total_fees
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
-       WHERE t.customer_name ILIKE $1 AND t.status = 'completed'`,
-      [`%${name}%`]
+       ${summaryWhere}`,
+      nameSummaryParams
     );
 
     res.json({
@@ -236,6 +267,7 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
     if (!transaction) {
       throw createError(404, 'Transaction not found');
     }
+    assertOwner(req, transaction, 'transactions.read_all', 'Transaction not found');
 
     const ledgerEntries = await query(
       `SELECT * FROM ledger_entries WHERE transaction_id = $1 ORDER BY entry_date`,
@@ -303,8 +335,9 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       }
     }
 
-    const account = await queryOne('SELECT id, name, status FROM accounts WHERE id = $1', [accountId]);
+    const account = await queryOne('SELECT id, name, status, created_by FROM accounts WHERE id = $1', [accountId]);
     if (!account) throw createError(404, 'Account not found');
+    assertOwner(req, account, 'accounts.write_all', 'Account not found');
     if (account.status === 'closed') throw createError(400, 'Cannot add transactions to a closed account');
 
     const txType = await queryOne<{ id: string; direction: string }>(
@@ -375,8 +408,8 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
     if (!Array.isArray(additionalCharges)) {
       throw createError(400, 'additionalCharges must be an array');
     }
-    const transaction = await queryOne('SELECT id FROM transactions WHERE id = $1', [req.params.id]);
-    if (!transaction) throw createError(404, 'Transaction not found');
+    const transaction = await queryOne('SELECT id, created_by FROM transactions WHERE id = $1', [req.params.id]);
+    assertOwner(req, transaction, 'transactions.write_all', 'Transaction not found');
 
     const updated = await queryOne(
       `UPDATE transactions SET additional_charges = $1, updated_at = NOW()
@@ -402,8 +435,8 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
 router.patch('/:id/notes', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { notes } = req.body;
-    const transaction = await queryOne('SELECT id FROM transactions WHERE id = $1', [req.params.id]);
-    if (!transaction) throw createError(404, 'Transaction not found');
+    const transaction = await queryOne('SELECT id, created_by FROM transactions WHERE id = $1', [req.params.id]);
+    assertOwner(req, transaction, 'transactions.write_all', 'Transaction not found');
 
     const updated = await queryOne(
       `UPDATE transactions SET notes = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
@@ -437,6 +470,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
       [req.params.id]
     );
     if (!original) throw createError(404, 'Transaction not found');
+    assertOwner(req, original, 'transactions.write_all', 'Transaction not found');
     if (original.status === 'reversed') throw createError(400, 'Transaction already reversed');
 
     const txType = await queryOne<{ code: string }>(
@@ -507,11 +541,11 @@ router.delete('/:id', authorize('transactions.write'), async (req: Request, res:
     await client.query('BEGIN');
 
     const original = await client.query(
-      `SELECT t.id, t.transaction_number, t.amount, t.status, t.account_id FROM transactions t WHERE t.id = $1`,
+      `SELECT t.id, t.transaction_number, t.amount, t.status, t.account_id, t.created_by FROM transactions t WHERE t.id = $1`,
       [req.params.id]
     );
     const transaction = original.rows[0];
-    if (!transaction) throw createError(404, 'Transaction not found');
+    assertOwner(req, transaction, 'transactions.write_all', 'Transaction not found');
     if (transaction.status === 'reversed') {
       throw createError(400, 'Reversed transactions cannot be deleted — its reversal is already recorded');
     }

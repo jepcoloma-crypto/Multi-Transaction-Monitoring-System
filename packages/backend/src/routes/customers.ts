@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
+import { canSeeAll, ownerClause } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -73,6 +74,12 @@ router.get('/from-transactions', authorize('transactions.read'), async (req: Req
       conditions.push(`t.customer_name ILIKE $${paramIndex++}`);
       params.push(`%${search}%`);
     }
+    const scope = ownerClause(req, 't', 'transactions.read_all', paramIndex);
+    if (scope.clause) {
+      conditions.push(scope.clause);
+      params.push(...scope.params);
+      paramIndex = scope.paramIndex;
+    }
 
     const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
@@ -117,6 +124,17 @@ router.get('/from-transactions', authorize('transactions.read'), async (req: Req
 router.get('/from-transactions/:name', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const customerName = decodeURIComponent(req.params.name);
+    const seeAll = canSeeAll(req, 'transactions.read_all');
+    const listParams: any[] = [customerName];
+    const summaryParams: any[] = [customerName];
+    let listWhere = `WHERE t.customer_name = $1`;
+    let summaryWhere = `WHERE t.customer_name = $1 AND t.status = 'completed'`;
+    if (!seeAll) {
+      listWhere += ` AND t.created_by = $2`;
+      summaryWhere += ` AND t.created_by = $2`;
+      listParams.push(req.user!.userId);
+      summaryParams.push(req.user!.userId);
+    }
 
     const transactions = await query(
       `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
@@ -125,9 +143,9 @@ router.get('/from-transactions/:name', authorize('transactions.read'), async (re
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
-       WHERE t.customer_name = $1
+       ${listWhere}
        ORDER BY t.transaction_date DESC`,
-      [customerName]
+      listParams
     );
 
     const summary = await queryOne(
@@ -138,8 +156,8 @@ router.get('/from-transactions/:name', authorize('transactions.read'), async (re
         COALESCE(SUM(t.fee), 0) as total_fees
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
-       WHERE t.customer_name = $1 AND t.status = 'completed'`,
-      [customerName]
+       ${summaryWhere}`,
+      summaryParams
     );
 
     res.json({
@@ -168,6 +186,7 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
        WHERE c.id = $1`, [req.params.id]
     );
     if (!customer) throw createError(404, 'Customer not found');
+    const seeAll = canSeeAll(req, 'transactions.read_all');
 
     const linkedTransactions = await query(
       `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
@@ -176,9 +195,9 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
-       WHERE t.customer_id = $1
+       WHERE t.customer_id = $1${seeAll ? '' : ' AND t.created_by = $2'}
        ORDER BY t.transaction_date DESC`,
-      [req.params.id]
+      seeAll ? [req.params.id] : [req.params.id, req.user!.userId]
     );
 
     const fullName = `${customer.first_name} ${customer.last_name}`;
@@ -189,9 +208,9 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
-       WHERE t.customer_id IS NULL AND t.customer_name = $1
+       WHERE t.customer_id IS NULL AND t.customer_name = $1${seeAll ? '' : ' AND t.created_by = $2'}
        ORDER BY t.transaction_date DESC`,
-      [fullName]
+      seeAll ? [fullName] : [fullName, req.user!.userId]
     );
 
     res.json({
