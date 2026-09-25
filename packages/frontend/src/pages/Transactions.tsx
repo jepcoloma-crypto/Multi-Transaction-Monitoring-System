@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2 } from 'lucide-react';
+import AccountSelect from '../components/AccountSelect';
 
 interface Transaction {
   id: string;
@@ -188,7 +189,7 @@ export default function Transactions() {
 
   const openCreate = () => {
     setFormData({
-      accountId: accounts[0]?.id || '', feeRuleId: '',
+      accountId: accounts.find(a => a.status === 'active')?.id || '', feeRuleId: '',
       amount: '', fee: '0', referenceNumber: '', description: '', customerName: '',
       transactionDate: new Date().toISOString().slice(0, 16), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
     });
@@ -200,6 +201,7 @@ export default function Transactions() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    if (!formData.accountId) { setError('Please select an account'); return; }
     try {
       const validCharges = createCharges.filter(c => c.description.trim() && parseFloat(c.amount) > 0)
         .map(c => ({ description: c.description.trim(), amount: Math.round(parseFloat(c.amount) * 100) / 100 }));
@@ -556,10 +558,13 @@ export default function Transactions() {
               {error && <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-sm">{error}</div>}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Account *</label>
-                <select required value={formData.accountId} onChange={(e) => setFormData({ ...formData, accountId: e.target.value })} className="input">
-                  <option value="">Select account</option>
-                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}{a.masked_account_number ? ` · ${a.masked_account_number}` : ''}) - {formatCurrency(a.current_balance)}</option>)}
-                </select>
+                <AccountSelect
+                  accounts={accounts.filter(a => a.status === 'active')}
+                  value={formData.accountId}
+                  onChange={(id) => setFormData({ ...formData, accountId: id })}
+                  placeholder="Select account"
+                  className="input"
+                />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Fee Rule *</label>

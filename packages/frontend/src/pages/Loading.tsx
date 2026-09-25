@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { Smartphone, Plus, Search, Package, X, Edit2, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
+import AccountSelect from '../components/AccountSelect';
 
 interface LoadingTx {
   id: string; transaction_number: number; customer_number: string; quantity: number;
@@ -69,6 +70,7 @@ export default function Loading() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.accountId) { alert('Please select an account'); return; }
     setSubmitting(true);
     try {
       await api.post('/loading', { ...form, quantity: parseInt(form.quantity || '1') });
@@ -317,10 +319,12 @@ export default function Loading() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="form-label">Account *</label>
-                <select required value={form.accountId} onChange={e => setForm({ ...form, accountId: e.target.value })} className="input-field">
-                  <option value="">Select account</option>
-                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}{a.masked_account_number ? ` · ${a.masked_account_number}` : ''}) - {formatCurrency(a.current_balance)}</option>)}
-                </select>
+                <AccountSelect
+                  accounts={accounts.filter(a => a.status === 'active')}
+                  value={form.accountId}
+                  onChange={id => setForm({ ...form, accountId: id })}
+                  placeholder="Select account"
+                />
               </div>
               <div>
                 <label className="form-label">Product *</label>

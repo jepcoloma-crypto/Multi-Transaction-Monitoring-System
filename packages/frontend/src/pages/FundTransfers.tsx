@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { ArrowLeftRight, Plus, Search, Eye, Check, X, Filter, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
+import AccountSelect from '../components/AccountSelect';
 
 interface Transfer {
   id: string; transfer_number: number; source_name: string; destination_name: string;
@@ -50,6 +51,7 @@ export default function FundTransfers() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!form.sourceAccountId || !form.destinationAccountId) { alert('Please select source and destination accounts'); return; }
     setSubmitting(true);
     try {
       await api.post('/transfers', {
@@ -191,19 +193,21 @@ export default function FundTransfers() {
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="form-label">Source Account *</label>
-                <select required value={form.sourceAccountId} onChange={e => setForm({ ...form, sourceAccountId: e.target.value })} className="input-field">
-                  <option value="">Select source account</option>
-                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}{a.masked_account_number ? ` · ${a.masked_account_number}` : ''}) - {formatCurrency(a.current_balance)}</option>)}
-                </select>
+                <AccountSelect
+                  accounts={accounts.filter(a => a.status === 'active')}
+                  value={form.sourceAccountId}
+                  onChange={id => setForm({ ...form, sourceAccountId: id, destinationAccountId: form.destinationAccountId === id ? '' : form.destinationAccountId })}
+                  placeholder="Select source account"
+                />
               </div>
               <div>
                 <label className="form-label">Destination Account *</label>
-                <select required value={form.destinationAccountId} onChange={e => setForm({ ...form, destinationAccountId: e.target.value })} className="input-field">
-                  <option value="">Select destination account</option>
-                  {accounts.filter(a => a.status === 'active' && a.id !== form.sourceAccountId).map(a => (
-                    <option key={a.id} value={a.id}>{a.name} ({a.provider_name}{a.masked_account_number ? ` · ${a.masked_account_number}` : ''}) - {formatCurrency(a.current_balance)}</option>
-                  ))}
-                </select>
+                <AccountSelect
+                  accounts={accounts.filter(a => a.status === 'active' && a.id !== form.sourceAccountId)}
+                  value={form.destinationAccountId}
+                  onChange={id => setForm({ ...form, destinationAccountId: id })}
+                  placeholder="Select destination account"
+                />
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
