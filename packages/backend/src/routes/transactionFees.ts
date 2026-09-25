@@ -50,7 +50,7 @@ router.get('/calculate/:typeId', authorize('transactions.read'), async (req: Req
         'SELECT * FROM transaction_fee_tiers WHERE fee_id = $1 ORDER BY min_amount',
         [fee.id]
       );
-      let calculatedFee = fee.fee_value;
+      let calculatedFee = Number(fee.fee_value) || 0;
       if (fee.fee_type === 'flat_per_step') {
         const baseAmount = parseFloat(fee.base_amount) || 0;
         const stepAmount = parseFloat(fee.step_amount) || 1;
@@ -69,8 +69,10 @@ router.get('/calculate/:typeId', authorize('transactions.read'), async (req: Req
           calculatedFee = (amount * parseFloat(fee.fee_value)) / 100;
         }
       }
-      if (fee.min_fee && calculatedFee < fee.min_fee) calculatedFee = fee.min_fee;
-      if (fee.max_fee && calculatedFee > fee.max_fee) calculatedFee = fee.max_fee;
+      const minFee = Number(fee.min_fee) || 0;
+      const maxFee = Number(fee.max_fee) || 0;
+      if (minFee && calculatedFee < minFee) calculatedFee = minFee;
+      if (maxFee && calculatedFee > maxFee) calculatedFee = maxFee;
       calculatedFee = Math.ceil(calculatedFee - 1e-9);
       return { ...fee, calculatedFee, tiers };
     }));

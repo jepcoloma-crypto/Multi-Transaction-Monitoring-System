@@ -25,6 +25,9 @@ const formatBreakdown = (value: number): string =>
     .map(p => `${p.count} × ${p.denom % 1 === 0 ? `₱${p.denom.toLocaleString('en-PH')}` : formatCurrency(p.denom)}`)
     .join(' + ');
 
+const toNum = (v: number | string | null | undefined): number =>
+  v === null || v === undefined ? 0 : Number(v);
+
 interface Transaction {
   id: string;
   transaction_number: number;
@@ -175,22 +178,24 @@ export default function Transactions() {
   const calculateFee = (rule: FeeRule, amount: number): number => {
     let calcFee: number | null = null;
     if (rule.tiers && rule.tiers.length > 0) {
-      const sorted = [...rule.tiers].sort((a, b) => a.min_amount - b.min_amount);
+      const sorted = [...rule.tiers].sort((a, b) => toNum(a.min_amount) - toNum(b.min_amount));
       const matchTier = (amt: number) => {
-        let t = sorted.find(x => amt >= x.min_amount && (x.max_amount === null || amt <= x.max_amount));
-        if (!t && amt >= sorted[0].min_amount) {
-          t = sorted.find(x => amt < x.min_amount) || sorted.filter(x => amt >= x.min_amount).pop();
+        let t = sorted.find(x => amt >= toNum(x.min_amount) && (x.max_amount === null || amt <= toNum(x.max_amount)));
+        if (!t && amt >= toNum(sorted[0].min_amount)) {
+          t = sorted.find(x => amt < toNum(x.min_amount)) || sorted.filter(x => amt >= toNum(x.min_amount)).pop();
         }
         return t;
       };
-      const tierFeeOf = (t: { fee_type: string; fee_value: number }, amt: number) =>
-        t.fee_type === 'percentage' ? (amt * t.fee_value) / 100 : t.fee_value;
+      const tierFeeOf = (t: { fee_type: string; fee_value: number }, amt: number): number =>
+        t.fee_type === 'percentage' ? (amt * toNum(t.fee_value)) / 100 : toNum(t.fee_value);
 
       if (rule.calculation_method === 'per_amount') {
-        const bounded = sorted.filter(t => t.max_amount !== null);
-        if (bounded.length > 0) {
-          const chunkTier = [...bounded].sort((a, b) => (b.max_amount as number) - (a.max_amount as number))[0];
-          const chunk = chunkTier.max_amount as number;
+        const bounded = sorted.filter(t => t.max_amount !== null && t.max_amount !== undefined);
+        const chunkTier = bounded.length > 0
+          ? [...bounded].sort((a, b) => toNum(b.max_amount) - toNum(a.max_amount))[0]
+          : undefined;
+        const chunk = chunkTier ? toNum(chunkTier.max_amount) : 0;
+        if (chunkTier && chunk > 0) {
           const full = Math.floor(amount / chunk);
           const remainder = amount - full * chunk;
           if (full > 0) {
@@ -212,21 +217,20 @@ export default function Transactions() {
     }
     if (calcFee === null) {
       if (rule.fee_type === 'flat_per_step') {
-        const baseAmount = rule.base_amount || 0;
-        const stepAmount = rule.step_amount || 1;
-        const stepFee = rule.step_fee || 0;
-        if (amount > baseAmount) {
-          const steps = Math.ceil((amount - baseAmount) / stepAmount);
-          calcFee = rule.fee_value + (steps * stepFee);
-        } else {
-          calcFee = rule.fee_value;
-        }
+        const baseAmount = toNum(rule.base_amount);
+        const stepAmount = toNum(rule.step_amount) || 1;
+        const stepFee = toNum(rule.step_fee);
+        calcFee = amount > baseAmount
+          ? toNum(rule.fee_value) + Math.ceil((amount - baseAmount) / stepAmount) * stepFee
+          : toNum(rule.fee_value);
       } else {
-        calcFee = rule.fee_type === 'percentage' ? (amount * rule.fee_value / 100) : rule.fee_value;
+        calcFee = rule.fee_type === 'percentage' ? (amount * toNum(rule.fee_value)) / 100 : toNum(rule.fee_value);
       }
     }
-    if (rule.min_fee && calcFee < rule.min_fee) calcFee = rule.min_fee;
-    if (rule.max_fee && calcFee > rule.max_fee) calcFee = rule.max_fee;
+    const minFee = toNum(rule.min_fee);
+    const maxFee = toNum(rule.max_fee);
+    if (minFee && calcFee < minFee) calcFee = minFee;
+    if (maxFee && calcFee > maxFee) calcFee = maxFee;
     return Math.ceil(calcFee - 1e-9);
   };
 

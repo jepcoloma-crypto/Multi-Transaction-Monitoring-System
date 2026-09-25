@@ -315,36 +315,34 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     let feeNum = parseFloat(fee || '0');
     if (feeNum < 0) throw createError(400, 'Fee cannot be negative');
 
-    if (!fee || feeNum === 0) {
-      const feeConfigs = await query<{ id: string; fee_type: string; fee_value: number; min_fee: number; max_fee: number | null; calculation_method: string }>(
-        `SELECT id, fee_type, fee_value, min_fee, max_fee, calculation_method FROM transaction_fees
-         WHERE transaction_type_id = $1 AND is_active = true
-         AND (transaction_category_id IS NULL OR transaction_category_id = $2)`,
-        [resolvedTypeId, resolvedCategoryId]
+    const feeConfigs = await query<{ id: string; fee_type: string; fee_value: number; min_fee: number; max_fee: number | null; calculation_method: string }>(
+      `SELECT id, fee_type, fee_value, min_fee, max_fee, calculation_method FROM transaction_fees
+       WHERE transaction_type_id = $1 AND is_active = true
+       AND (transaction_category_id IS NULL OR transaction_category_id = $2)`,
+      [resolvedTypeId, resolvedCategoryId]
+    );
+    if (feeConfigs.length > 0) {
+      const feeTiers = await query<any>(
+        'SELECT * FROM transaction_fee_tiers WHERE fee_id = ANY($1::uuid[]) ORDER BY min_amount',
+        [feeConfigs.map((f) => f.id)]
       );
-      if (feeConfigs.length > 0) {
-        const feeTiers = await query<any>(
-          'SELECT * FROM transaction_fee_tiers WHERE fee_id = ANY($1::uuid[]) ORDER BY min_amount',
-          [feeConfigs.map((f) => f.id)]
-        );
-        let totalFee = 0;
-        for (const fc of feeConfigs) {
-          const configTiers = feeTiers.filter((t: any) => t.fee_id === fc.id);
-          const tierResult = calculateTieredFee(fc, configTiers, amountNum);
-          let calcFee: number;
-          if (tierResult !== null) {
-            calcFee = tierResult;
-          } else if (fc.fee_type === 'percentage') {
-            calcFee = (amountNum * Number(fc.fee_value)) / 100;
-          } else {
-            calcFee = Number(fc.fee_value);
-          }
-          if (fc.min_fee && calcFee < Number(fc.min_fee)) calcFee = Number(fc.min_fee);
-          if (fc.max_fee && calcFee > Number(fc.max_fee)) calcFee = Number(fc.max_fee);
-          totalFee += calcFee;
+      let totalFee = 0;
+      for (const fc of feeConfigs) {
+        const configTiers = feeTiers.filter((t: any) => t.fee_id === fc.id);
+        const tierResult = calculateTieredFee(fc, configTiers, amountNum);
+        let calcFee: number;
+        if (tierResult !== null) {
+          calcFee = tierResult;
+        } else if (fc.fee_type === 'percentage') {
+          calcFee = (amountNum * Number(fc.fee_value)) / 100;
+        } else {
+          calcFee = Number(fc.fee_value);
         }
-        feeNum = Math.round(totalFee * 100) / 100;
+        if (fc.min_fee && calcFee < Number(fc.min_fee)) calcFee = Number(fc.min_fee);
+        if (fc.max_fee && calcFee > Number(fc.max_fee)) calcFee = Number(fc.max_fee);
+        totalFee += calcFee;
       }
+      feeNum = Math.round(totalFee * 100) / 100;
     }
     feeNum = Math.ceil(feeNum - 1e-9);
 
