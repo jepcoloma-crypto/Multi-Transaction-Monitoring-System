@@ -188,4 +188,59 @@ router.post('/:id/approve', authorize('transfers.approve'), async (req: Request,
   } catch (error) { next(error); }
 });
 
+router.delete('/:id', authorize('transfers.write'), async (req: Request, res: Response, next: NextFunction) => {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    const transfer = (await client.query('SELECT * FROM transfers WHERE id = $1', [req.params.id])).rows[0];
+    if (!transfer) throw createError(404, 'Transfer not found');
+    if (transfer.status === 'reversed') throw createError(400, 'Reversed transfers cannot be deleted — its reversal is already recorded');
+
+    const movesFunds = !['draft', 'pending', 'failed'].includes(transfer.status);
+
+    if (movesFunds) {
+      const accounts = (await client.query(
+        `SELECT id, current_balance FROM accounts WHERE id IN ($1, $2) ORDER BY id FOR UPDATE`,
+        [transfer.source_account_id, transfer.destination_account_id]
+      )).rows;
+      const source = accounts.find((a: any) => a.id === transfer.source_account_id);
+      const destination = accounts.find((a: any) => a.id === transfer.destination_account_id);
+      if (!source || !destination) throw createError(404, 'Transfer account not found');
+
+      const destinationAmount = parseFloat(transfer.destination_amount);
+      const destinationNewBalance = parseFloat(destination.current_balance) - destinationAmount;
+      if (destinationNewBalance < -0.000001) {
+        throw createError(400, 'Deletion would make the destination account balance negative — reverse the transfer instead');
+      }
+
+      const sourceNewBalance = parseFloat(source.current_balance) + parseFloat(transfer.total_source_deduction);
+      await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2',
+        [sourceNewBalance.toFixed(2), transfer.source_account_id]);
+      await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2',
+        [destinationNewBalance.toFixed(2), transfer.destination_account_id]);
+      await client.query('DELETE FROM ledger_entries WHERE transfer_id = $1', [req.params.id]);
+    }
+
+    await client.query('DELETE FROM transfers WHERE id = $1', [req.params.id]);
+    await client.query('COMMIT');
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'transfer.deleted',
+      entity: 'transfer',
+      entityId: req.params.id,
+      ipAddress: req.ip,
+      oldData: { transferNumber: transfer.transfer_number, amount: parseFloat(transfer.transfer_amount), status: transfer.status },
+    });
+
+    res.json({ success: true, data: { message: 'Transfer deleted' } });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
 export default router;

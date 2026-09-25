@@ -256,17 +256,27 @@ router.put('/:id', authorize('transactions.write'), async (req: Request, res: Re
 
 router.delete('/:id', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const existing = await queryOne('SELECT id FROM customers WHERE id = $1', [req.params.id]);
+    const existing = await queryOne<{ id: string; first_name: string; last_name: string }>(
+      'SELECT id, first_name, last_name FROM customers WHERE id = $1', [req.params.id]
+    );
     if (!existing) throw createError(404, 'Customer not found');
 
-    await queryOne('UPDATE customers SET status = $1, updated_at = NOW() WHERE id = $2', ['inactive', req.params.id]);
+    const usage = await queryOne<{ count: string }>(
+      'SELECT COUNT(*) as count FROM transactions WHERE customer_id = $1', [req.params.id]
+    );
+    if (parseInt(usage?.count || '0') > 0) {
+      throw createError(400, 'Customer has linked transactions and cannot be deleted — set their status to inactive instead');
+    }
+
+    await queryOne('DELETE FROM customers WHERE id = $1', [req.params.id]);
 
     await createAuditLog({
-      userId: req.user!.userId, action: 'customer.deactivated', entity: 'customer',
+      userId: req.user!.userId, action: 'customer.deleted', entity: 'customer',
       entityId: req.params.id, ipAddress: req.ip,
+      oldData: { firstName: existing.first_name, lastName: existing.last_name },
     });
 
-    res.json({ success: true, data: { message: 'Customer deactivated' } });
+    res.json({ success: true, data: { message: 'Customer deleted' } });
   } catch (error) {
     next(error);
   }

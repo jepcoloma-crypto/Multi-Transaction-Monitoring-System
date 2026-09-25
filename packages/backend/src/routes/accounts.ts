@@ -298,4 +298,42 @@ router.get('/:id/balance-history', authorize('accounts.read'), async (req: Reque
   }
 });
 
+router.delete('/:id', authorize('accounts.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const account = await queryOne<{ id: string; name: string; status: string }>(
+      'SELECT id, name, status FROM accounts WHERE id = $1', [req.params.id]
+    );
+    if (!account) throw createError(404, 'Account not found');
+
+    const usage = await queryOne<{ count: string }>(
+      `SELECT (
+         (SELECT COUNT(*) FROM transactions WHERE account_id = $1) +
+         (SELECT COUNT(*) FROM transfers WHERE source_account_id = $1 OR destination_account_id = $1) +
+         (SELECT COUNT(*) FROM loading_transactions WHERE account_id = $1) +
+         (SELECT COUNT(*) FROM ledger_entries WHERE account_id = $1) +
+         (SELECT COUNT(*) FROM reconciliations WHERE account_id = $1)
+       ) as count`,
+      [req.params.id]
+    );
+    if (parseInt(usage?.count || '0') > 0) {
+      throw createError(400, 'Account has linked transactions and cannot be deleted — set its status to closed instead');
+    }
+
+    await queryOne('DELETE FROM accounts WHERE id = $1', [req.params.id]);
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'account.deleted',
+      entity: 'account',
+      entityId: req.params.id,
+      ipAddress: req.ip,
+      oldData: { name: account.name, status: account.status },
+    });
+
+    res.json({ success: true, data: { message: 'Account deleted' } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

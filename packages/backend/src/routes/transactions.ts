@@ -501,4 +501,47 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
   }
 });
 
+router.delete('/:id', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    const original = await client.query(
+      `SELECT t.id, t.transaction_number, t.amount, t.status, t.account_id FROM transactions t WHERE t.id = $1`,
+      [req.params.id]
+    );
+    const transaction = original.rows[0];
+    if (!transaction) throw createError(404, 'Transaction not found');
+    if (transaction.status === 'reversed') {
+      throw createError(400, 'Reversed transactions cannot be deleted — its reversal is already recorded');
+    }
+
+    const account = await client.query(
+      'SELECT id FROM accounts WHERE id = $1',
+      [transaction.account_id]
+    );
+    if (!account.rows[0]) throw createError(404, 'Account not found');
+
+    await client.query('DELETE FROM ledger_entries WHERE transaction_id = $1', [req.params.id]);
+    await client.query('DELETE FROM transactions WHERE id = $1', [req.params.id]);
+    await client.query('COMMIT');
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'transaction.deleted',
+      entity: 'transaction',
+      entityId: req.params.id,
+      ipAddress: req.ip,
+      oldData: { transactionNumber: transaction.transaction_number, amount: parseFloat(transaction.amount), status: transaction.status },
+    });
+
+    res.json({ success: true, data: { message: 'Transaction deleted' } });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
 export default router;

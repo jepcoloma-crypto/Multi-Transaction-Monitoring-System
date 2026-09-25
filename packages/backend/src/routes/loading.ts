@@ -182,4 +182,58 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
   } catch (error) { await client.query('ROLLBACK'); next(error); } finally { client.release(); }
 });
 
+router.delete('/products/:id', authorize('loading.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const product = await queryOne<{ id: string; name: string }>('SELECT id, name FROM loading_products WHERE id = $1', [req.params.id]);
+    if (!product) throw createError(404, 'Product not found');
+
+    const usage = await queryOne<{ count: string }>(
+      'SELECT COUNT(*) as count FROM loading_transactions WHERE product_id = $1', [req.params.id]
+    );
+    if (parseInt(usage?.count || '0') > 0) {
+      throw createError(400, 'Product has loading history — deactivate it instead of deleting');
+    }
+
+    await queryOne('DELETE FROM loading_products WHERE id = $1', [req.params.id]);
+
+    await createAuditLog({
+      userId: req.user!.userId, action: 'loading_product.deleted', entity: 'loading_product',
+      entityId: req.params.id, ipAddress: req.ip, oldData: { name: product.name },
+    });
+
+    res.json({ success: true, data: { message: 'Product deleted' } });
+  } catch (error) { next(error); }
+});
+
+router.delete('/:id', authorize('loading.write'), async (req: Request, res: Response, next: NextFunction) => {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    const loadingTx = (await client.query('SELECT * FROM loading_transactions WHERE id = $1', [req.params.id])).rows[0];
+    if (!loadingTx) throw createError(404, 'Loading transaction not found');
+    if (loadingTx.status === 'reversed') throw createError(400, 'Reversed loading transactions cannot be deleted');
+
+    const entryAmount = parseFloat(loadingTx.total_cost) + parseFloat(loadingTx.provider_convenience_fee || '0');
+    await client.query(
+      `DELETE FROM ledger_entries WHERE account_id = $1 AND entry_type = 'debit' AND amount = $2 AND entry_date = $3`,
+      [loadingTx.account_id, entryAmount, loadingTx.created_at]
+    );
+
+    await client.query('DELETE FROM loading_transactions WHERE id = $1', [req.params.id]);
+    await client.query('COMMIT');
+
+    await createAuditLog({
+      userId: req.user!.userId, action: 'loading.deleted', entity: 'loading_transaction',
+      entityId: req.params.id, ipAddress: req.ip,
+      oldData: { transactionNumber: loadingTx.transaction_number, amount: entryAmount, status: loadingTx.status },
+    });
+
+    res.json({ success: true, data: { message: 'Loading transaction deleted' } });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally { client.release(); }
+});
+
 export default router;
