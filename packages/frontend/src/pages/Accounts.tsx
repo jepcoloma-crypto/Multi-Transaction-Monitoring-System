@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
+import { useAuth } from '../contexts/AuthContext';
 import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign, Trash2 } from 'lucide-react';
 
 interface Account {
@@ -49,12 +50,14 @@ export default function Accounts() {
   const [formData, setFormData] = useState({
     name: '', providerId: '', accountTypeId: '', maskedAccountNumber: '',
     accountReference: '', owner: '', purpose: '', openingBalance: '0',
-    minimumBalance: '0', targetBalance: '0', notes: '',
+    minimumBalance: '0', targetBalance: '0', notes: '', currentBalance: '0',
   });
   const [error, setError] = useState('');
   const [showAddFunds, setShowAddFunds] = useState(false);
   const [addFundsAccount, setAddFundsAccount] = useState<Account | null>(null);
   const [addFundsForm, setAddFundsForm] = useState({ amount: '', description: '' });
+  const { user } = useAuth();
+  const isAdmin = user?.roles?.includes('administrator') ?? false;
 
   const fetchAccounts = async (page = 1) => {
     setLoading(true);
@@ -115,7 +118,7 @@ export default function Accounts() {
     setFormData({
       name: '', providerId: providers[0]?.id || '', accountTypeId: accountTypes[0]?.id || '',
       maskedAccountNumber: '', accountReference: '', owner: '', purpose: '',
-      openingBalance: '0', minimumBalance: '0', targetBalance: '0', notes: '',
+      openingBalance: '0', minimumBalance: '0', targetBalance: '0', notes: '', currentBalance: '0',
     });
     setShowModal(true);
     setError('');
@@ -129,6 +132,7 @@ export default function Accounts() {
       owner: account.owner || '', purpose: account.purpose || '',
       openingBalance: String(account.opening_balance), minimumBalance: String(account.minimum_balance),
       targetBalance: String(account.target_balance), notes: account.notes || '',
+      currentBalance: String(account.current_balance),
     });
     setShowModal(true);
     setError('');
@@ -138,12 +142,16 @@ export default function Accounts() {
     e.preventDefault();
     setError('');
     try {
-      const body = {
-        ...formData,
+      const { currentBalance, ...rest } = formData;
+      const body: any = {
+        ...rest,
         openingBalance: parseFloat(formData.openingBalance) || 0,
         minimumBalance: parseFloat(formData.minimumBalance) || 0,
         targetBalance: parseFloat(formData.targetBalance) || 0,
       };
+      if (editingAccount && isAdmin) {
+        body.currentBalance = parseFloat(currentBalance);
+      }
       if (editingAccount) {
         await api.put(`/accounts/${editingAccount.id}`, body);
       } else {
@@ -434,8 +442,8 @@ export default function Accounts() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Masked Account Number</label>
-                  <input type="text" value={formData.maskedAccountNumber} onChange={(e) => setFormData({ ...formData, maskedAccountNumber: e.target.value })} className="input" placeholder="e.g., ****1234" />
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Masked Account Number *</label>
+                  <input type="text" required value={formData.maskedAccountNumber} onChange={(e) => setFormData({ ...formData, maskedAccountNumber: e.target.value })} className="input" placeholder="e.g., ****1234" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Account Reference</label>
@@ -456,6 +464,13 @@ export default function Accounts() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Opening Balance</label>
                   <input type="number" step="0.01" min="0" value={formData.openingBalance} onChange={(e) => setFormData({ ...formData, openingBalance: e.target.value })} className="input" />
+                </div>
+              )}
+              {editingAccount && isAdmin && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Balance</label>
+                  <input type="number" step="0.01" value={formData.currentBalance} onChange={(e) => setFormData({ ...formData, currentBalance: e.target.value })} className="input" />
+                  <p className="text-xs text-gray-500 mt-1">Administrators only — changes are recorded in balance history and the audit log.</p>
                 </div>
               )}
               <div className="grid grid-cols-2 gap-4">

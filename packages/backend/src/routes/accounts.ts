@@ -176,8 +176,8 @@ router.post('/', authorize('accounts.write'), async (req: Request, res: Response
       minimumBalance, targetBalance, notes,
     } = req.body;
 
-    if (!name || !providerId || !accountTypeId) {
-      throw createError(400, 'Name, provider, and account type are required');
+    if (!name || !providerId || !accountTypeId || !String(maskedAccountNumber || '').trim()) {
+      throw createError(400, 'Name, provider, account type, and masked account number are required');
     }
 
     const provider = await queryOne('SELECT id, name FROM providers WHERE id = $1 AND is_active = true', [providerId]);
@@ -247,8 +247,22 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
 
     const {
       name, maskedAccountNumber, accountReference, owner, purpose,
-      minimumBalance, targetBalance, status, notes,
+      minimumBalance, targetBalance, status, notes, currentBalance,
     } = req.body;
+
+    if (maskedAccountNumber !== undefined && !String(maskedAccountNumber ?? '').trim()) {
+      throw createError(400, 'Masked account number is required');
+    }
+
+    let newBalance: number | null = null;
+    if (currentBalance !== undefined && currentBalance !== null && currentBalance !== '') {
+      if (!req.user!.roles.includes('administrator')) {
+        throw createError(403, 'Only administrators can edit account balances');
+      }
+      const parsed = parseFloat(currentBalance);
+      if (isNaN(parsed)) throw createError(400, 'Balance must be a valid number');
+      newBalance = parsed;
+    }
 
     const updated = await queryOne(
       `UPDATE accounts SET
@@ -261,6 +275,7 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
         target_balance = COALESCE($7, target_balance),
         status = COALESCE($8, status),
         notes = COALESCE($9, notes),
+        current_balance = COALESCE($11, current_balance),
         updated_at = NOW()
        WHERE id = $10 RETURNING *`,
       [
@@ -274,8 +289,16 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
         status || existing.status,
         notes !== undefined ? notes : existing.notes,
         accountId,
+        newBalance,
       ]
     );
+
+    if (newBalance !== null && parseFloat(existing.current_balance) !== newBalance) {
+      await query(
+        'INSERT INTO account_balance_history (account_id, balance, recorded_by) VALUES ($1, $2, $3)',
+        [accountId, newBalance, req.user!.userId]
+      );
+    }
 
     await createAuditLog({
       userId: req.user!.userId,
@@ -283,8 +306,8 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
       entity: 'account',
       entityId: accountId,
       ipAddress: req.ip,
-      oldData: { name: existing.name, status: existing.status },
-      newData: { name: updated!.name, status: updated!.status },
+      oldData: { name: existing.name, status: existing.status, balance: existing.current_balance },
+      newData: { name: updated!.name, status: updated!.status, balance: updated!.current_balance },
     });
 
     res.json({ success: true, data: updated });
