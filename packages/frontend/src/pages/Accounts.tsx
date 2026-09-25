@@ -24,6 +24,7 @@ interface Account {
   status: string;
   notes: string | null;
   created_at: string;
+  created_by: string | null;
   created_by_email: string | null;
 }
 
@@ -58,6 +59,7 @@ export default function Accounts() {
   const [addFundsForm, setAddFundsForm] = useState({ amount: '', description: '' });
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
+  const canManage = (account: Account) => isAdmin || account.created_by === user?.id;
 
   const fetchSeq = useRef(0);
 
@@ -333,12 +335,16 @@ export default function Accounts() {
                       <button onClick={() => setShowDetail(account)} className="p-1 text-gray-400 hover:text-primary-600" title="View">
                         <Eye className="w-4 h-4" />
                       </button>
-                      <button onClick={() => openEdit(account)} className="p-1 text-gray-400 hover:text-primary-600" title="Edit">
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button onClick={() => handleDelete(account.id)} className="p-1 text-gray-400 hover:text-red-600" title="Delete">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {canManage(account) && (
+                        <button onClick={() => openEdit(account)} className="p-1 text-gray-400 hover:text-primary-600" title="Edit">
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                      )}
+                      {canManage(account) && (
+                        <button onClick={() => handleDelete(account.id)} className="p-1 text-gray-400 hover:text-red-600" title="Delete">
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -406,7 +412,7 @@ export default function Accounts() {
                 </div>
               )}
               <div className="border-t pt-4 flex gap-2">
-                {showDetail.status === 'active' && (
+                {canManage(showDetail) && showDetail.status === 'active' && (
                   <>
                     <button onClick={() => { handleStatusChange(showDetail.id, 'inactive'); setShowDetail(null); }}
                       className="btn-secondary text-sm">Deactivate</button>
@@ -414,7 +420,7 @@ export default function Accounts() {
                       className="btn-secondary text-sm text-yellow-600">Suspend</button>
                   </>
                 )}
-                {showDetail.status !== 'active' && showDetail.status !== 'closed' && (
+                {canManage(showDetail) && showDetail.status !== 'active' && showDetail.status !== 'closed' && (
                   <button onClick={() => { handleStatusChange(showDetail.id, 'active'); setShowDetail(null); }}
                     className="btn-primary text-sm">Reactivate</button>
                 )}

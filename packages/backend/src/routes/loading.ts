@@ -151,7 +151,6 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
 
     const acct = await client.query('SELECT id, name, current_balance, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
     if (!acct.rows[0]) throw createError(404, 'Account not found');
-    assertOwner(req, acct.rows[0], 'accounts.write_all', 'Account not found');
     if (acct.rows[0].status !== 'active') throw createError(400, 'Account is not active');
 
     const qty = parseInt(quantity || '1');

@@ -337,7 +337,6 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
 
     const account = await queryOne('SELECT id, name, status, created_by FROM accounts WHERE id = $1', [accountId]);
     if (!account) throw createError(404, 'Account not found');
-    assertOwner(req, account, 'accounts.write_all', 'Account not found');
     if (account.status === 'closed') throw createError(400, 'Cannot add transactions to a closed account');
 
     const txType = await queryOne<{ id: string; direction: string }>(

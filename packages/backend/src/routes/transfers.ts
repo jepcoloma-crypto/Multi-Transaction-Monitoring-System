@@ -113,12 +113,10 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
 
     const srcAcct = await client.query('SELECT id, name, current_balance, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [sourceAccountId]);
     if (!srcAcct.rows[0]) throw createError(404, 'Source account not found');
-    assertOwner(req, srcAcct.rows[0], 'accounts.write_all', 'Source account not found');
     if (srcAcct.rows[0].status !== 'active') throw createError(400, 'Source account is not active');
 
     const dstAcct = await client.query('SELECT id, name, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [destinationAccountId]);
     if (!dstAcct.rows[0]) throw createError(404, 'Destination account not found');
-    assertOwner(req, dstAcct.rows[0], 'accounts.write_all', 'Destination account not found');
     if (dstAcct.rows[0].status !== 'active') throw createError(400, 'Destination account is not active');
 
     let totalDeduction: number;
