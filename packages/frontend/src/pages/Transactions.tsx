@@ -154,8 +154,10 @@ export default function Transactions() {
     let calcFee: number | null = null;
     if (rule.tiers && rule.tiers.length > 0) {
       const sorted = [...rule.tiers].sort((a, b) => a.min_amount - b.min_amount);
-      const matchedTier = sorted.find(t => amount >= t.min_amount && (t.max_amount === null || amount <= t.max_amount))
-        || sorted.filter(t => amount >= t.min_amount).pop();
+      let matchedTier = sorted.find(t => amount >= t.min_amount && (t.max_amount === null || amount <= t.max_amount));
+      if (!matchedTier && sorted.length > 0 && amount >= sorted[0].min_amount) {
+        matchedTier = sorted.find(t => amount < t.min_amount) || sorted.filter(t => amount >= t.min_amount).pop();
+      }
       if (matchedTier) {
         calcFee = matchedTier.fee_type === 'percentage'
           ? (amount * matchedTier.fee_value / 100)

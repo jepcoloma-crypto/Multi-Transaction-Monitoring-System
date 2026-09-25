@@ -329,9 +329,12 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
         let totalFee = 0;
         for (const fc of feeConfigs) {
           const configTiers = feeTiers.filter((t: any) => t.fee_id === fc.id);
-          const matchedTier =
-            configTiers.find((t: any) => amountNum >= parseFloat(t.min_amount) && (t.max_amount === null || amountNum <= parseFloat(t.max_amount))) ||
-            configTiers.filter((t: any) => amountNum >= parseFloat(t.min_amount)).pop();
+          let matchedTier = configTiers.find((t: any) => amountNum >= parseFloat(t.min_amount) && (t.max_amount === null || amountNum <= parseFloat(t.max_amount)));
+          if (!matchedTier && configTiers.length > 0 && amountNum >= parseFloat(configTiers[0].min_amount)) {
+            matchedTier =
+              configTiers.find((t: any) => amountNum < parseFloat(t.min_amount)) ||
+              configTiers.filter((t: any) => amountNum >= parseFloat(t.min_amount)).pop();
+          }
           let calcFee: number;
           if (matchedTier) {
             calcFee = matchedTier.fee_type === 'percentage'
