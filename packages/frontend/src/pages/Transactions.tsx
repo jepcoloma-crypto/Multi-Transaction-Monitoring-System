@@ -334,6 +334,7 @@ export default function Transactions() {
       setShowDetail({ ...showDetail, additional_charges: result.additional_charges });
       setEditingCharges(false);
       fetchTransactions(pagination.page);
+      fetchSummary();
     } catch (err: any) { alert(err.message); }
   };
 
@@ -364,7 +365,7 @@ export default function Transactions() {
             <p className={`text-lg font-bold ${summary.netMovement >= 0 ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(summary.netMovement)}</p>
           </div>
           <div className="card py-3">
-            <p className="text-xs text-gray-500">Fees</p>
+            <p className="text-xs text-gray-500">Company Income</p>
             <p className="text-lg font-bold text-yellow-600">{formatCurrency(summary.totalFees)}</p>
           </div>
           <div className="card py-3">
@@ -842,7 +843,7 @@ export default function Transactions() {
                   <p className="text-lg font-bold text-red-600">{formatCurrency(customerHistory.summary.totalMoneyOut)}</p>
                 </div>
                 <div className="card py-3 text-center">
-                  <p className="text-xs text-gray-500">Total Fees</p>
+                  <p className="text-xs text-gray-500">Total Income</p>
                   <p className="text-lg font-bold text-yellow-600">{formatCurrency(customerHistory.summary.totalFees)}</p>
                 </div>
               </div>

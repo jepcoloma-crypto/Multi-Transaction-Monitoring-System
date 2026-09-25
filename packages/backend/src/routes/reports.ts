@@ -70,11 +70,17 @@ router.get('/transaction-report', authorize('reports.read'), async (req: Request
 
     const summary = await queryOne(
       `SELECT COUNT(*) as count,
-              COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_in,
-              COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_out,
-              COALESCE(SUM(CASE WHEN tt.direction = 'adjustment' THEN t.amount ELSE 0 END), 0) as total_adjustments
+              COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_in,
+              COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_out,
+              COALESCE(SUM(CASE WHEN tt.direction = 'adjustment' THEN t.amount + chg.total ELSE 0 END), 0) as total_adjustments
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
        ${wc}`, params
     );
 
@@ -168,10 +174,16 @@ router.get('/consolidated', authorize('reports.read'), async (req: Request, res:
     );
     const txSummary = await queryOne(
       `SELECT COUNT(*) as count,
-              COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_in,
-              COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_out
+              COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_in,
+              COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_out
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
        WHERE t.status != 'reversed'${seeAllTransactions ? '' : ' AND t.created_by = $1'}`,
       seeAllTransactions ? [] : [uid]
     );

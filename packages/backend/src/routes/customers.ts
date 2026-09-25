@@ -91,13 +91,19 @@ router.get('/from-transactions', authorize('transactions.read'), async (req: Req
     const customers = await query(
       `SELECT t.customer_name,
               COUNT(*) as transaction_count,
-              COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_in,
-              COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_out,
-              COALESCE(SUM(t.fee), 0) as total_fees,
+              COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_in,
+              COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_out,
+              COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as total_fees,
               MAX(t.transaction_date) as last_transaction_date,
               MIN(t.transaction_date) as first_transaction_date
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
        ${whereClause}
        GROUP BY t.customer_name
        ORDER BY MAX(t.transaction_date) DESC
@@ -151,11 +157,17 @@ router.get('/from-transactions/:name', authorize('transactions.read'), async (re
     const summary = await queryOne(
       `SELECT
         COUNT(*) as total_count,
-        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_in,
-        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_out,
-        COALESCE(SUM(t.fee), 0) as total_fees
+        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_in,
+        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_out,
+        COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as total_fees
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
        ${summaryWhere}`,
       summaryParams
     );

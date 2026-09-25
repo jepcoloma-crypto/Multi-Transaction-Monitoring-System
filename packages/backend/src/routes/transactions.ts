@@ -4,7 +4,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
-import { processTransaction } from '../services/balance';
+import { processTransaction, updateAccountBalance, createLedgerEntry } from '../services/balance';
 import { calculateTieredFee } from '../services/feeCalc';
 import { PaginatedResponse } from '../types';
 
@@ -109,20 +109,32 @@ router.get('/summary', authorize('transactions.read'), async (req: Request, res:
 
     const summary = await queryOne(
       `SELECT
-        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_money_in,
-        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_money_out,
-        COALESCE(SUM(t.fee), 0) as total_fees,
+        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_money_in,
+        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_money_out,
+        COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as total_fees,
         COUNT(*) as transaction_count
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
        ${whereClause}`,
       params
     );
 
     const byType = await query(
-      `SELECT tt.name as type_name, tt.direction, COUNT(*) as count, COALESCE(SUM(t.amount), 0) as total_amount
+      `SELECT tt.name as type_name, tt.direction, COUNT(*) as count, COALESCE(SUM(t.amount + chg.total), 0) as total_amount
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
        ${whereClause}
        GROUP BY tt.id, tt.name, tt.direction
        ORDER BY total_amount DESC`,
@@ -159,14 +171,20 @@ router.get('/today', authorize('transactions.read'), async (req: Request, res: R
     const summary = await queryOne(
       `SELECT
         COUNT(*) as transaction_count,
-        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as money_in,
-        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as money_out,
-        COALESCE(SUM(t.fee), 0) as fees_collected,
+        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as money_in,
+        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as money_out,
+        COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as fees_collected,
         COUNT(CASE WHEN t.status = 'completed' THEN 1 END) as completed_count,
         COUNT(CASE WHEN t.status = 'pending' THEN 1 END) as pending_count,
         COUNT(CASE WHEN t.status = 'reversed' THEN 1 END) as reversed_count
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
        ${todayWhere}`,
       todayParams
     );
@@ -222,11 +240,17 @@ router.get('/by-customer-name', authorize('transactions.read'), async (req: Requ
     const summary = await queryOne(
       `SELECT
         COUNT(*) as total_count,
-        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount ELSE 0 END), 0) as total_in,
-        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount ELSE 0 END), 0) as total_out,
-        COALESCE(SUM(t.fee), 0) as total_fees
+        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_in,
+        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_out,
+        COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as total_fees
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
        ${summaryWhere}`,
       nameSummaryParams
     );
@@ -413,19 +437,73 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
 });
 
 router.patch('/:id/charges', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  const client = await getClient();
   try {
     const { additionalCharges } = req.body;
     if (!Array.isArray(additionalCharges)) {
       throw createError(400, 'additionalCharges must be an array');
     }
-    const transaction = await queryOne('SELECT id, created_by FROM transactions WHERE id = $1', [req.params.id]);
-    assertOwner(req, transaction, 'transactions.write_all', 'Transaction not found');
 
-    const updated = await queryOne(
-      `UPDATE transactions SET additional_charges = $1, updated_at = NOW()
-       WHERE id = $2 RETURNING *`,
+    await client.query('BEGIN');
+
+    const originalRes = await client.query(
+      `SELECT t.id, t.created_by, t.account_id, t.additional_charges, t.status, t.reference_number, tt.direction
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.id = $1
+       FOR UPDATE`,
+      [req.params.id]
+    );
+    const original = originalRes.rows[0];
+    if (!original) throw createError(404, 'Transaction not found');
+    assertOwner(req, original, 'transactions.write_all', 'Transaction not found');
+
+    const chargeTotal = (charges: any): number =>
+      Math.round(
+        (Array.isArray(charges) ? charges : []).reduce(
+          (sum: number, c: any) => sum + (parseFloat(c?.amount) || 0), 0
+        ) * 100
+      ) / 100;
+
+    const oldTotal = chargeTotal(original.additional_charges);
+    const newTotal = chargeTotal(additionalCharges);
+    const delta = Math.round((newTotal - oldTotal) * 100) / 100;
+
+    if (delta !== 0 && original.status !== 'reversed') {
+      const creditLike = original.direction === 'in' || original.direction === 'adjustment';
+      const entryType: 'debit' | 'credit' = delta > 0
+        ? (creditLike ? 'credit' : 'debit')
+        : (creditLike ? 'debit' : 'credit');
+      const amount = Math.abs(delta);
+
+      let newBalance: number;
+      try {
+        newBalance = await updateAccountBalance(original.account_id, amount, entryType, client);
+      } catch (err: any) {
+        if (err?.message === 'Insufficient balance') throw createError(400, 'Insufficient balance for charge adjustment');
+        throw err;
+      }
+
+      await createLedgerEntry(
+        original.account_id,
+        entryType,
+        amount,
+        newBalance,
+        original.id,
+        null,
+        original.reference_number,
+        `Additional charges updated: ${oldTotal.toFixed(2)} -> ${newTotal.toFixed(2)}`,
+        new Date(),
+        client
+      );
+    }
+
+    const updated = await client.query(
+      `UPDATE transactions SET additional_charges = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
       [JSON.stringify(additionalCharges), req.params.id]
     );
+
+    await client.query('COMMIT');
 
     await createAuditLog({
       userId: req.user!.userId,
@@ -433,12 +511,15 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
       entity: 'transaction',
       entityId: req.params.id,
       ipAddress: req.ip,
-      newData: { additionalCharges },
+      newData: { additionalCharges, oldTotal, newTotal, delta },
     });
 
-    res.json({ success: true, data: updated });
+    res.json({ success: true, data: updated.rows[0] });
   } catch (error) {
+    await client.query('ROLLBACK');
     next(error);
+  } finally {
+    client.release();
   }
 });
 

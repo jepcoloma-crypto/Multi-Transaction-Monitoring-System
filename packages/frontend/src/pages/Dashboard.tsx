@@ -166,7 +166,7 @@ export default function Dashboard() {
               <p className="text-lg font-bold text-finance-red">{formatCurrency(todaySummary.moneyOut)}</p>
             </div>
             <div>
-              <p className="text-xs text-gray-500">Fees Collected</p>
+              <p className="text-xs text-gray-500">Company Income</p>
               <p className="text-lg font-bold text-yellow-600">{formatCurrency(todaySummary.feesCollected)}</p>
             </div>
           </div>

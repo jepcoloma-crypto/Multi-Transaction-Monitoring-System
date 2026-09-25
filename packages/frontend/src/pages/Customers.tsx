@@ -251,7 +251,7 @@ export default function Customers() {
                   <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transactions</th>
                   <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total In</th>
                   <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total Out</th>
-                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fees</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Income</th>
                   <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">First Transaction</th>
                   <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Last Transaction</th>
                 </tr>
@@ -399,7 +399,7 @@ export default function Customers() {
                   <p className="text-lg font-bold text-red-600">{formatCurrency(txDetail.summary.totalMoneyOut)}</p>
                 </div>
                 <div className="card py-3 text-center">
-                  <p className="text-xs text-gray-500">Total Fees</p>
+                  <p className="text-xs text-gray-500">Total Income</p>
                   <p className="text-lg font-bold text-yellow-600">{formatCurrency(txDetail.summary.totalFees)}</p>
                 </div>
               </div>
