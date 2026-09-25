@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { Smartphone, Plus, Search, Package, X, Edit2 } from 'lucide-react';
+import { Smartphone, Plus, Search, Package, X, Edit2, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
 
 interface LoadingTx {
@@ -119,6 +119,22 @@ export default function Loading() {
     } catch (err: any) { alert(err.message); }
   };
 
+  const handleDeleteTx = async (id: string) => {
+    if (!confirm('Delete this loading transaction?')) return;
+    try {
+      await api.delete(`/loading/${id}`);
+      loadData(pagination.page);
+    } catch (err: any) { alert(err.message); }
+  };
+
+  const handleDeleteProduct = async (id: string) => {
+    if (!confirm('Delete this product? Products with sales history cannot be deleted.')) return;
+    try {
+      await api.delete(`/loading/products/${id}`);
+      loadData(pagination.page);
+    } catch (err: any) { alert(err.message); }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -187,6 +203,7 @@ export default function Loading() {
                       <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Profit</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
                       <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-200">
@@ -201,6 +218,9 @@ export default function Loading() {
                         <td className="px-4 py-3 text-sm text-right font-medium">{formatCurrency(t.profit)}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{t.account_name}</td>
                         <td className="px-4 py-3 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
+                        <td className="px-4 py-3 text-right">
+                          <button onClick={() => handleDeleteTx(t.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -272,6 +292,7 @@ export default function Loading() {
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button onClick={() => openEditProduct(p)} className="p-1 text-gray-400 hover:text-primary-600"><Edit2 className="w-4 h-4" /></button>
+                            <button onClick={() => handleDeleteProduct(p.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                           </td>
                         </tr>
                       );

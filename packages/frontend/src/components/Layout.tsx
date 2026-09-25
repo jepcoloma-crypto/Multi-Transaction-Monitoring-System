@@ -28,7 +28,7 @@ import GlobalSearch from './GlobalSearch';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-  { name: 'Transactions', href: '/transactions', icon: ArrowLeftRight },
+  { name: 'Cash Transactions', href: '/transactions', icon: ArrowLeftRight },
   { name: 'Accounts', href: '/accounts', icon: Wallet },
   { name: 'Fund Transfers', href: '/transfers', icon: ArrowUpDown },
   { name: 'Loading', href: '/loading', icon: Smartphone },

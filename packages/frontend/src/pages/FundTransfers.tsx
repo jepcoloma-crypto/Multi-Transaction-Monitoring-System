@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { ArrowLeftRight, Plus, Search, Eye, Check, X, Filter } from 'lucide-react';
+import { ArrowLeftRight, Plus, Search, Eye, Check, X, Filter, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
 
 interface Transfer {
@@ -65,6 +65,11 @@ export default function FundTransfers() {
   const handleApprove = async (id: string) => {
     if (!confirm('Approve this transfer?')) return;
     try { await api.post(`/transfers/${id}/approve`); loadData(pagination.page); } catch (err: any) { alert(err.response?.data?.message || 'Failed'); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this transfer? This will restore both account balances.')) return;
+    try { await api.delete(`/transfers/${id}`); loadData(pagination.page); } catch (err: any) { alert(err.message || 'Failed'); }
   };
 
   const viewDetail = async (t: Transfer) => {
@@ -160,6 +165,7 @@ export default function FundTransfers() {
                         {t.status === 'pending' && (
                           <button onClick={() => handleApprove(t.id)} className="p-1 hover:bg-green-100 rounded text-green-600"><Check className="w-4 h-4" /></button>
                         )}
+                        <button onClick={() => handleDelete(t.id)} className="p-1 hover:bg-red-100 rounded text-red-600"><Trash2 className="w-4 h-4" /></button>
                       </div>
                     </td>
                   </tr>

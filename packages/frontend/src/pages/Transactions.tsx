@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
+import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2 } from 'lucide-react';
 
 interface Transaction {
   id: string;
@@ -93,6 +93,15 @@ export default function Transactions() {
       const result = await api.get<{ summary: Summary }>('/transactions/summary');
       setSummary(result.summary);
     } catch (err) { console.error('Transactions summary error:', err); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this transaction?')) return;
+    try {
+      await api.delete(`/transactions/${id}`);
+      fetchTransactions(pagination.page);
+      fetchSummary();
+    } catch (err: any) { alert(err.message); }
   };
 
   const fetchMeta = async () => {
@@ -395,6 +404,7 @@ export default function Transactions() {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <button onClick={() => setShowDetail(tx)} className="p-1 text-gray-400 hover:text-primary-600"><Eye className="w-4 h-4" /></button>
+                    <button onClick={() => handleDelete(tx.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                   </td>
                 </tr>
               ))

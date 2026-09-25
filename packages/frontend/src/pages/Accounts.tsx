@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign } from 'lucide-react';
+import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign, Trash2 } from 'lucide-react';
 
 interface Account {
   id: string;
@@ -76,6 +76,15 @@ export default function Accounts() {
       const result = await api.get<AccountSummary>('/accounts/summary');
       setSummary(result.summary);
     } catch (err) { console.error('Account summary error:', err); }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this account? Accounts with transactions cannot be deleted.')) return;
+    try {
+      await api.delete(`/accounts/${id}`);
+      fetchAccounts(pagination.page);
+      fetchSummary();
+    } catch (err: any) { alert(err.message); }
   };
 
   const fetchMeta = async () => {
@@ -301,6 +310,9 @@ export default function Accounts() {
                       </button>
                       <button onClick={() => openEdit(account)} className="p-1 text-gray-400 hover:text-primary-600" title="Edit">
                         <Edit2 className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => handleDelete(account.id)} className="p-1 text-gray-400 hover:text-red-600" title="Delete">
+                        <Trash2 className="w-4 h-4" />
                       </button>
                     </div>
                   </td>

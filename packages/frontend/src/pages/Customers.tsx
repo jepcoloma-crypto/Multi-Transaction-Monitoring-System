@@ -107,8 +107,8 @@ export default function Customers() {
     setShowModal(true);
   };
 
-  const handleDeactivate = async (id: string) => {
-    if (!confirm('Deactivate this customer?')) return;
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this customer? Customers with transactions cannot be deleted.')) return;
     try {
       await api.delete(`/customers/${id}`);
       fetchCustomers(pagination.page);
@@ -210,7 +210,7 @@ export default function Customers() {
                         <div className="flex items-center justify-end gap-2">
                           <button onClick={() => handleEdit(c)} className="text-gray-400 hover:text-primary-600"><Edit2 className="w-4 h-4" /></button>
                           {c.status === 'active' && (
-                            <button onClick={() => handleDeactivate(c.id)} className="text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                            <button onClick={() => handleDelete(c.id)} className="text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                           )}
                         </div>
                       </td>
