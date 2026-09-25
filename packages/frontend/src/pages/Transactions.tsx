@@ -181,7 +181,7 @@ export default function Transactions() {
     }
     if (rule.min_fee && calcFee < rule.min_fee) calcFee = rule.min_fee;
     if (rule.max_fee && calcFee > rule.max_fee) calcFee = rule.max_fee;
-    return Math.round(calcFee * 100) / 100;
+    return Math.ceil(calcFee - 1e-9);
   };
 
   const handleRuleChange = (ruleId: string) => {

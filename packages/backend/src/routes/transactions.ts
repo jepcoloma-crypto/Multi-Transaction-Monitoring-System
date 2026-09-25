@@ -352,6 +352,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
         feeNum = Math.round(totalFee * 100) / 100;
       }
     }
+    feeNum = Math.ceil(feeNum - 1e-9);
 
     const account = await queryOne('SELECT id, name, status, created_by FROM accounts WHERE id = $1', [accountId]);
     if (!account) throw createError(404, 'Account not found');

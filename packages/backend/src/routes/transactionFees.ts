@@ -78,7 +78,7 @@ router.get('/calculate/:typeId', authorize('transactions.read'), async (req: Req
       }
       if (fee.min_fee && calculatedFee < fee.min_fee) calculatedFee = fee.min_fee;
       if (fee.max_fee && calculatedFee > fee.max_fee) calculatedFee = fee.max_fee;
-      calculatedFee = Math.round(calculatedFee * 100) / 100;
+      calculatedFee = Math.ceil(calculatedFee - 1e-9);
       return { ...fee, calculatedFee, tiers };
     }));
 
