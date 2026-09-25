@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
@@ -59,19 +59,23 @@ export default function Accounts() {
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
 
+  const fetchSeq = useRef(0);
+
   const fetchAccounts = async (page = 1) => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     try {
       const params = new URLSearchParams({ page: String(page), limit: '20' });
       if (search) params.set('search', search);
       if (statusFilter) params.set('status', statusFilter);
       const result = await api.get<{ data: Account[]; pagination: any }>(`/accounts?${params}`);
+      if (seq !== fetchSeq.current) return;
       setAccounts(result.data);
       setPagination(result.pagination);
     } catch (err: any) {
-      setError(err.message);
+      if (seq === fetchSeq.current) setError(err.message);
     } finally {
-      setLoading(false);
+      if (seq === fetchSeq.current) setLoading(false);
     }
   };
 
@@ -105,6 +109,16 @@ export default function Accounts() {
   };
 
   useEffect(() => { fetchAccounts(); fetchSummary(); fetchMeta(); }, []);
+
+  const initialLoad = useRef(true);
+  useEffect(() => {
+    if (initialLoad.current) {
+      initialLoad.current = false;
+      return;
+    }
+    const timer = setTimeout(() => fetchAccounts(1), 300);
+    return () => clearTimeout(timer);
+  }, [search, statusFilter]);
 
   const getStatusColor = (account: Account) => {
     if (account.status !== 'active') return 'text-gray-500';
