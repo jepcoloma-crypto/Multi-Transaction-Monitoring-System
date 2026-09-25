@@ -106,21 +106,24 @@ export default function Transactions() {
   };
 
   const fetchMeta = async () => {
-    try {
-      const [rules, a, ct, cust] = await Promise.all([
-        api.get<FeeRule[]>('/transaction-fees'),
-        api.get<{ data: Account[] }>('/accounts?limit=100'),
-        api.get<{ id: string; name: string; default_amount: number }[]>('/additional-charges'),
-        api.get<{ data: CustomerOption[] }>('/customers?limit=500'),
-      ]);
-      setFeeRules(rules.filter(r => r.is_active));
-      setAccounts(a.data);
-      setChargeTypes(ct.filter((c: any) => c.is_active));
-      setCustomers(cust.data);
+    const [rules, a, ct, cust] = await Promise.allSettled([
+      api.get<FeeRule[]>('/transaction-fees'),
+      api.get<{ data: Account[] }>('/accounts?limit=100'),
+      api.get<{ id: string; name: string; default_amount: number }[]>('/additional-charges'),
+      api.get<{ data: CustomerOption[] }>('/customers?limit=500'),
+    ]);
+    if (rules.status === 'fulfilled') {
+      setFeeRules(rules.value.filter(r => r.is_active));
       const seen = new Map<string, { id: string; name: string }>();
-      rules.filter(r => r.is_active).forEach(r => { if (!seen.has(r.type_code)) seen.set(r.type_code, { id: r.transaction_type_id, name: r.type_name }); });
+      rules.value.filter(r => r.is_active).forEach(r => { if (!seen.has(r.type_code)) seen.set(r.type_code, { id: r.transaction_type_id, name: r.type_name }); });
       setFilterTypes(Array.from(seen.values()));
-    } catch (err) { console.error('Transactions meta load error:', err); }
+    } else console.error('Transactions meta: fee rules failed:', rules.reason);
+    if (a.status === 'fulfilled') setAccounts(a.value.data);
+    else console.error('Transactions meta: accounts failed:', a.reason);
+    if (ct.status === 'fulfilled') setChargeTypes(ct.value.filter((c: any) => c.is_active));
+    else console.error('Transactions meta: charges failed:', ct.reason);
+    if (cust.status === 'fulfilled') setCustomers(cust.value.data);
+    else console.error('Transactions meta: customers failed:', cust.reason);
   };
 
   useEffect(() => { fetchTransactions(); fetchSummary(); fetchMeta(); }, []);

@@ -7,7 +7,7 @@ import { createAuditLog } from '../services/audit';
 const router = Router();
 router.use(authenticate);
 
-router.get('/', authorize('settings.read'), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const charges = await query(
       'SELECT * FROM additional_charge_types ORDER BY name'

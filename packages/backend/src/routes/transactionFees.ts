@@ -14,7 +14,7 @@ const FEE_FROM = `transaction_fees tf
   JOIN transaction_types tt ON tf.transaction_type_id = tt.id
   LEFT JOIN transaction_categories tc ON tf.transaction_category_id = tc.id`;
 
-router.get('/', authorize('settings.read'), async (_req: Request, res: Response, next: NextFunction) => {
+router.get('/', authorize('transactions.read'), async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const fees = await query(
       `SELECT ${FEE_SELECT} FROM ${FEE_FROM} ORDER BY tt.direction, tt.name, tf.name`
@@ -31,7 +31,7 @@ router.get('/', authorize('settings.read'), async (_req: Request, res: Response,
   } catch (error) { next(error); }
 });
 
-router.get('/calculate/:typeId', authorize('settings.read'), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/calculate/:typeId', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const categoryId = req.query.categoryId as string;
     const amount = parseFloat(req.query.amount as string) || 0;
@@ -80,7 +80,7 @@ router.get('/calculate/:typeId', authorize('settings.read'), async (req: Request
   } catch (error) { next(error); }
 });
 
-router.get('/:id', authorize('settings.read'), async (req: Request, res: Response, next: NextFunction) => {
+router.get('/:id', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const fee = await queryOne(
       `SELECT ${FEE_SELECT} FROM ${FEE_FROM} WHERE tf.id = $1`,
