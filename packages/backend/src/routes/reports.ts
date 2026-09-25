@@ -19,10 +19,10 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
 
     const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
     const entries = await query(
-      `SELECT le.*, t.transaction_number, t.type_name, tt.direction
+      `SELECT le.*, t.transaction_number, tt.name as type_name, tt.direction
        FROM ledger_entries le
        LEFT JOIN transactions t ON le.transaction_id = t.id
-       LEFT JOIN transaction_types tt ON t.type_id = tt.id
+       LEFT JOIN transaction_types tt ON t.transaction_type_id = tt.id
        ${wc} ORDER BY le.entry_date ASC`, params
     );
 
