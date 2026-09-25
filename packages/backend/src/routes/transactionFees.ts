@@ -61,10 +61,12 @@ router.get('/calculate/:typeId', authorize('transactions.read'), async (req: Req
           calculatedFee = parseFloat(fee.fee_value);
         }
       } else if (tiers.length > 0) {
-        const matchedTier = tiers.find((tier: any) =>
-          amount >= parseFloat(tier.min_amount) &&
-          (tier.max_amount === null || amount <= parseFloat(tier.max_amount))
-        );
+        const matchedTier =
+          tiers.find((tier: any) =>
+            amount >= parseFloat(tier.min_amount) &&
+            (tier.max_amount === null || amount <= parseFloat(tier.max_amount))
+          ) ||
+          tiers.filter((tier: any) => amount >= parseFloat(tier.min_amount)).pop();
         if (matchedTier) {
           calculatedFee = matchedTier.fee_type === 'percentage'
             ? (amount * parseFloat(matchedTier.fee_value) / 100)
@@ -73,6 +75,7 @@ router.get('/calculate/:typeId', authorize('transactions.read'), async (req: Req
       }
       if (fee.min_fee && calculatedFee < fee.min_fee) calculatedFee = fee.min_fee;
       if (fee.max_fee && calculatedFee > fee.max_fee) calculatedFee = fee.max_fee;
+      calculatedFee = Math.round(calculatedFee * 100) / 100;
       return { ...fee, calculatedFee, tiers };
     }));
 

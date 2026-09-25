@@ -315,18 +315,33 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     if (feeNum < 0) throw createError(400, 'Fee cannot be negative');
 
     if (!fee || feeNum === 0) {
-      const feeConfigs = await query<{ fee_type: string; fee_value: number; min_fee: number; max_fee: number | null }>(
-        `SELECT fee_type, fee_value, min_fee, max_fee FROM transaction_fees
+      const feeConfigs = await query<{ id: string; fee_type: string; fee_value: number; min_fee: number; max_fee: number | null }>(
+        `SELECT id, fee_type, fee_value, min_fee, max_fee FROM transaction_fees
          WHERE transaction_type_id = $1 AND is_active = true
          AND (transaction_category_id IS NULL OR transaction_category_id = $2)`,
         [resolvedTypeId, resolvedCategoryId]
       );
       if (feeConfigs.length > 0) {
+        const feeTiers = await query<any>(
+          'SELECT * FROM transaction_fee_tiers WHERE fee_id = ANY($1::uuid[]) ORDER BY min_amount',
+          [feeConfigs.map((f) => f.id)]
+        );
         let totalFee = 0;
         for (const fc of feeConfigs) {
-          let calcFee = fc.fee_type === 'percentage'
-            ? (amountNum * fc.fee_value / 100)
-            : fc.fee_value;
+          const configTiers = feeTiers.filter((t: any) => t.fee_id === fc.id);
+          const matchedTier =
+            configTiers.find((t: any) => amountNum >= parseFloat(t.min_amount) && (t.max_amount === null || amountNum <= parseFloat(t.max_amount))) ||
+            configTiers.filter((t: any) => amountNum >= parseFloat(t.min_amount)).pop();
+          let calcFee: number;
+          if (matchedTier) {
+            calcFee = matchedTier.fee_type === 'percentage'
+              ? (amountNum * parseFloat(matchedTier.fee_value) / 100)
+              : parseFloat(matchedTier.fee_value);
+          } else {
+            calcFee = fc.fee_type === 'percentage'
+              ? (amountNum * fc.fee_value / 100)
+              : fc.fee_value;
+          }
           if (fc.min_fee && calcFee < fc.min_fee) calcFee = fc.min_fee;
           if (fc.max_fee && calcFee > fc.max_fee) calcFee = fc.max_fee;
           totalFee += calcFee;

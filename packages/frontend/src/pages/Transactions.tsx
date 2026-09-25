@@ -151,30 +151,31 @@ export default function Transactions() {
     : `${selectedDirection === 'in' ? 'Cash in' : 'Credited'}: +${formatCurrency(totalOutflow)}`;
 
   const calculateFee = (rule: FeeRule, amount: number): number => {
+    let calcFee: number | null = null;
     if (rule.tiers && rule.tiers.length > 0) {
-      const matchedTier = rule.tiers.find(t =>
-        amount >= t.min_amount && (t.max_amount === null || amount <= t.max_amount)
-      );
+      const sorted = [...rule.tiers].sort((a, b) => a.min_amount - b.min_amount);
+      const matchedTier = sorted.find(t => amount >= t.min_amount && (t.max_amount === null || amount <= t.max_amount))
+        || sorted.filter(t => amount >= t.min_amount).pop();
       if (matchedTier) {
-        const fee = matchedTier.fee_type === 'percentage'
+        calcFee = matchedTier.fee_type === 'percentage'
           ? (amount * matchedTier.fee_value / 100)
           : matchedTier.fee_value;
-        return Math.round(fee * 100) / 100;
       }
     }
-    let calcFee: number;
-    if (rule.fee_type === 'flat_per_step') {
-      const baseAmount = rule.base_amount || 0;
-      const stepAmount = rule.step_amount || 1;
-      const stepFee = rule.step_fee || 0;
-      if (amount > baseAmount) {
-        const steps = Math.ceil((amount - baseAmount) / stepAmount);
-        calcFee = rule.fee_value + (steps * stepFee);
+    if (calcFee === null) {
+      if (rule.fee_type === 'flat_per_step') {
+        const baseAmount = rule.base_amount || 0;
+        const stepAmount = rule.step_amount || 1;
+        const stepFee = rule.step_fee || 0;
+        if (amount > baseAmount) {
+          const steps = Math.ceil((amount - baseAmount) / stepAmount);
+          calcFee = rule.fee_value + (steps * stepFee);
+        } else {
+          calcFee = rule.fee_value;
+        }
       } else {
-        calcFee = rule.fee_value;
+        calcFee = rule.fee_type === 'percentage' ? (amount * rule.fee_value / 100) : rule.fee_value;
       }
-    } else {
-      calcFee = rule.fee_type === 'percentage' ? (amount * rule.fee_value / 100) : rule.fee_value;
     }
     if (rule.min_fee && calcFee < rule.min_fee) calcFee = rule.min_fee;
     if (rule.max_fee && calcFee > rule.max_fee) calcFee = rule.max_fee;
