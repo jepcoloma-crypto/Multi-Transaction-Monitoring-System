@@ -144,7 +144,11 @@ export default function Transactions() {
   const totalOutflow = formData.feeAddedToBalance
     ? inputAmount + chargesTotal
     : inputAmount - feeAmount + chargesTotal;
-  const hasInsufficientBalance = selectedAccount && totalOutflow > 0 && totalOutflow > selectedAccount.current_balance;
+  const selectedDirection = selectedRule?.direction;
+  const hasInsufficientBalance = selectedDirection === 'out' && selectedAccount != null && totalOutflow > 0 && totalOutflow > selectedAccount.current_balance;
+  const movementLabel = selectedDirection === 'out'
+    ? `Total: ${formatCurrency(totalOutflow)}`
+    : `${selectedDirection === 'in' ? 'Cash in' : 'Credited'}: +${formatCurrency(totalOutflow)}`;
 
   const calculateFee = (rule: FeeRule, amount: number): number => {
     if (rule.tiers && rule.tiers.length > 0) {
@@ -614,22 +618,26 @@ export default function Transactions() {
                   )}</span></p>
                   <p className="border-t pt-1">
                     <span className="font-semibold">Account movement: </span>
-                    <span className="font-bold">{formatCurrency(totalOutflow)}</span>
+                    <span className={`font-bold ${selectedDirection === 'out' ? '' : 'text-green-600'}`}>
+                      {selectedDirection === 'out' ? '-' : '+'}{formatCurrency(totalOutflow)}
+                    </span>
                     <span className="text-xs text-gray-500 ml-1">
-                      ({formData.feeAddedToBalance ? 'amount + charges' : 'amount - fee + charges'})
+                      {selectedDirection === 'out'
+                        ? `(${formData.feeAddedToBalance ? 'amount + charges' : 'amount - fee + charges'})`
+                        : '(credited to account)'}
                     </span>
                   </p>
                 </div>
               )}
               {selectedAccount && totalOutflow > 0 && (
                 <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm ${hasInsufficientBalance ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
-                  <span>Account: {selectedAccount.name} — Balance: {formatCurrency(selectedAccount.current_balance)} — Total: {formatCurrency(totalOutflow)}</span>
+                  <span>Account: {selectedAccount.name} — Balance: {formatCurrency(selectedAccount.current_balance)} — {movementLabel}</span>
                   {hasInsufficientBalance && <span className="font-semibold">(Insufficient balance)</span>}
                   {!hasInsufficientBalance && (
                     <span className="text-xs">
-                      {formData.feeAddedToBalance
-                        ? '(Fee + charges paid separately)'
-                        : '(Fee deducted from amount)'}
+                      {selectedDirection === 'out'
+                        ? (formData.feeAddedToBalance ? '(Fee + charges paid separately)' : '(Fee deducted from amount)')
+                        : '(Credited to account — no balance required)'}
                     </span>
                   )}
                 </div>
