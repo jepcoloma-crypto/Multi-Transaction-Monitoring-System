@@ -246,12 +246,21 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
     }
 
     const {
-      name, maskedAccountNumber, accountReference, owner, purpose,
+      name, providerId, accountTypeId, maskedAccountNumber, accountReference, owner, purpose,
       minimumBalance, targetBalance, status, notes, currentBalance,
     } = req.body;
 
     if (maskedAccountNumber !== undefined && !String(maskedAccountNumber ?? '').trim()) {
       throw createError(400, 'Masked account number is required');
+    }
+
+    if (providerId) {
+      const provider = await queryOne('SELECT id FROM providers WHERE id = $1 AND is_active = true', [providerId]);
+      if (!provider) throw createError(400, 'Invalid or inactive provider');
+    }
+    if (accountTypeId) {
+      const accountType = await queryOne('SELECT id FROM account_types WHERE id = $1', [accountTypeId]);
+      if (!accountType) throw createError(400, 'Invalid account type');
     }
 
     let newBalance: number | null = null;
@@ -275,6 +284,8 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
         target_balance = COALESCE($7, target_balance),
         status = COALESCE($8, status),
         notes = COALESCE($9, notes),
+        provider_id = COALESCE($12, provider_id),
+        account_type_id = COALESCE($13, account_type_id),
         current_balance = COALESCE($11, current_balance),
         updated_at = NOW()
        WHERE id = $10 RETURNING *`,
@@ -290,6 +301,8 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
         notes !== undefined ? notes : existing.notes,
         accountId,
         newBalance,
+        providerId || null,
+        accountTypeId || null,
       ]
     );
 
@@ -306,8 +319,8 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
       entity: 'account',
       entityId: accountId,
       ipAddress: req.ip,
-      oldData: { name: existing.name, status: existing.status, balance: existing.current_balance },
-      newData: { name: updated!.name, status: updated!.status, balance: updated!.current_balance },
+      oldData: { name: existing.name, status: existing.status, balance: existing.current_balance, providerId: existing.provider_id, accountTypeId: existing.account_type_id },
+      newData: { name: updated!.name, status: updated!.status, balance: updated!.current_balance, providerId: updated!.provider_id, accountTypeId: updated!.account_type_id },
     });
 
     res.json({ success: true, data: updated });
