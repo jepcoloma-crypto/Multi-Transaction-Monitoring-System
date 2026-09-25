@@ -13,7 +13,7 @@ interface LoadingTx {
 
 interface Product { id: string; name: string; provider_name: string; provider_id: string; cost_price: number; selling_price: number; denomination: number | null; provider_convenience_fee: number; company_additional_charge: number; is_active: boolean; notes: string | null; }
 interface Provider { id: string; name: string; code: string; }
-interface Account { id: string; name: string; masked_account_number: string; current_balance: number; }
+interface Account { id: string; name: string; masked_account_number: string; current_balance: number; provider_name: string; status: string; }
 interface LoadingSummary { totalSales: number; totalRevenue: number; totalCost: number; totalProfit: number; totalConvenienceFees: number; totalCompanyCharges: number; }
 
 export default function Loading() {
@@ -319,7 +319,7 @@ export default function Loading() {
                 <label className="form-label">Account *</label>
                 <select required value={form.accountId} onChange={e => setForm({ ...form, accountId: e.target.value })} className="input-field">
                   <option value="">Select account</option>
-                  {accounts.map(a => <option key={a.id} value={a.id}>{a.name} - {formatCurrency(a.current_balance)}</option>)}
+                  {accounts.filter(a => a.status === 'active').map(a => <option key={a.id} value={a.id}>{a.name} ({a.provider_name}) - {formatCurrency(a.current_balance)}</option>)}
                 </select>
               </div>
               <div>
