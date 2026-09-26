@@ -154,7 +154,7 @@ export default function Reports() {
                   <p className="text-sm text-gray-600">Fund Transfers</p>
                   <p className="text-2xl font-bold mt-1">{reportData.transfers?.count || 0}</p>
                   <p className="text-sm text-gray-500">Amount: {formatCurrency(reportData.transfers?.totalAmount || 0)}</p>
-                  <p className="text-sm text-gray-500">Fees: {formatCurrency(reportData.transfers?.totalFees || 0)}</p>
+                  <p className="text-sm text-gray-500">Service Charges: {formatCurrency(reportData.transfers?.totalFees || 0)}</p>
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -254,7 +254,7 @@ export default function Reports() {
                 <div className="grid grid-cols-3 gap-4 text-sm">
                   <div><p className="text-gray-500">Count</p><p className="font-bold">{reportData.summary?.count || 0}</p></div>
                   <div><p className="text-gray-500">Total Amount</p><p className="font-bold">{formatCurrency(reportData.summary?.totalAmount || 0)}</p></div>
-                  <div><p className="text-gray-500">Total Fees</p><p className="font-bold">{formatCurrency(reportData.summary?.totalFees || 0)}</p></div>
+                  <div><p className="text-gray-500">Total Service Charges</p><p className="font-bold">{formatCurrency(reportData.summary?.totalFees || 0)}</p></div>
                 </div>
               </div>
               <div className="card overflow-hidden">
@@ -266,7 +266,7 @@ export default function Reports() {
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">From</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">To</th>
                         <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
-                        <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Fee</th>
+                        <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Service Charge</th>
                         <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
                       </tr>

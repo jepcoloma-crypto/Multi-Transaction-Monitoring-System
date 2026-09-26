@@ -127,7 +127,7 @@ export default function Dashboard() {
               </div>
               <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center"><ArrowLeftRight className="w-5 h-5 text-purple-600" /></div>
             </div>
-            <p className="text-xs text-gray-500 mt-2">Total: {formatCurrency(transferSummary.totalAmount)} | Fees: {formatCurrency(transferSummary.totalFees)}</p>
+            <p className="text-xs text-gray-500 mt-2">Total: {formatCurrency(transferSummary.totalAmount)} | Service Charges: {formatCurrency(transferSummary.totalFees)}</p>
           </div>
         )}
         {loadingSummary && (

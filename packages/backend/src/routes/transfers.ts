@@ -99,17 +99,15 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
   try {
     await client.query('BEGIN');
 
-    const { sourceAccountId, destinationAccountId, transferAmount, transferFee, purpose, notes, transferDate, feeDeductedFromAmount } = req.body;
+    const { sourceAccountId, destinationAccountId, transferAmount, serviceCharge, transferFee, purpose, notes, transferDate } = req.body;
 
     if (!sourceAccountId || !destinationAccountId) throw createError(400, 'Source and destination accounts are required');
     if (sourceAccountId === destinationAccountId) throw createError(400, 'Source and destination must be different');
 
     const srcAmount = parseFloat(transferAmount);
-    const fee = parseFloat(transferFee || '0');
+    const charge = parseFloat((serviceCharge ?? transferFee) || '0');
     if (isNaN(srcAmount) || srcAmount <= 0) throw createError(400, 'Transfer amount must be greater than zero');
-    if (isNaN(fee) || fee < 0) throw createError(400, 'Fee cannot be negative');
-
-    const feeDeducted = feeDeductedFromAmount === true;
+    if (isNaN(charge) || charge < 0) throw createError(400, 'Service charge cannot be negative');
 
     const srcAcct = await client.query('SELECT id, name, current_balance, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [sourceAccountId]);
     if (!srcAcct.rows[0]) throw createError(404, 'Source account not found');
@@ -119,36 +117,29 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
     if (!dstAcct.rows[0]) throw createError(404, 'Destination account not found');
     if (dstAcct.rows[0].status !== 'active') throw createError(400, 'Destination account is not active');
 
-    let totalDeduction: number;
-    let destinationAmount: number;
+    const destinationAmount = srcAmount;
+    const totalDeduction = srcAmount + charge;
 
-    if (feeDeducted && fee > 0) {
-      destinationAmount = srcAmount - fee;
-      totalDeduction = destinationAmount;
-    } else {
-      destinationAmount = srcAmount;
-      totalDeduction = srcAmount;
-    }
-
-    if (parseFloat(srcAcct.rows[0].current_balance) < totalDeduction) throw createError(400, 'Insufficient balance');
+    if (parseFloat(srcAcct.rows[0].current_balance) < totalDeduction) throw createError(400, 'Insufficient balance for transfer amount plus service charge');
 
     // Create transfer record
     const txNum = await client.query("SELECT nextval('transfers_transfer_number_seq') as nextval");
     const transfer = (await client.query(
       `INSERT INTO transfers (transfer_number, source_account_id, destination_account_id, transfer_amount, transfer_fee,
-       total_source_deduction, destination_amount, purpose, status, transfer_date, created_by, notes, fee_deducted_from_amount)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9, $10, $11, $12) RETURNING *`,
-      [txNum.rows[0].nextval, sourceAccountId, destinationAccountId, srcAmount, fee, totalDeduction, destinationAmount, purpose || null, transferDate || new Date(), req.user!.userId, notes || null, feeDeducted]
+       total_source_deduction, destination_amount, purpose, status, transfer_date, created_by, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9, $10, $11) RETURNING *`,
+      [txNum.rows[0].nextval, sourceAccountId, destinationAccountId, srcAmount, charge, totalDeduction, destinationAmount, purpose || null, transferDate || new Date(), req.user!.userId, notes || null]
     )).rows[0];
 
     // Debit source
     const srcBalance = parseFloat(srcAcct.rows[0].current_balance) - totalDeduction;
     await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [srcBalance, sourceAccountId]);
 
+    const srcDesc = `Transfer to ${dstAcct.rows[0].name}: ${purpose || ''}` + (charge > 0 ? ` (incl. ${charge.toFixed(2)} service charge)` : '');
     const srcLedger = (await client.query(
       `INSERT INTO ledger_entries (account_id, transfer_id, entry_type, amount, balance_after, description, entry_date)
        VALUES ($1, $2, 'debit', $3, $4, $5, $6) RETURNING id`,
-      [sourceAccountId, transfer.id, totalDeduction, srcBalance, `Transfer to ${dstAcct.rows[0].name}: ${purpose || ''}`, transferDate || new Date()]
+      [sourceAccountId, transfer.id, totalDeduction, srcBalance, srcDesc, transferDate || new Date()]
     )).rows[0];
 
     await client.query(
@@ -176,7 +167,7 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
     await client.query('COMMIT');
 
     await createAuditLog({ userId: req.user!.userId, action: 'transfer.created', entity: 'transfer', entityId: transfer.id, ipAddress: req.ip,
-      newData: { source: srcAcct.rows[0].name, destination: dstAcct.rows[0].name, amount: srcAmount, fee } });
+      newData: { source: srcAcct.rows[0].name, destination: dstAcct.rows[0].name, amount: srcAmount, serviceCharge: charge } });
 
     res.status(201).json({ success: true, data: transfer });
   } catch (error) {

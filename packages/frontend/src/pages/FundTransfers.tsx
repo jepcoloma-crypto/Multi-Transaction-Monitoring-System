@@ -9,7 +9,7 @@ interface Transfer {
   id: string; transfer_number: number; source_name: string; destination_name: string;
   source_masked: string; dest_masked: string; transfer_amount: number; transfer_fee: number;
   total_source_deduction: number; destination_amount: number; status: string; transfer_date: string; purpose: string;
-  created_by_email: string; completed_at: string; notes: string; fee_deducted_from_amount: boolean;
+  created_by_email: string; completed_at: string; notes: string;
 }
 
 interface Account { id: string; name: string; masked_account_number: string; current_balance: number; provider_name: string; status: string; }
@@ -24,7 +24,7 @@ export default function FundTransfers() {
   const [filter, setFilter] = useState('');
   const [search, setSearch] = useState('');
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
-  const [form, setForm] = useState({ sourceAccountId: '', destinationAccountId: '', transferAmount: '', transferFee: '0', purpose: '', notes: '', transferDate: '', feeDeductedFromAmount: false });
+  const [form, setForm] = useState({ sourceAccountId: '', destinationAccountId: '', transferAmount: '', serviceCharge: '0', purpose: '', notes: '', transferDate: '' });
   const [submitting, setSubmitting] = useState(false);
 
   const loadData = async (page = 1) => {
@@ -55,11 +55,11 @@ export default function FundTransfers() {
     setSubmitting(true);
     try {
       await api.post('/transfers', {
-        ...form, transferAmount: parseFloat(form.transferAmount), transferFee: parseFloat(form.transferFee || '0'),
-        transferDate: form.transferDate || undefined, feeDeductedFromAmount: form.feeDeductedFromAmount,
+        ...form, transferAmount: parseFloat(form.transferAmount), serviceCharge: parseFloat(form.serviceCharge || '0'),
+        transferDate: form.transferDate || undefined,
       });
       setShowModal(false);
-      setForm({ sourceAccountId: '', destinationAccountId: '', transferAmount: '', transferFee: '0', purpose: '', notes: '', transferDate: '', feeDeductedFromAmount: false });
+      setForm({ sourceAccountId: '', destinationAccountId: '', transferAmount: '', serviceCharge: '0', purpose: '', notes: '', transferDate: '' });
       loadData(1);
     } catch (err: any) { alert(err.response?.data?.message || 'Transfer failed'); } finally { setSubmitting(false); }
   };
@@ -137,8 +137,7 @@ export default function FundTransfers() {
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Source</th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Destination</th>
                   <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
-                  <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Fee</th>
-                  <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Fee Handling</th>
+                  <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Service Charge</th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
                   <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Created By</th>
@@ -153,13 +152,6 @@ export default function FundTransfers() {
                     <td className="px-6 py-3.5 whitespace-nowrap"><p className="text-sm font-medium">{t.destination_name}</p><p className="text-xs text-gray-500">{t.dest_masked}</p></td>
                     <td className="px-6 py-3.5 font-medium text-right whitespace-nowrap">{formatCurrency(t.transfer_amount)}</td>
                     <td className="px-6 py-3.5 text-gray-600 text-right whitespace-nowrap">{parseFloat(String(t.transfer_fee)) > 0 ? formatCurrency(parseFloat(String(t.transfer_fee))) : '-'}</td>
-                    <td className="px-6 py-3.5 text-center">
-                      {parseFloat(String(t.transfer_fee)) > 0 ? (
-                        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${t.fee_deducted_from_amount ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
-                          {t.fee_deducted_from_amount ? 'Deducted' : 'On Top'}
-                        </span>
-                      ) : <span className="text-gray-400 text-xs">-</span>}
-                    </td>
                     <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{new Date(t.transfer_date).toLocaleDateString()}</td>
                     <td className="px-6 py-3.5 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${statusColor(t.status)}`}>{t.status}</span></td>
                     <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{t.created_by_email || '-'}</td>
@@ -215,21 +207,9 @@ export default function FundTransfers() {
                   <input type="number" step="0.01" min="0.01" required value={form.transferAmount} onChange={e => setForm({ ...form, transferAmount: e.target.value })} className="input-field" placeholder="0.00" />
                 </div>
                 <div>
-                  <label className="form-label">Fee</label>
-                  <input type="number" step="0.01" min="0" value={form.transferFee} onChange={e => setForm({ ...form, transferFee: e.target.value })} className="input-field" placeholder="0.00" />
-                </div>
-              </div>
-              <div>
-                <label className="form-label">Fee Handling</label>
-                <div className="flex gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" name="feeHandling" checked={!form.feeDeductedFromAmount} onChange={() => setForm({ ...form, feeDeductedFromAmount: false })} className="text-primary-600" />
-                    <span className="text-sm">Fee paid separately by customer</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input type="radio" name="feeHandling" checked={form.feeDeductedFromAmount} onChange={() => setForm({ ...form, feeDeductedFromAmount: true })} className="text-primary-600" />
-                    <span className="text-sm">Deduct fee from transfer amount</span>
-                  </label>
+                  <label className="form-label">Service Charge</label>
+                  <input type="number" step="0.01" min="0" value={form.serviceCharge} onChange={e => setForm({ ...form, serviceCharge: e.target.value })} className="input-field" placeholder="0.00" />
+                  <p className="text-xs text-gray-500 mt-1">Deducted from the source account</p>
                 </div>
               </div>
               <div>
@@ -246,19 +226,9 @@ export default function FundTransfers() {
               </div>
               {form.sourceAccountId && form.transferAmount && (
                 <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
-                  {form.feeDeductedFromAmount && parseFloat(form.transferFee || '0') > 0 ? (
-                    <>
-                      <p>Source will be debited: <span className="font-medium text-red-600">{formatCurrency(parseFloat(form.transferAmount || '0') - parseFloat(form.transferFee || '0'))}</span></p>
-                      <p>Destination will receive: <span className="font-medium text-green-600">{formatCurrency(parseFloat(form.transferAmount || '0') - parseFloat(form.transferFee || '0'))}</span></p>
-                      <p className="text-xs text-gray-500">Fee: {formatCurrency(parseFloat(form.transferFee || '0'))} (company income, deducted from amount)</p>
-                    </>
-                  ) : (
-                    <>
-                      <p>Source will be debited: <span className="font-medium text-red-600">{formatCurrency(parseFloat(form.transferAmount || '0'))}</span></p>
-                      <p>Destination will receive: <span className="font-medium text-green-600">{formatCurrency(parseFloat(form.transferAmount || '0'))}</span></p>
-                      <p className="text-xs text-gray-500">Fee: {formatCurrency(parseFloat(form.transferFee || '0'))} (paid separately by customer)</p>
-                    </>
-                  )}
+                  <p>Source will be debited: <span className="font-medium text-red-600">{formatCurrency(parseFloat(form.transferAmount || '0') + parseFloat(form.serviceCharge || '0'))}</span></p>
+                  <p>Destination will receive: <span className="font-medium text-green-600">{formatCurrency(parseFloat(form.transferAmount || '0'))}</span></p>
+                  <p className="text-xs text-gray-500">Service charge: {formatCurrency(parseFloat(form.serviceCharge || '0'))} (deducted from source account)</p>
                 </div>
               )}
               <div className="flex gap-3 justify-end">
@@ -284,18 +254,12 @@ export default function FundTransfers() {
               </div>
               <div className="grid grid-cols-3 gap-4 pt-2 border-t">
                 <div><p className="text-gray-500">Amount</p><p className="font-medium">{formatCurrency(showDetail.transfer_amount)}</p></div>
-                <div><p className="text-gray-500">Fee</p><p className="font-medium">{formatCurrency(parseFloat(String(showDetail.transfer_fee)))}</p></div>
+                <div><p className="text-gray-500">Service Charge</p><p className="font-medium">{formatCurrency(parseFloat(String(showDetail.transfer_fee)))}</p></div>
                 <div><p className="text-gray-500">Total Deducted</p><p className="font-medium text-red-600">{formatCurrency(showDetail.total_source_deduction)}</p></div>
               </div>
-              <div className="grid grid-cols-2 gap-4 pt-2 border-t">
-                <div><p className="text-gray-500">Destination Receives</p><p className="font-medium text-green-600">{formatCurrency(showDetail.destination_amount)}</p></div>
-                <div><p className="text-gray-500">Fee Handling</p>
-                  {parseFloat(String(showDetail.transfer_fee)) > 0 ? (
-                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${showDetail.fee_deducted_from_amount ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
-                      {showDetail.fee_deducted_from_amount ? 'Deducted from amount' : 'Fee on top (paid separately)'}
-                    </span>
-                  ) : <span className="text-gray-400 text-xs">No fee</span>}
-                </div>
+              <div className="pt-2 border-t">
+                <p className="text-gray-500">Destination Receives</p>
+                <p className="font-medium text-green-600">{formatCurrency(showDetail.destination_amount)}</p>
               </div>
               <div className="pt-2 border-t">
                 <p className="text-gray-500">Status</p><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${statusColor(showDetail.status)}`}>{showDetail.status}</span>
