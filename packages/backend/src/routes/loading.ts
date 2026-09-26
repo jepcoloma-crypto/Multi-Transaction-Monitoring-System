@@ -229,6 +229,15 @@ router.delete('/:id', authorize('loading.write'), async (req: Request, res: Resp
     if (loadingTx.status === 'reversed') throw createError(400, 'Reversed loading transactions cannot be deleted');
 
     const entryAmount = parseFloat(loadingTx.total_cost) + parseFloat(loadingTx.provider_convenience_fee || '0');
+
+    // Restore account balance for completed loading transactions
+    if (loadingTx.status === 'completed') {
+      await client.query(
+        `UPDATE accounts SET current_balance = current_balance + $1, updated_at = NOW() WHERE id = $2`,
+        [entryAmount, loadingTx.account_id]
+      );
+    }
+
     await client.query(
       `DELETE FROM ledger_entries WHERE account_id = $1 AND entry_type = 'debit' AND amount = $2 AND entry_date = $3`,
       [loadingTx.account_id, entryAmount, loadingTx.created_at]

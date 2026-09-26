@@ -636,7 +636,11 @@ router.delete('/:id', authorize('transactions.write'), async (req: Request, res:
     await client.query('BEGIN');
 
     const original = await client.query(
-      `SELECT t.id, t.transaction_number, t.amount, t.status, t.account_id, t.created_by FROM transactions t WHERE t.id = $1`,
+      `SELECT t.id, t.transaction_number, t.amount, t.fee, t.status, t.account_id, t.created_by,
+              t.fee_added_to_balance, t.additional_charges, tt.direction
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.id = $1`,
       [req.params.id]
     );
     const transaction = original.rows[0];
@@ -645,11 +649,21 @@ router.delete('/:id', authorize('transactions.write'), async (req: Request, res:
       throw createError(400, 'Reversed transactions cannot be deleted — its reversal is already recorded');
     }
 
-    const account = await client.query(
-      'SELECT id FROM accounts WHERE id = $1',
-      [transaction.account_id]
-    );
-    if (!account.rows[0]) throw createError(404, 'Account not found');
+    // Restore account balance for completed transactions
+    if (transaction.status === 'completed') {
+      const amount = parseFloat(transaction.amount);
+      const fee = parseFloat(transaction.fee || 0);
+      const charges = (transaction.additional_charges || [])
+        .reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+      const netAmount = transaction.fee_added_to_balance ? amount : amount - fee;
+      const totalImpact = netAmount + charges;
+      const balanceDelta = transaction.direction === 'in' ? totalImpact : -totalImpact;
+
+      await client.query(
+        `UPDATE accounts SET current_balance = current_balance - $1, updated_at = NOW() WHERE id = $2`,
+        [balanceDelta, transaction.account_id]
+      );
+    }
 
     await client.query('DELETE FROM ledger_entries WHERE transaction_id = $1', [req.params.id]);
     await client.query('DELETE FROM transactions WHERE id = $1', [req.params.id]);
