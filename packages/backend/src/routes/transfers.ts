@@ -60,7 +60,7 @@ router.get('/summary', authorize('transfers.read'), async (req: Request, res: Re
     const params: any[] = [];
     let pi = 1;
     if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
-    if (endDate) { conds.push(`t.transfer_date <= $${pi++}`); params.push(endDate); }
+    if (endDate) { conds.push(`t.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     const scope = ownerClause(req, 't', 'transfers.read_all', pi);
     if (scope.clause) {
       conds.push(scope.clause);

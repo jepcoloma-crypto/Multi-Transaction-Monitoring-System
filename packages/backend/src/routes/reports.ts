@@ -15,7 +15,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
     const params: any[] = [accountId];
     let pi = 2;
     if (startDate) { conds.push(`le.entry_date >= $${pi++}`); params.push(startDate); }
-    if (endDate) { conds.push(`le.entry_date <= $${pi++}`); params.push(endDate); }
+    if (endDate) { conds.push(`le.entry_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
     const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
@@ -52,7 +52,7 @@ router.get('/transaction-report', authorize('reports.read'), async (req: Request
     const params: any[] = ['reversed'];
     let pi = 2;
     if (startDate) { conds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
-    if (endDate) { conds.push(`t.transaction_date <= $${pi++}`); params.push(endDate); }
+    if (endDate) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (accountId) { conds.push(`t.account_id = $${pi++}`); params.push(accountId); }
     if (typeId) { conds.push(`t.transaction_type_id = $${pi++}`); params.push(typeId); }
     const scope = ownerClause(req, 't', 'transactions.read_all', pi);
@@ -95,7 +95,7 @@ router.get('/transfer-report', authorize('reports.read'), async (req: Request, r
     const params: any[] = [];
     let pi = 1;
     if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
-    if (endDate) { conds.push(`t.transfer_date <= $${pi++}`); params.push(endDate); }
+    if (endDate) { conds.push(`t.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (status) { conds.push(`t.status = $${pi++}`); params.push(status); }
     const scope = ownerClause(req, 't', 'transfers.read_all', pi);
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
@@ -124,7 +124,7 @@ router.get('/loading-report', authorize('reports.read'), async (req: Request, re
     const params: any[] = [];
     let pi = 1;
     if (startDate) { conds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
-    if (endDate) { conds.push(`lt.created_at <= $${pi++}`); params.push(endDate); }
+    if (endDate) { conds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (providerId) { conds.push(`lp.provider_id = $${pi++}`); params.push(providerId); }
     const scope = ownerClause(req, 'lt', 'loading.read_all', pi);
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
@@ -252,7 +252,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       const params: any[] = ['reversed'];
       let pi = 2;
       if (startDate) { conds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
-      if (endDate) { conds.push(`t.transaction_date <= $${pi++}`); params.push(endDate); }
+      if (endDate) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
       const scope = ownerClause(req, 't', 'transactions.read_all', pi);
       if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
       const wc = `WHERE ${conds.join(' AND ')}`;
@@ -290,13 +290,25 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       );
       headers = ['Number', 'Product', 'Customer', 'Qty', 'Cost', 'Revenue', 'Profit', 'Account', 'Status', 'Date'];
     } else if (type === 'ledger') {
+      const accountId = req.query.accountId as string;
       const seeAll = canSeeAll(req, 'accounts.read_all');
+      if (accountId) {
+        const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
+        assertOwner(req, account, 'accounts.read_all', 'Account not found');
+      }
+      const conds: string[] = [];
+      const params: any[] = [];
+      let pi = 1;
+      if (accountId) { conds.push(`le.account_id = $${pi++}`); params.push(accountId); }
+      if (startDate) { conds.push(`le.entry_date >= $${pi++}`); params.push(startDate); }
+      if (endDate) { conds.push(`le.entry_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+      if (!seeAll) { conds.push(`a.created_by = $${pi++}`); params.push(req.user!.userId); }
+      const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
       data = await query(
         `SELECT le.id, a.name as account_name, le.entry_type, le.amount, le.balance_after,
                 le.description, le.entry_date
          FROM ledger_entries le JOIN accounts a ON le.account_id = a.id
-         ${seeAll ? '' : 'WHERE a.created_by = $1'} ORDER BY le.entry_date DESC`,
-        seeAll ? [] : [req.user!.userId]
+         ${wc} ORDER BY le.entry_date ASC`, params
       );
       headers = ['ID', 'Account', 'Type', 'Amount', 'Balance', 'Description', 'Date'];
     } else {

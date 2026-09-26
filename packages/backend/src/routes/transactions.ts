@@ -32,7 +32,7 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
     if (typeId) { conditions.push(`t.transaction_type_id = $${paramIndex++}`); params.push(typeId); }
     if (status) { conditions.push(`t.status = $${paramIndex++}`); params.push(status); }
     if (startDate) { conditions.push(`t.transaction_date >= $${paramIndex++}`); params.push(startDate); }
-    if (endDate) { conditions.push(`t.transaction_date <= $${paramIndex++}`); params.push(endDate); }
+    if (endDate) { conditions.push(`t.transaction_date < ($${paramIndex++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (req.query.minAmount) { conditions.push(`t.amount >= $${paramIndex++}`); params.push(parseFloat(req.query.minAmount as string)); }
     if (req.query.maxAmount) { conditions.push(`t.amount <= $${paramIndex++}`); params.push(parseFloat(req.query.maxAmount as string)); }
     if (search) {
@@ -96,7 +96,7 @@ router.get('/summary', authorize('transactions.read'), async (req: Request, res:
     let paramIndex = 1;
 
     if (startDate) { conditions.push(`t.transaction_date >= $${paramIndex++}`); params.push(startDate); }
-    if (endDate) { conditions.push(`t.transaction_date <= $${paramIndex++}`); params.push(endDate); }
+    if (endDate) { conditions.push(`t.transaction_date < ($${paramIndex++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (accountId) { conditions.push(`t.account_id = $${paramIndex++}`); params.push(accountId); }
     const scope = ownerClause(req, 't', 'transactions.read_all', paramIndex);
     if (scope.clause) {

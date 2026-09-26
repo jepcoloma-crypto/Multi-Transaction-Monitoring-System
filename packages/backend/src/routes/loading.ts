@@ -108,7 +108,7 @@ router.get('/summary', authorize('loading.read'), async (req: Request, res: Resp
     const params: any[] = [];
     let pi = 1;
     if (startDate) { conds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
-    if (endDate) { conds.push(`lt.created_at <= $${pi++}`); params.push(endDate); }
+    if (endDate) { conds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     const scope = ownerClause(req, 'lt', 'loading.read_all', pi);
     if (scope.clause) {
       conds.push(scope.clause);

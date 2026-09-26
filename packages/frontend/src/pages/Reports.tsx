@@ -44,10 +44,11 @@ export default function Reports() {
       const params = new URLSearchParams();
       if (filters.startDate) params.append('startDate', filters.startDate);
       if (filters.endDate) params.append('endDate', filters.endDate);
+      if (activeReport === 'account-statement' && filters.accountId) params.append('accountId', filters.accountId);
       params.append('format', 'csv');
       const qs = params.toString();
       const res = await fetch(`${API_BASE}/reports/export/${type}?${qs}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
       });
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

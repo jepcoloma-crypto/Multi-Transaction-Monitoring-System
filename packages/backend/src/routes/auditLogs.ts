@@ -40,7 +40,7 @@ router.get('/', authorize('audit_logs.read', 'administrator'), async (req: Reque
       params.push(startDate);
     }
     if (endDate) {
-      conditions.push(`al.created_at <= $${paramIndex++}`);
+      conditions.push(`al.created_at < ($${paramIndex++}::date + INTERVAL '1 day')`);
       params.push(endDate);
     }
 
