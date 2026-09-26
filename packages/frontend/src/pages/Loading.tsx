@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { Smartphone, Plus, Search, Package, X, Edit2, Trash2 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 import Pagination from '../components/Pagination';
 import AccountSelect from '../components/AccountSelect';
 
@@ -18,6 +19,8 @@ interface Account { id: string; name: string; masked_account_number: string; cur
 interface LoadingSummary { totalSales: number; totalRevenue: number; totalCost: number; totalProfit: number; totalConvenienceFees: number; totalCompanyCharges: number; }
 
 export default function Loading() {
+  const { user } = useAuth();
+  const isAdmin = user?.roles?.includes('administrator') ?? false;
   const [txns, setTxns] = useState<LoadingTx[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -223,7 +226,9 @@ export default function Loading() {
                         <td className="px-4 py-3 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
                         <td className="px-4 py-3 text-sm text-gray-600">{t.created_by_username || '-'}</td>
                         <td className="px-4 py-3 text-right">
-                          <button onClick={() => handleDeleteTx(t.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                          {isAdmin && (
+                            <button onClick={() => handleDeleteTx(t.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -296,7 +301,9 @@ export default function Loading() {
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button onClick={() => openEditProduct(p)} className="p-1 text-gray-400 hover:text-primary-600"><Edit2 className="w-4 h-4" /></button>
-                            <button onClick={() => handleDeleteProduct(p.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                            {isAdmin && (
+                              <button onClick={() => handleDeleteProduct(p.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                            )}
                           </td>
                         </tr>
                       );

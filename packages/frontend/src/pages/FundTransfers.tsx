@@ -201,7 +201,9 @@ export default function FundTransfers() {
                         {t.status === 'pending' && isApprover && (
                           <button onClick={() => handleApprove(t)} title="Approve" className="p-1 hover:bg-green-100 rounded text-green-600"><Check className="w-4 h-4" /></button>
                         )}
-                        <button onClick={() => handleDelete(t)} title="Delete" className="p-1 hover:bg-red-100 rounded text-red-600"><Trash2 className="w-4 h-4" /></button>
+                        {isAdmin && (
+                          <button onClick={() => handleDelete(t)} title="Delete" className="p-1 hover:bg-red-100 rounded text-red-600"><Trash2 className="w-4 h-4" /></button>
+                        )}
                       </div>
                     </td>
                   </tr>

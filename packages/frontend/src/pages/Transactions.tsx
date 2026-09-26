@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
 
 const DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1, 0.25, 0.1, 0.05, 0.01];
@@ -72,6 +73,8 @@ interface CustomerOption { id: string; first_name: string; last_name: string; ph
 interface Summary { totalMoneyIn: number; totalMoneyOut: number; totalFees: number; transactionCount: number; netMovement: number; }
 
 export default function Transactions() {
+  const { user } = useAuth();
+  const isAdmin = user?.roles?.includes('administrator') ?? false;
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [feeRules, setFeeRules] = useState<FeeRule[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -296,6 +299,11 @@ export default function Transactions() {
     if (!reason) return;
     try {
       await api.post(`/transactions/${id}/reverse`, { reason });
+      if (isAdmin) {
+        alert('Transaction reversed successfully.');
+      } else {
+        alert('Reversal request submitted. Waiting for admin approval.');
+      }
       setShowDetail(null);
       fetchTransactions(pagination.page);
       fetchSummary();
@@ -473,7 +481,9 @@ export default function Transactions() {
                   <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_username || <span className="text-gray-400">-</span>}</td>
                   <td className="px-4 py-3 text-right">
                     <button onClick={() => setShowDetail(tx)} className="p-1 text-gray-400 hover:text-primary-600"><Eye className="w-4 h-4" /></button>
-                    <button onClick={() => handleDelete(tx.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                    {isAdmin && (
+                      <button onClick={() => handleDelete(tx.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
+                    )}
                   </td>
                 </tr>
               ))
@@ -604,7 +614,9 @@ export default function Transactions() {
 
               {showDetail.status === 'completed' && showDetail.type_code !== 'adjustment_in' && showDetail.type_code !== 'adjustment_out' && (
                 <div className="pt-3 border-t">
-                  <button onClick={() => handleReverse(showDetail.id)} className="btn-secondary text-sm text-red-600">Reverse Transaction</button>
+                  <button onClick={() => handleReverse(showDetail.id)} className="btn-secondary text-sm text-red-600">
+                    {isAdmin ? 'Reverse Transaction' : 'Request Reversal'}
+                  </button>
                 </div>
               )}
             </div>

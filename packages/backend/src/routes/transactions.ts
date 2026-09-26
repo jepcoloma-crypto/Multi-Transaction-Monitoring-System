@@ -556,8 +556,6 @@ router.patch('/:id/notes', authorize('transactions.write'), async (req: Request,
 router.post('/:id/reverse', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
-    await client.query('BEGIN');
-
     const original = await queryOne(
       `SELECT t.*, tt.direction FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
@@ -575,14 +573,135 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
       throw createError(400, 'Adjustment transactions cannot be reversed');
     }
 
+    const isAdmin = req.user!.roles.includes('administrator');
     const { reason } = req.body;
 
+    if (isAdmin) {
+      // Admin: execute reversal immediately
+      await client.query('BEGIN');
+
+      const originalCharges = original.additional_charges || [];
+      const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+
+      await client.query(
+        `UPDATE transactions SET status = 'reversed', updated_at = NOW() WHERE id = $1`,
+        [req.params.id]
+      );
+
+      const reverseEntryType = original.direction === 'in' ? 'debit' : 'credit';
+      const reverseTypeId = await queryOne<{ id: string }>(
+        `SELECT id FROM transaction_types WHERE code = $1`,
+        [original.direction === 'in' ? 'adjustment_out' : 'adjustment_in']
+      );
+
+      const reverseTx = await queryOne(
+        `INSERT INTO transactions (account_id, transaction_type_id, amount, fee, net_amount,
+         reference_number, transaction_date, description, status, created_by)
+         VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6)
+         RETURNING *`,
+        [
+          original.account_id, reverseTypeId!.id, original.amount,
+          `REV-${original.transaction_number}`, `Reversal: ${reason || original.description || 'Transaction reversal'}`,
+          req.user!.userId,
+        ]
+      );
+
+      await processTransaction(
+        original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
+        reverseEntryType as 'debit' | 'credit', reverseTx!.id,
+        `REV-${original.transaction_number}`, `Reversal: ${reason || 'Transaction reversal'}`,
+        new Date(), client
+      );
+
+      await client.query('COMMIT');
+
+      await createAuditLog({
+        userId: req.user!.userId,
+        action: 'transaction.reversed',
+        entity: 'transaction',
+        entityId: req.params.id,
+        ipAddress: req.ip,
+        newData: { originalNumber: original.transaction_number, reason },
+      });
+
+      res.json({ success: true, data: reverseTx });
+    } else {
+      // Non-admin: create pending reversal for admin approval
+      const originalCharges = original.additional_charges || [];
+      const reversalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+
+      const pending = await queryOne(
+        `INSERT INTO pending_reversals (entity_type, entity_id, account_id, requested_by, reversal_amount, reason)
+         VALUES ('transaction', $1, $2, $3, $4, $5)
+         RETURNING *`,
+        [req.params.id, original.account_id, req.user!.userId, reversalAmount, reason || null]
+      );
+
+      await createAuditLog({
+        userId: req.user!.userId,
+        action: 'transaction.reverse_requested',
+        entity: 'transaction',
+        entityId: req.params.id,
+        ipAddress: req.ip,
+        newData: { originalNumber: original.transaction_number, reason, pendingReversalId: pending!.id },
+      });
+
+      res.json({ success: true, data: pending });
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// List pending reversals (admin/manager)
+router.get('/reversals/pending', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rows = await query(
+      `SELECT pr.*, t.transaction_number, t.amount AS original_amount, t.status AS original_status,
+              u.username AS requested_by_username
+       FROM pending_reversals pr
+       JOIN transactions t ON pr.entity_id = t.id
+       JOIN users u ON pr.requested_by = u.id
+       WHERE pr.entity_type = 'transaction' AND pr.status = 'pending'
+       ORDER BY pr.created_at ASC`
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Approve a pending reversal (admin only)
+router.post('/reversals/:reversalId/approve', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  const isAdmin = req.user!.roles.includes('administrator');
+  if (!isAdmin) throw createError(403, 'Only administrators can approve reversals');
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    const pending = (await client.query(
+      `SELECT * FROM pending_reversals WHERE id = $1 AND status = 'pending'`,
+      [req.params.reversalId]
+    )).rows[0];
+    if (!pending) throw createError(404, 'Pending reversal not found or already processed');
+
+    const original = await queryOne(
+      `SELECT t.*, tt.direction FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.id = $1`,
+      [pending.entity_id]
+    );
+    if (!original) throw createError(404, 'Original transaction not found');
+    if (original.status === 'reversed') throw createError(400, 'Transaction already reversed');
+
+    // Execute the reversal
     const originalCharges = original.additional_charges || [];
     const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
 
     await client.query(
       `UPDATE transactions SET status = 'reversed', updated_at = NOW() WHERE id = $1`,
-      [req.params.id]
+      [pending.entity_id]
     );
 
     const reverseEntryType = original.direction === 'in' ? 'debit' : 'credit';
@@ -598,7 +717,8 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
        RETURNING *`,
       [
         original.account_id, reverseTypeId!.id, original.amount,
-        `REV-${original.transaction_number}`, `Reversal: ${reason || original.description || 'Transaction reversal'}`,
+        `REV-${original.transaction_number}`,
+        `Reversal: ${pending.reason || original.description || 'Admin approved reversal'}`,
         req.user!.userId,
       ]
     );
@@ -606,19 +726,24 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
     await processTransaction(
       original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
       reverseEntryType as 'debit' | 'credit', reverseTx!.id,
-      `REV-${original.transaction_number}`, `Reversal: ${reason || 'Transaction reversal'}`,
+      `REV-${original.transaction_number}`, `Reversal: ${pending.reason || 'Admin approved reversal'}`,
       new Date(), client
+    );
+
+    await client.query(
+      `UPDATE pending_reversals SET status = 'approved', approved_by = $1, updated_at = NOW() WHERE id = $2`,
+      [req.user!.userId, req.params.reversalId]
     );
 
     await client.query('COMMIT');
 
     await createAuditLog({
       userId: req.user!.userId,
-      action: 'transaction.reversed',
+      action: 'transaction.reversal_approved',
       entity: 'transaction',
-      entityId: req.params.id,
+      entityId: pending.entity_id,
       ipAddress: req.ip,
-      newData: { originalNumber: original.transaction_number, reason },
+      newData: { originalNumber: original.transaction_number, approvedBy: req.user!.userId },
     });
 
     res.json({ success: true, data: reverseTx });
@@ -630,7 +755,34 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
   }
 });
 
-router.delete('/:id', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+// Reject a pending reversal (admin only)
+router.post('/reversals/:reversalId/reject', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  const isAdmin = req.user!.roles.includes('administrator');
+  if (!isAdmin) throw createError(403, 'Only administrators can reject reversals');
+
+  const { reason } = req.body;
+
+  const pending = await queryOne(
+    `UPDATE pending_reversals SET status = 'rejected', approved_by = $1, reason = COALESCE($2, reason), updated_at = NOW()
+     WHERE id = $3 AND status = 'pending'
+     RETURNING *`,
+    [req.user!.userId, reason || null, req.params.reversalId]
+  );
+  if (!pending) throw createError(404, 'Pending reversal not found or already processed');
+
+  await createAuditLog({
+    userId: req.user!.userId,
+    action: 'transaction.reversal_rejected',
+    entity: 'transaction',
+    entityId: pending.entity_id,
+    ipAddress: req.ip,
+    newData: { reason },
+  });
+
+  res.json({ success: true, data: pending });
+});
+
+router.delete('/:id', authorize('transactions.delete'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
     await client.query('BEGIN');

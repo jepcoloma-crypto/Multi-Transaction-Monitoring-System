@@ -265,7 +265,7 @@ router.post('/:id/reject', authorize('transfers.approve'), async (req: Request, 
   } catch (error) { next(error); }
 });
 
-router.delete('/:id', authorize('transfers.write'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', authorize('transfers.delete'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
     await client.query('BEGIN');

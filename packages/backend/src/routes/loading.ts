@@ -218,7 +218,7 @@ router.delete('/products/:id', authorize('loading.write'), async (req: Request, 
   } catch (error) { next(error); }
 });
 
-router.delete('/:id', authorize('loading.write'), async (req: Request, res: Response, next: NextFunction) => {
+router.delete('/:id', authorize('loading.delete'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
     await client.query('BEGIN');
