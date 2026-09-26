@@ -57,7 +57,7 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
     const transactions = await query(
       `SELECT t.*, tt.name as type_name, tt.code as type_code, tt.direction,
               tc.name as category_name, a.name as account_name,
-              u1.email as created_by_email, u2.email as approved_by_email
+              u1.username as created_by_username, u2.email as approved_by_email
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN transaction_categories tc ON t.transaction_category_id = tc.id
@@ -278,7 +278,7 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
     const transaction = await queryOne(
       `SELECT t.*, tt.name as type_name, tt.code as type_code, tt.direction,
               tc.name as category_name, a.name as account_name,
-              u1.email as created_by_email, u2.email as approved_by_email
+              u1.username as created_by_username, u2.email as approved_by_email
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN transaction_categories tc ON t.transaction_category_id = tc.id

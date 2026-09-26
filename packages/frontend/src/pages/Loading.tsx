@@ -9,7 +9,7 @@ interface LoadingTx {
   id: string; transaction_number: number; customer_number: string; quantity: number;
   unit_cost: number; unit_price: number; total_cost: number; total_revenue: number;
   profit: number; product_name: string; account_name: string; payment_method: string;
-  status: string; created_at: string; created_by_email: string;
+  status: string; created_at: string; created_by_username: string;
 }
 
 interface Product { id: string; name: string; provider_name: string; provider_id: string; cost_price: number; selling_price: number; denomination: number | null; provider_convenience_fee: number; company_additional_charge: number; is_active: boolean; notes: string | null; }
@@ -221,7 +221,7 @@ export default function Loading() {
                         <td className="px-4 py-3 text-sm text-right font-medium">{formatCurrency(t.profit)}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{t.account_name}</td>
                         <td className="px-4 py-3 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
-                        <td className="px-4 py-3 text-sm text-gray-600">{t.created_by_email || '-'}</td>
+                        <td className="px-4 py-3 text-sm text-gray-600">{t.created_by_username || '-'}</td>
                         <td className="px-4 py-3 text-right">
                           <button onClick={() => handleDeleteTx(t.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                         </td>

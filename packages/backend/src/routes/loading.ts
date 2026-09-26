@@ -89,7 +89,7 @@ router.get('/', authorize('loading.read'), async (req: Request, res: Response, n
     const countResult = await queryOne<{ count: string }>(`SELECT COUNT(*) as count FROM loading_transactions lt ${wc}`, params);
 
     const txns = await query(
-      `SELECT lt.*, lp.name as product_name, lp.cost_price, lp.selling_price, a.name as account_name, u.email as created_by_email
+      `SELECT lt.*, lp.name as product_name, lp.cost_price, lp.selling_price, a.name as account_name, u.username as created_by_username
        FROM loading_transactions lt JOIN loading_products lp ON lt.product_id = lp.id
        JOIN accounts a ON lt.account_id = a.id LEFT JOIN users u ON lt.created_by = u.id
        ${wc} ORDER BY lt.created_at DESC LIMIT $${pi++} OFFSET $${pi++}`,

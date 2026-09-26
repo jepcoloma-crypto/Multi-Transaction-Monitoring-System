@@ -45,7 +45,7 @@ interface Transaction {
   customer_name: string | null;
   transaction_date: string;
   status: string;
-  created_by_email: string | null;
+  created_by_username: string | null;
   fee_added_to_balance: boolean;
   additional_charges: { description: string; amount: number }[];
   notes: string | null;
@@ -470,7 +470,7 @@ export default function Transactions() {
                   <td className="px-4 py-3">
                     <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' ? 'red' : 'yellow'}`}>{tx.status}</span>
                   </td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_email || <span className="text-gray-400">-</span>}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_username || <span className="text-gray-400">-</span>}</td>
                   <td className="px-4 py-3 text-right">
                     <button onClick={() => setShowDetail(tx)} className="p-1 text-gray-400 hover:text-primary-600"><Eye className="w-4 h-4" /></button>
                     <button onClick={() => handleDelete(tx.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
