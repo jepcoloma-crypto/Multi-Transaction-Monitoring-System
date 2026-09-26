@@ -12,7 +12,7 @@ interface Transfer {
   created_by_email: string; completed_at: string; notes: string;
 }
 
-interface Account { id: string; name: string; masked_account_number: string; current_balance: number; provider_name: string; status: string; }
+interface Account { id: string; name: string; masked_account_number: string; current_balance: number; provider_id: string; provider_name: string; status: string; }
 
 export default function FundTransfers() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -25,6 +25,8 @@ export default function FundTransfers() {
   const [search, setSearch] = useState('');
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
   const [form, setForm] = useState({ sourceAccountId: '', destinationAccountId: '', transferAmount: '', serviceCharge: '0', purpose: '', notes: '', transferDate: '' });
+  const [chargeMode, setChargeMode] = useState<'auto' | 'manual'>('auto');
+  const [chargeRule, setChargeRule] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const loadData = async (page = 1) => {
@@ -43,6 +45,28 @@ export default function FundTransfers() {
 
   useEffect(() => { loadData(); }, [filter]);
 
+  useEffect(() => {
+    if (chargeMode !== 'auto' || !form.sourceAccountId || !form.destinationAccountId) return;
+    const src = accounts.find(a => a.id === form.sourceAccountId);
+    const dst = accounts.find(a => a.id === form.destinationAccountId);
+    if (!src?.provider_id || !dst?.provider_id) return;
+    let cancelled = false;
+    api.get<{ amount: number; rule: { name: string } | null }>(
+      `/provider-charges/lookup?sourceProviderId=${src.provider_id}&destinationProviderId=${dst.provider_id}`
+    ).then(res => {
+      if (cancelled) return;
+      setForm(f => ({ ...f, serviceCharge: String(res.amount) }));
+      setChargeRule(res.rule ? res.rule.name : null);
+    }).catch(err => console.error('Provider charge lookup error:', err));
+    return () => { cancelled = true; };
+  }, [accounts, form.sourceAccountId, form.destinationAccountId, chargeMode]);
+
+  const openCreate = () => {
+    setChargeMode('auto');
+    setChargeRule(null);
+    setShowModal(true);
+  };
+
   const filtered = transfers.filter(t =>
     !search || t.source_name.toLowerCase().includes(search.toLowerCase()) ||
     t.destination_name.toLowerCase().includes(search.toLowerCase()) ||
@@ -56,10 +80,13 @@ export default function FundTransfers() {
     try {
       await api.post('/transfers', {
         ...form, transferAmount: parseFloat(form.transferAmount), serviceCharge: parseFloat(form.serviceCharge || '0'),
+        manualCharge: chargeMode === 'manual',
         transferDate: form.transferDate || undefined,
       });
       setShowModal(false);
       setForm({ sourceAccountId: '', destinationAccountId: '', transferAmount: '', serviceCharge: '0', purpose: '', notes: '', transferDate: '' });
+      setChargeMode('auto');
+      setChargeRule(null);
       loadData(1);
     } catch (err: any) { alert(err.response?.data?.message || 'Transfer failed'); } finally { setSubmitting(false); }
   };
@@ -96,7 +123,7 @@ export default function FundTransfers() {
           <h2 className="text-lg font-semibold text-gray-900">Fund Transfers</h2>
           <p className="text-sm text-gray-600">Transfer funds between accounts</p>
         </div>
-        <button onClick={() => setShowModal(true)} className="btn-primary flex items-center gap-2">
+        <button onClick={openCreate} className="btn-primary flex items-center gap-2">
           <Plus className="w-4 h-4" /> New Transfer
         </button>
       </div>
@@ -208,9 +235,28 @@ export default function FundTransfers() {
                 </div>
                 <div>
                   <label className="form-label">Service Charge</label>
-                  <input type="number" step="0.01" min="0" value={form.serviceCharge} onChange={e => setForm({ ...form, serviceCharge: e.target.value })} className="input-field" placeholder="0.00" />
-                  <p className="text-xs text-gray-500 mt-1">Deducted from the source account</p>
+                  <input
+                    type="number" step="0.01" min="0"
+                    value={form.serviceCharge}
+                    readOnly={chargeMode === 'auto'}
+                    onChange={e => setForm({ ...form, serviceCharge: e.target.value })}
+                    className={`input-field ${chargeMode === 'auto' ? 'bg-gray-50 text-gray-500 cursor-not-allowed' : ''}`}
+                    placeholder="0.00"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    {chargeMode === 'auto'
+                      ? (chargeRule ? `Auto — provider rule: ${chargeRule}` : 'Auto — no matching provider rule')
+                      : 'Manual — you decide the charge amount'}
+                  </p>
                 </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input type="checkbox" checked={chargeMode === 'manual'} onChange={e => setChargeMode(e.target.checked ? 'manual' : 'auto')} className="sr-only peer" />
+                  <div className="w-9 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
+                </label>
+                <span className="text-sm text-gray-700">Manual Charge</span>
+                <span className="text-xs text-gray-500">({chargeMode === 'auto' ? 'Charge auto-calculated from provider rules' : 'You decide the charge amount'})</span>
               </div>
               <div>
                 <label className="form-label">Transfer Date</label>

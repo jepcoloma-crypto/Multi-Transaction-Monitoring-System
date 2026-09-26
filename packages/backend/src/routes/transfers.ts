@@ -4,6 +4,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
+import { lookupProviderCharge } from '../services/providerCharge';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -99,23 +100,29 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
   try {
     await client.query('BEGIN');
 
-    const { sourceAccountId, destinationAccountId, transferAmount, serviceCharge, transferFee, purpose, notes, transferDate } = req.body;
+    const { sourceAccountId, destinationAccountId, transferAmount, serviceCharge, transferFee, manualCharge, purpose, notes, transferDate } = req.body;
 
     if (!sourceAccountId || !destinationAccountId) throw createError(400, 'Source and destination accounts are required');
     if (sourceAccountId === destinationAccountId) throw createError(400, 'Source and destination must be different');
 
     const srcAmount = parseFloat(transferAmount);
-    const charge = parseFloat((serviceCharge ?? transferFee) || '0');
+    const clientCharge = parseFloat((serviceCharge ?? transferFee) || '0');
     if (isNaN(srcAmount) || srcAmount <= 0) throw createError(400, 'Transfer amount must be greater than zero');
-    if (isNaN(charge) || charge < 0) throw createError(400, 'Service charge cannot be negative');
+    if (isNaN(clientCharge) || clientCharge < 0) throw createError(400, 'Service charge cannot be negative');
 
-    const srcAcct = await client.query('SELECT id, name, current_balance, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [sourceAccountId]);
+    const srcAcct = await client.query('SELECT id, name, provider_id, current_balance, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [sourceAccountId]);
     if (!srcAcct.rows[0]) throw createError(404, 'Source account not found');
     if (srcAcct.rows[0].status !== 'active') throw createError(400, 'Source account is not active');
 
-    const dstAcct = await client.query('SELECT id, name, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [destinationAccountId]);
+    const dstAcct = await client.query('SELECT id, name, provider_id, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [destinationAccountId]);
     if (!dstAcct.rows[0]) throw createError(404, 'Destination account not found');
     if (dstAcct.rows[0].status !== 'active') throw createError(400, 'Destination account is not active');
+
+    let charge = clientCharge;
+    if (manualCharge !== true) {
+      const rule = await lookupProviderCharge(srcAcct.rows[0].provider_id, dstAcct.rows[0].provider_id);
+      if (rule) charge = parseFloat(rule.charge_amount);
+    }
 
     const destinationAmount = srcAmount;
     const totalDeduction = srcAmount + charge;

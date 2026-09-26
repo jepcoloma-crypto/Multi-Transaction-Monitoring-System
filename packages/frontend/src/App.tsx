@@ -15,6 +15,7 @@ import AuditLogs from './pages/AuditLogs';
 import Settings from './pages/Settings';
 import TransactionFees from './pages/TransactionFees';
 import AdditionalCharges from './pages/AdditionalCharges';
+import ProviderCharges from './pages/ProviderCharges';
 import Users from './pages/Users';
 import Roles from './pages/Roles';
 import Profile from './pages/Profile';
@@ -68,6 +69,7 @@ function AppRoutes() {
         <Route path="settings" element={<Settings />} />
         <Route path="transaction-fees" element={<TransactionFees />} />
         <Route path="additional-charges" element={<AdditionalCharges />} />
+        <Route path="provider-charges" element={<ProviderCharges />} />
         <Route path="users" element={<Users />} />
         <Route path="roles" element={<Roles />} />
         <Route path="profile" element={<Profile />} />

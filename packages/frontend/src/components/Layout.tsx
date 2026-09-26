@@ -42,6 +42,7 @@ const adminSection = [
   { name: 'Providers', href: '/providers', icon: Settings },
   { name: 'Transaction Fees', href: '/transaction-fees', icon: DollarSign },
   { name: 'Additional Charges', href: '/additional-charges', icon: DollarSign },
+  { name: 'Provider Charges', href: '/provider-charges', icon: DollarSign },
   { name: 'Import', href: '/import', icon: Upload },
   { name: 'Settings', href: '/settings', icon: Settings },
   { name: 'Audit Logs', href: '/audit-logs', icon: FileText },

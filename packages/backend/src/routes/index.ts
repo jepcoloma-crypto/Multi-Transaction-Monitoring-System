@@ -23,6 +23,7 @@ import importRoutes from './import';
 import bankReconciliationRoutes from './bankReconciliation';
 import searchRoutes from './search';
 import additionalChargeRoutes from './additionalCharges';
+import providerChargeRoutes from './providerCharges';
 import customerRoutes from './customers';
 import backupRoutes from './backup';
 
@@ -52,6 +53,7 @@ router.use('/import', importRoutes);
 router.use('/bank-reconciliation', bankReconciliationRoutes);
 router.use('/search', searchRoutes);
 router.use('/additional-charges', additionalChargeRoutes);
+router.use('/provider-charges', providerChargeRoutes);
 router.use('/customers', customerRoutes);
 router.use('/backup', backupRoutes);
 
