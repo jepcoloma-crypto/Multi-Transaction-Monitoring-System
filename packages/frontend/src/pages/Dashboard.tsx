@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { Wallet, TrendingUp, TrendingDown, ArrowUpDown, AlertTriangle, ArrowRight, ArrowLeftRight, Smartphone, RefreshCw, Calendar } from 'lucide-react';
+import { Wallet, TrendingUp, TrendingDown, ArrowUpDown, ArrowRight, ArrowLeftRight, Smartphone, RefreshCw, Calendar } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { BalanceTrendChart, IncomeExpenseChart } from '../components/Charts';
 
 interface BalanceData {
   totalBalance: number; accountCount: number;
@@ -56,7 +55,6 @@ export default function Dashboard() {
   useEffect(() => { fetchData(); }, [fetchData]);
 
   const formatTime = (d: Date) => d.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const lowBalanceAccounts = balances?.accounts.filter(a => a.status === 'active' && a.current_balance <= a.minimum_balance) || [];
 
   const sortedAccounts = useMemo(
     () => [...(balances?.accounts || [])].sort((a, b) => b.current_balance - a.current_balance),
@@ -261,17 +259,6 @@ export default function Dashboard() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="card">
-          <h3 className="text-base font-semibold text-gray-900 mb-3">Balance Trends (30 Days)</h3>
-          <BalanceTrendChart />
-        </div>
-        <div className="card">
-          <h3 className="text-base font-semibold text-gray-900 mb-3">Daily Income vs Expense</h3>
-          <IncomeExpenseChart />
-        </div>
-      </div>
-
       <div className="card">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-base font-semibold text-gray-900">Recent Transactions</h3>
@@ -346,23 +333,6 @@ export default function Dashboard() {
           </div>
         )}
       </div>
-
-      {lowBalanceAccounts.length > 0 && (
-        <div className="card border-yellow-200 bg-yellow-50">
-          <div className="flex items-center gap-2 mb-3">
-            <AlertTriangle className="w-5 h-5 text-yellow-600" />
-            <h3 className="text-base font-semibold text-yellow-800">Low Balance Alerts</h3>
-          </div>
-          <div className="space-y-2">
-            {lowBalanceAccounts.map((account) => (
-              <div key={account.id} className="flex items-center justify-between text-sm">
-                <span className="text-yellow-700">{account.name} ({account.provider_name})</span>
-                <span className="font-medium text-yellow-800">{formatCurrency(account.current_balance)} / min: {formatCurrency(account.minimum_balance)}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
