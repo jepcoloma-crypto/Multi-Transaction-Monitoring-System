@@ -111,7 +111,7 @@ router.get('/summary', authorize('transactions.read'), async (req: Request, res:
       `SELECT
         COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_money_in,
         COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_money_out,
-        COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as total_fees,
+        COALESCE(SUM(COALESCE(t.fee, 0)), 0) as total_fees,
         COUNT(*) as transaction_count
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
@@ -173,7 +173,7 @@ router.get('/today', authorize('transactions.read'), async (req: Request, res: R
         COUNT(*) as transaction_count,
         COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as money_in,
         COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as money_out,
-        COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as fees_collected,
+        COALESCE(SUM(COALESCE(t.fee, 0)), 0) as fees_collected,
         COUNT(CASE WHEN t.status = 'completed' THEN 1 END) as completed_count,
         COUNT(CASE WHEN t.status = 'pending' THEN 1 END) as pending_count,
         COUNT(CASE WHEN t.status = 'reversed' THEN 1 END) as reversed_count
@@ -242,7 +242,7 @@ router.get('/by-customer-name', authorize('transactions.read'), async (req: Requ
         COUNT(*) as total_count,
         COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_in,
         COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_out,
-        COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as total_fees
+        COALESCE(SUM(COALESCE(t.fee, 0)), 0) as total_fees
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN LATERAL (

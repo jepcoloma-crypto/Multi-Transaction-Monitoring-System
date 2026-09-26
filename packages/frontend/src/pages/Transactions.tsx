@@ -505,8 +505,8 @@ export default function Transactions() {
                 <div><p className="text-xs text-gray-500">Account</p><p className="font-medium">{showDetail.account_name}</p></div>
                 <div><p className="text-xs text-gray-500">Type</p><p className="font-medium">{showDetail.type_name}{showDetail.category_name ? ` / ${showDetail.category_name}` : ''}</p></div>
                 <div><p className="text-xs text-gray-500">Amount</p><p className={`font-bold ${showDetail.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(showDetail.amount)}</p></div>
-                <div><p className="text-xs text-gray-500">Fee (company income)</p><p className="font-medium text-yellow-600">{formatCurrency(showDetail.fee + (showDetail.additional_charges || []).reduce((sum, c) => sum + c.amount, 0))}</p></div>
-                <div><p className="text-xs text-gray-500">Account Movement</p><p className="font-bold">{formatCurrency(showDetail.amount + (showDetail.additional_charges || []).reduce((sum, c) => sum + c.amount, 0))}</p></div>
+                <div><p className="text-xs text-gray-500">Fee (company income)</p><p className="font-medium text-yellow-600">{formatCurrency(showDetail.fee)}</p></div>
+                <div><p className="text-xs text-gray-500">Account Movement</p><p className="font-bold">{formatCurrency((showDetail.fee_added_to_balance ? showDetail.amount : showDetail.amount - showDetail.fee) + (showDetail.additional_charges || []).reduce((sum, c) => sum + c.amount, 0))}</p></div>
                 <div><p className="text-xs text-gray-500">Status</p><p className="font-medium">{showDetail.status}</p></div>
                 <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{new Date(showDetail.transaction_date).toLocaleString()}</p></div>
                 <div><p className="text-xs text-gray-500">Reference</p><p className="font-medium">{showDetail.reference_number || '-'}</p></div>
@@ -690,36 +690,53 @@ export default function Transactions() {
               </div>
               {selectedRule && parseFloat(formData.amount) > 0 && (
                 <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
-                  <p>Amount: <span className="font-medium">{formatCurrency(parseFloat(formData.amount))}</span></p>
+                  <div className="flex justify-between">
+                    <span>Amount</span>
+                    <span className="font-medium">{formatCurrency(inputAmount)}</span>
+                  </div>
                   {inputAmount >= 0.01 && (
                     <p className="text-xs text-gray-500">Cash: {formatBreakdown(inputAmount)}</p>
                   )}
-                  {createCharges.some(c => parseFloat(c.amount) > 0) && (
-                    <p>Additional Charges: <span className="font-medium text-orange-600">{formatCurrency(createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0))}</span></p>
-                  )}
-                  <p>Fee (company income): <span className="font-medium text-yellow-600">{formatCurrency(
-                    parseFloat(formData.fee) + createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0)
-                  )}</span></p>
+                  <div className="flex justify-between">
+                    <span>Fee (company income)</span>
+                    <span className="font-medium text-yellow-600">{formatCurrency(feeAmount)}</span>
+                  </div>
                   {feeAmount >= 1 && (
                     <p className="text-xs text-gray-500">Fee cash: {formatBreakdown(feeAmount)}</p>
                   )}
-                  <p className="border-t pt-1">
-                    <span className="font-semibold">Account movement: </span>
+                  <div className="flex justify-between">
+                    <span>Additional Charges <span className="text-xs text-gray-500">(deducted from account, not company income)</span></span>
+                    <span className="font-medium text-orange-600">{formatCurrency(chargesTotal)}</span>
+                  </div>
+                  {createCharges.filter(c => (parseFloat(c.amount) || 0) > 0).map((c, i) => (
+                    <p key={i} className="flex justify-between text-xs text-gray-500">
+                      <span>{c.description || 'Charge'}</span>
+                      <span>{formatCurrency(parseFloat(c.amount) || 0)}</span>
+                    </p>
+                  ))}
+                  <div className="flex justify-between border-t pt-1">
+                    <span className="font-semibold">Total Fee</span>
+                    <span className="font-semibold">{formatCurrency(feeAmount + chargesTotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-semibold">Account movement</span>
                     <span className={`font-bold ${selectedDirection === 'out' ? '' : 'text-green-600'}`}>
                       {selectedDirection === 'out' ? '-' : '+'}{formatCurrency(totalOutflow)}
                     </span>
-                    <span className="text-xs text-gray-500 ml-1">
-                      {selectedDirection === 'out'
-                        ? `(${formData.feeAddedToBalance ? 'amount + charges' : 'amount - fee + charges'})`
-                        : '(credited to account)'}
-                    </span>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    {selectedDirection === 'out'
+                      ? (formData.feeAddedToBalance ? 'amount + charges' : 'amount - fee + charges')
+                      : '(credited to account)'}
                   </p>
                   {formData.feeAddedToBalance && selectedDirection === 'in' && (
-                    <p className="border-t pt-1">
-                      <span className="font-semibold">Customer pays: </span>
-                      <span className="font-bold text-green-700">{formatCurrency(inputAmount + chargesTotal + feeAmount)}</span>
-                      <span className="text-xs text-gray-500 ml-1">({formatBreakdown(inputAmount + chargesTotal + feeAmount)})</span>
-                    </p>
+                    <>
+                      <div className="flex justify-between border-t pt-1">
+                        <span className="font-semibold">Customer pays</span>
+                        <span className="font-bold text-green-700">{formatCurrency(inputAmount + chargesTotal + feeAmount)}</span>
+                      </div>
+                      <p className="text-xs text-gray-500">{formatBreakdown(inputAmount + chargesTotal + feeAmount)}</p>
+                    </>
                   )}
                 </div>
               )}
