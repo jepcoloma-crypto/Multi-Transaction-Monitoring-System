@@ -183,13 +183,14 @@ export default function Reports() {
               </div>
               <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[700px]">
+                  <table className="w-full min-w-[800px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
-                        <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Credit</th>
+                        <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Debit</th>
                         <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Balance</th>
                       </tr>
                     </thead>
@@ -199,11 +200,20 @@ export default function Reports() {
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{new Date(e.entry_date).toLocaleDateString()}</td>
                           <td className="px-6 py-3.5 whitespace-nowrap"><span className={`text-xs font-medium ${e.entry_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}>{e.entry_type}</span></td>
                           <td className="px-6 py-3.5 text-sm">{e.description || e.type_name || '-'}</td>
-                          <td className={`px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap ${e.entry_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}>{e.entry_type === 'credit' ? '+' : '-'}{formatCurrency(e.amount)}</td>
+                          <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap text-green-600">{e.entry_type === 'credit' ? formatCurrency(e.amount) : ''}</td>
+                          <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap text-red-600">{e.entry_type === 'debit' ? formatCurrency(e.amount) : ''}</td>
                           <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(e.balance_after)}</td>
                         </tr>
                       ))}
                     </tbody>
+                    <tfoot className="bg-gray-100 border-t-2 border-gray-300">
+                      <tr className="font-bold">
+                        <td className="px-6 py-3.5 text-sm" colSpan={3}>Total</td>
+                        <td className="px-6 py-3.5 text-sm text-right text-green-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
+                        <td className="px-6 py-3.5 text-sm text-right text-red-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
+                        <td className="px-6 py-3.5 text-sm text-right">{reportData.entries.length > 0 ? formatCurrency(reportData.entries[reportData.entries.length - 1].balance_after) : '₱0.00'}</td>
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
               </div>

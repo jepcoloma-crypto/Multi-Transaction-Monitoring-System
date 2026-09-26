@@ -305,12 +305,14 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (!seeAll) { conds.push(`a.created_by = $${pi++}`); params.push(req.user!.userId); }
       const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
       data = await query(
-        `SELECT le.id, a.name as account_name, le.entry_type, le.amount, le.balance_after,
-                le.description, le.entry_date
+        `SELECT le.id, a.name as account_name, le.entry_type, le.amount,
+                CASE WHEN le.entry_type = 'credit' THEN le.amount ELSE 0 END as credit,
+                CASE WHEN le.entry_type = 'debit' THEN le.amount ELSE 0 END as debit,
+                le.balance_after, le.description, le.entry_date
          FROM ledger_entries le JOIN accounts a ON le.account_id = a.id
          ${wc} ORDER BY le.entry_date ASC`, params
       );
-      headers = ['ID', 'Account', 'Type', 'Amount', 'Balance', 'Description', 'Date'];
+      headers = ['ID', 'Account', 'Type', 'Credit', 'Debit', 'Balance', 'Description', 'Date'];
     } else {
       return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger' } });
     }
@@ -321,6 +323,13 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         const vals = Object.values(row).map(v => `"${String(v ?? '').replace(/"/g, '""')}"`);
         csvRows.push(vals.join(','));
       });
+      // Add totals row for ledger export
+      if (type === 'ledger' && data.length > 0) {
+        const totalCredit = data.reduce((sum: number, r: any) => sum + parseFloat(r.credit || '0'), 0);
+        const totalDebit = data.reduce((sum: number, r: any) => sum + parseFloat(r.debit || '0'), 0);
+        const lastBalance = data[data.length - 1].balance_after;
+        csvRows.push(`"","","TOTAL","${totalCredit.toFixed(2)}","${totalDebit.toFixed(2)}","","","${lastBalance}"`);
+      }
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', `attachment; filename="${type}_export.csv"`);
       return res.send(csvRows.join('\n'));
