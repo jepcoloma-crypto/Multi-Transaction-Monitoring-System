@@ -7,6 +7,7 @@ import Accounts from './pages/Accounts';
 import Providers from './pages/Providers';
 import Transactions from './pages/Transactions';
 import FundTransfers from './pages/FundTransfers';
+import TransferApprovals from './pages/TransferApprovals';
 import Loading from './pages/Loading';
 import Reconciliation from './pages/Reconciliation';
 import Reports from './pages/Reports';
@@ -61,6 +62,7 @@ function AppRoutes() {
         <Route path="providers" element={<Providers />} />
         <Route path="transactions" element={<Transactions />} />
         <Route path="transfers" element={<FundTransfers />} />
+        <Route path="transfer-approvals" element={<TransferApprovals />} />
         <Route path="loading" element={<Loading />} />
         <Route path="reconciliation" element={<Reconciliation />} />
         <Route path="reports" element={<Reports />} />

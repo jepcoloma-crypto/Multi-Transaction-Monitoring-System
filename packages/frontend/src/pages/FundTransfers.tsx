@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
+import { useAuth } from '../contexts/AuthContext';
 import { formatCurrency } from '../lib/format';
 import { ArrowLeftRight, Plus, Search, Eye, Check, X, Filter, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
@@ -9,12 +10,15 @@ interface Transfer {
   id: string; transfer_number: number; source_name: string; destination_name: string;
   source_masked: string; dest_masked: string; transfer_amount: number; transfer_fee: number;
   total_source_deduction: number; destination_amount: number; status: string; transfer_date: string; purpose: string;
-  created_by_email: string; completed_at: string; notes: string;
+  created_by_email: string; approved_by_email: string; completed_at: string; notes: string; failure_reason: string;
 }
 
 interface Account { id: string; name: string; masked_account_number: string; current_balance: number; provider_id: string; provider_name: string; status: string; }
 
 export default function FundTransfers() {
+  const { user } = useAuth();
+  const isAdmin = user?.roles?.includes('administrator') ?? false;
+  const isApprover = isAdmin || user?.roles?.includes('manager');
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,7 +82,7 @@ export default function FundTransfers() {
     if (!form.sourceAccountId || !form.destinationAccountId) { alert('Please select source and destination accounts'); return; }
     setSubmitting(true);
     try {
-      await api.post('/transfers', {
+      const created = await api.post<any>('/transfers', {
         ...form, transferAmount: parseFloat(form.transferAmount), serviceCharge: parseFloat(form.serviceCharge || '0'),
         manualCharge: chargeMode === 'manual',
         transferDate: form.transferDate || undefined,
@@ -88,17 +92,24 @@ export default function FundTransfers() {
       setChargeMode('auto');
       setChargeRule(null);
       loadData(1);
-    } catch (err: any) { alert(err.response?.data?.message || 'Transfer failed'); } finally { setSubmitting(false); }
+      if (created?.status === 'pending') {
+        alert(`Transfer #${created.transfer_number} submitted for approval. Funds will move once it is approved.`);
+      }
+    } catch (err: any) { alert(err.message || 'Transfer failed'); } finally { setSubmitting(false); }
   };
 
-  const handleApprove = async (id: string) => {
-    if (!confirm('Approve this transfer?')) return;
-    try { await api.post(`/transfers/${id}/approve`); loadData(pagination.page); } catch (err: any) { alert(err.response?.data?.message || 'Failed'); }
+  const handleApprove = async (t: Transfer) => {
+    if (!confirm(`Approve transfer #${t.transfer_number}? ${formatCurrency(t.total_source_deduction)} will be deducted from ${t.source_name} now.`)) return;
+    try { await api.post(`/transfers/${t.id}/approve`); loadData(pagination.page); } catch (err: any) { alert(err.message || 'Failed to approve transfer'); }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this transfer? This will restore both account balances.')) return;
-    try { await api.delete(`/transfers/${id}`); loadData(pagination.page); } catch (err: any) { alert(err.message || 'Failed'); }
+  const handleDelete = async (t: Transfer) => {
+    const movesFunds = !['draft', 'pending', 'failed', 'rejected'].includes(t.status);
+    const msg = movesFunds
+      ? 'Delete this transfer? This will restore both account balances.'
+      : 'Delete this transfer? No funds have moved for this transfer.';
+    if (!confirm(msg)) return;
+    try { await api.delete(`/transfers/${t.id}`); loadData(pagination.page); } catch (err: any) { alert(err.message || 'Failed'); }
   };
 
   const viewDetail = async (t: Transfer) => {
@@ -113,6 +124,7 @@ export default function FundTransfers() {
     if (s === 'completed') return 'bg-green-100 text-green-700';
     if (s === 'pending') return 'bg-yellow-100 text-yellow-700';
     if (s === 'failed') return 'bg-red-100 text-red-700';
+    if (s === 'rejected') return 'bg-orange-100 text-orange-700';
     return 'bg-gray-100 text-gray-700';
   };
 
@@ -141,6 +153,7 @@ export default function FundTransfers() {
             <option value="pending">Pending</option>
             <option value="completed">Completed</option>
             <option value="failed">Failed</option>
+            <option value="rejected">Rejected</option>
             <option value="reversal_requested">Reversal Requested</option>
             <option value="reversed">Reversed</option>
           </select>
@@ -185,10 +198,10 @@ export default function FundTransfers() {
                     <td className="px-6 py-3.5 text-right">
                       <div className="flex gap-1 justify-end">
                         <button onClick={() => viewDetail(t)} className="p-1 hover:bg-gray-100 rounded"><Eye className="w-4 h-4" /></button>
-                        {t.status === 'pending' && (
-                          <button onClick={() => handleApprove(t.id)} className="p-1 hover:bg-green-100 rounded text-green-600"><Check className="w-4 h-4" /></button>
+                        {t.status === 'pending' && isApprover && (
+                          <button onClick={() => handleApprove(t)} title="Approve" className="p-1 hover:bg-green-100 rounded text-green-600"><Check className="w-4 h-4" /></button>
                         )}
-                        <button onClick={() => handleDelete(t.id)} className="p-1 hover:bg-red-100 rounded text-red-600"><Trash2 className="w-4 h-4" /></button>
+                        <button onClick={() => handleDelete(t)} title="Delete" className="p-1 hover:bg-red-100 rounded text-red-600"><Trash2 className="w-4 h-4" /></button>
                       </div>
                     </td>
                   </tr>
@@ -275,6 +288,9 @@ export default function FundTransfers() {
                   <p>Source will be debited: <span className="font-medium text-red-600">{formatCurrency(parseFloat(form.transferAmount || '0') + parseFloat(form.serviceCharge || '0'))}</span></p>
                   <p>Destination will receive: <span className="font-medium text-green-600">{formatCurrency(parseFloat(form.transferAmount || '0'))}</span></p>
                   <p className="text-xs text-gray-500">Service charge: {formatCurrency(parseFloat(form.serviceCharge || '0'))} (deducted from source account)</p>
+                  {!isAdmin && (
+                    <p className="text-xs text-amber-600 font-medium">This transfer will be submitted for approval — funds move only after an approver signs off.</p>
+                  )}
                 </div>
               )}
               <div className="flex gap-3 justify-end">
@@ -309,6 +325,12 @@ export default function FundTransfers() {
               </div>
               <div className="pt-2 border-t">
                 <p className="text-gray-500">Status</p><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${statusColor(showDetail.status)}`}>{showDetail.status}</span>
+                {showDetail.approved_by_email && (
+                  <p className="text-xs text-gray-500 mt-1">Approved by {showDetail.approved_by_email}</p>
+                )}
+                {showDetail.status === 'rejected' && showDetail.failure_reason && (
+                  <p className="text-xs text-red-600 mt-1">Rejected: {showDetail.failure_reason}</p>
+                )}
               </div>
               {showDetail.purpose && <div><p className="text-gray-500">Purpose</p><p>{showDetail.purpose}</p></div>}
               {showDetail.notes && <div><p className="text-gray-500">Notes</p><p>{showDetail.notes}</p></div>}

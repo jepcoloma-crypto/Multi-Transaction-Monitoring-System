@@ -38,7 +38,7 @@ router.get('/', authorize('transfers.read'), async (req: Request, res: Response,
     const transfers = await query(
       `SELECT t.*, sa.name as source_name, da.name as destination_name,
               sa.masked_account_number as source_masked, da.masked_account_number as dest_masked,
-              u1.email as created_by_email, u2.email as approved_by_email
+              u1.email as created_by_email, u1.username as created_by_username, u2.email as approved_by_email
        FROM transfers t
        JOIN accounts sa ON t.source_account_id = sa.id
        JOIN accounts da ON t.destination_account_id = da.id
@@ -95,6 +95,49 @@ router.get('/:id', authorize('transfers.read'), async (req: Request, res: Respon
   } catch (error) { next(error); }
 });
 
+async function moveTransferFunds(
+  client: Awaited<ReturnType<typeof getClient>>,
+  transfer: any,
+  srcAcct: any,
+  dstAcct: any
+): Promise<void> {
+  const totalDeduction = parseFloat(transfer.total_source_deduction);
+  const destinationAmount = parseFloat(transfer.destination_amount);
+  const charge = parseFloat(transfer.transfer_fee) || 0;
+
+  const srcBalance = parseFloat(srcAcct.current_balance) - totalDeduction;
+  if (srcBalance < -0.000001) throw createError(400, 'Insufficient balance for transfer amount plus service charge');
+  await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2',
+    [srcBalance.toFixed(2), transfer.source_account_id]);
+
+  const srcDesc = `Transfer to ${dstAcct.name}: ${transfer.purpose || ''}` + (charge > 0 ? ` (incl. ${charge.toFixed(2)} service charge)` : '');
+  const srcLedger = (await client.query(
+    `INSERT INTO ledger_entries (account_id, transfer_id, entry_type, amount, balance_after, description, entry_date)
+     VALUES ($1, $2, 'debit', $3, $4, $5, $6) RETURNING id`,
+    [transfer.source_account_id, transfer.id, totalDeduction, srcBalance, srcDesc, transfer.transfer_date]
+  )).rows[0];
+  await client.query(
+    `INSERT INTO transfer_entries (transfer_id, account_id, entry_type, entry_category, amount, balance_after, ledger_entry_id)
+     VALUES ($1, $2, 'debit', 'transfer_out', $3, $4, $5)`,
+    [transfer.id, transfer.source_account_id, totalDeduction, srcBalance, srcLedger.id]
+  );
+
+  const dstBalance = parseFloat((await client.query('SELECT current_balance FROM accounts WHERE id = $1', [transfer.destination_account_id])).rows[0].current_balance) + destinationAmount;
+  await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2',
+    [dstBalance.toFixed(2), transfer.destination_account_id]);
+
+  const dstLedger = (await client.query(
+    `INSERT INTO ledger_entries (account_id, transfer_id, entry_type, amount, balance_after, description, entry_date)
+     VALUES ($1, $2, 'credit', $3, $4, $5, $6) RETURNING id`,
+    [transfer.destination_account_id, transfer.id, destinationAmount, dstBalance, `Transfer from ${srcAcct.name}: ${transfer.purpose || ''}`, transfer.transfer_date]
+  )).rows[0];
+  await client.query(
+    `INSERT INTO transfer_entries (transfer_id, account_id, entry_type, entry_category, amount, balance_after, ledger_entry_id)
+     VALUES ($1, $2, 'credit', 'transfer_in', $3, $4, $5)`,
+    [transfer.id, transfer.destination_account_id, destinationAmount, dstBalance, dstLedger.id]
+  );
+}
+
 router.post('/', authorize('transfers.write'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
@@ -131,45 +174,18 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
 
     // Create transfer record
     const txNum = await client.query("SELECT nextval('transfers_transfer_number_seq') as nextval");
+    const isAdminCreator = (req.user!.roles || []).includes('administrator');
     const transfer = (await client.query(
       `INSERT INTO transfers (transfer_number, source_account_id, destination_account_id, transfer_amount, transfer_fee,
-       total_source_deduction, destination_amount, purpose, status, transfer_date, created_by, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'completed', $9, $10, $11) RETURNING *`,
-      [txNum.rows[0].nextval, sourceAccountId, destinationAccountId, srcAmount, charge, totalDeduction, destinationAmount, purpose || null, transferDate || new Date(), req.user!.userId, notes || null]
+       total_source_deduction, destination_amount, purpose, status, transfer_date, created_by, notes, completed_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
+      [txNum.rows[0].nextval, sourceAccountId, destinationAccountId, srcAmount, charge, totalDeduction, destinationAmount, purpose || null,
+       isAdminCreator ? 'completed' : 'pending', transferDate || new Date(), req.user!.userId, notes || null, isAdminCreator ? new Date() : null]
     )).rows[0];
 
-    // Debit source
-    const srcBalance = parseFloat(srcAcct.rows[0].current_balance) - totalDeduction;
-    await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [srcBalance, sourceAccountId]);
-
-    const srcDesc = `Transfer to ${dstAcct.rows[0].name}: ${purpose || ''}` + (charge > 0 ? ` (incl. ${charge.toFixed(2)} service charge)` : '');
-    const srcLedger = (await client.query(
-      `INSERT INTO ledger_entries (account_id, transfer_id, entry_type, amount, balance_after, description, entry_date)
-       VALUES ($1, $2, 'debit', $3, $4, $5, $6) RETURNING id`,
-      [sourceAccountId, transfer.id, totalDeduction, srcBalance, srcDesc, transferDate || new Date()]
-    )).rows[0];
-
-    await client.query(
-      `INSERT INTO transfer_entries (transfer_id, account_id, entry_type, entry_category, amount, balance_after, ledger_entry_id)
-       VALUES ($1, $2, 'debit', 'transfer_out', $3, $4, $5)`,
-      [transfer.id, sourceAccountId, totalDeduction, srcBalance, srcLedger.id]
-    );
-
-    // Credit destination
-    const dstBalance = parseFloat((await client.query('SELECT current_balance FROM accounts WHERE id = $1', [destinationAccountId])).rows[0].current_balance) + destinationAmount;
-    await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [dstBalance, destinationAccountId]);
-
-    const dstLedger = (await client.query(
-      `INSERT INTO ledger_entries (account_id, transfer_id, entry_type, amount, balance_after, description, entry_date)
-       VALUES ($1, $2, 'credit', $3, $4, $5, $6) RETURNING id`,
-      [destinationAccountId, transfer.id, destinationAmount, dstBalance, `Transfer from ${srcAcct.rows[0].name}: ${purpose || ''}`, transferDate || new Date()]
-    )).rows[0];
-
-    await client.query(
-      `INSERT INTO transfer_entries (transfer_id, account_id, entry_type, entry_category, amount, balance_after, ledger_entry_id)
-       VALUES ($1, $2, 'credit', 'transfer_in', $3, $4, $5)`,
-      [transfer.id, destinationAccountId, destinationAmount, dstBalance, dstLedger.id]
-    );
+    if (isAdminCreator) {
+      await moveTransferFunds(client, transfer, srcAcct.rows[0], dstAcct.rows[0]);
+    }
 
     await client.query('COMMIT');
 
@@ -184,18 +200,66 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
 });
 
 router.post('/:id/approve', authorize('transfers.approve'), async (req: Request, res: Response, next: NextFunction) => {
+  const client = await getClient();
   try {
-    const transfer = await queryOne('SELECT * FROM transfers WHERE id = $1', [req.params.id]);
-    if (!transfer) throw createError(404, 'Transfer not found');
-    assertOwner(req, transfer, 'transfers.write_all', 'Transfer not found');
-    if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be approved');
+    await client.query('BEGIN');
 
-    const updated = await queryOne(
+    const transfer = (await client.query('SELECT * FROM transfers WHERE id = $1 FOR UPDATE', [req.params.id])).rows[0];
+    if (!transfer) throw createError(404, 'Transfer not found');
+    if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be approved');
+    if (transfer.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own transfer');
+
+    const accounts = (await client.query(
+      `SELECT id, name, current_balance, status FROM accounts WHERE id IN ($1, $2) FOR UPDATE`,
+      [transfer.source_account_id, transfer.destination_account_id]
+    )).rows;
+    const srcAcct = accounts.find((a: any) => a.id === transfer.source_account_id);
+    const dstAcct = accounts.find((a: any) => a.id === transfer.destination_account_id);
+    if (!srcAcct || !dstAcct) throw createError(404, 'Transfer account not found');
+    if (srcAcct.status !== 'active') throw createError(400, 'Source account is not active');
+
+    await moveTransferFunds(client, transfer, srcAcct, dstAcct);
+
+    const updated = (await client.query(
       `UPDATE transfers SET status = 'completed', approved_by = $1, completed_at = NOW(), updated_at = NOW() WHERE id = $2 RETURNING *`,
       [req.user!.userId, req.params.id]
+    )).rows[0];
+
+    await client.query('COMMIT');
+
+    await createAuditLog({
+      userId: req.user!.userId, action: 'transfer.approved', entity: 'transfer', entityId: req.params.id, ipAddress: req.ip,
+      newData: { amount: parseFloat(transfer.transfer_amount), totalDeduction: parseFloat(transfer.total_source_deduction) },
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/:id/reject', authorize('transfers.approve'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    if (!reason) throw createError(400, 'Rejection reason is required');
+
+    const transfer = await queryOne('SELECT * FROM transfers WHERE id = $1', [req.params.id]);
+    if (!transfer) throw createError(404, 'Transfer not found');
+    if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be rejected');
+    if (transfer.created_by === req.user!.userId) throw createError(400, 'You cannot reject your own transfer');
+
+    const updated = await queryOne(
+      `UPDATE transfers SET status = 'rejected', failure_reason = $1, rejected_by = $2, updated_at = NOW() WHERE id = $3 RETURNING *`,
+      [reason, req.user!.userId, req.params.id]
     );
 
-    await createAuditLog({ userId: req.user!.userId, action: 'transfer.approved', entity: 'transfer', entityId: req.params.id, ipAddress: req.ip });
+    await createAuditLog({
+      userId: req.user!.userId, action: 'transfer.rejected', entity: 'transfer', entityId: req.params.id, ipAddress: req.ip,
+      oldData: { status: 'pending' }, newData: { reason },
+    });
 
     res.json({ success: true, data: updated });
   } catch (error) { next(error); }
@@ -211,7 +275,7 @@ router.delete('/:id', authorize('transfers.write'), async (req: Request, res: Re
     assertOwner(req, transfer, 'transfers.write_all', 'Transfer not found');
     if (transfer.status === 'reversed') throw createError(400, 'Reversed transfers cannot be deleted — its reversal is already recorded');
 
-    const movesFunds = !['draft', 'pending', 'failed'].includes(transfer.status);
+    const movesFunds = !['draft', 'pending', 'failed', 'rejected'].includes(transfer.status);
 
     if (movesFunds) {
       const accounts = (await client.query(

@@ -38,11 +38,14 @@ const navigation = [
   { name: 'Alerts', href: '/alerts', icon: Bell },
 ];
 
-const adminSection = [
+type MenuItem = { name: string; href: string; icon: typeof Settings; approverOnly?: boolean };
+
+const adminSection: MenuItem[] = [
   { name: 'Providers', href: '/providers', icon: Settings },
   { name: 'Transaction Fees', href: '/transaction-fees', icon: DollarSign },
   { name: 'Additional Charges', href: '/additional-charges', icon: DollarSign },
   { name: 'Provider Charges', href: '/provider-charges', icon: DollarSign },
+  { name: 'Transfer Approvals', href: '/transfer-approvals', icon: CheckSquare, approverOnly: true },
   { name: 'Import', href: '/import', icon: Upload },
   { name: 'Settings', href: '/settings', icon: Settings },
   { name: 'Audit Logs', href: '/audit-logs', icon: FileText },
@@ -67,6 +70,7 @@ export default function Layout() {
   };
 
   const isAdmin = user?.roles?.includes('administrator');
+  const isApprover = isAdmin || user?.roles?.includes('manager');
 
   return (
     <div className="min-h-screen flex">
@@ -111,7 +115,7 @@ export default function Layout() {
 
           <div className="border-t border-gray-800 my-3"></div>
           <p className="px-3 py-1 text-xs font-semibold text-gray-500 uppercase">Administration</p>
-          {adminSection.map((item) => {
+          {adminSection.filter((item) => !item.approverOnly || isApprover).map((item) => {
             const isActive = location.pathname === item.href;
             return (
               <Link
