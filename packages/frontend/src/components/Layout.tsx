@@ -93,7 +93,7 @@ export default function Layout() {
           </button>
         </div>
 
-        <nav className="mt-4 px-3 space-y-1 overflow-y-auto max-h-[calc(100vh-8rem)]">
+        <nav className="mt-4 px-3 space-y-1 overflow-y-auto max-h-[calc(100vh-8rem)] no-scrollbar">
           {navigation.map((item) => {
             const isActive = location.pathname === item.href;
             return (
