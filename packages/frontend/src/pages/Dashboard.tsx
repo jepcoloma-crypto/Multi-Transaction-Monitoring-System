@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { Wallet, TrendingUp, TrendingDown, ArrowUpDown, ArrowRight, ArrowLeftRight, Smartphone, RefreshCw, Calendar } from 'lucide-react';
+import { Wallet, TrendingUp, TrendingDown, ArrowUpDown, ArrowRight, Coins, Smartphone, RefreshCw, Calendar } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 interface BalanceData {
@@ -9,14 +9,12 @@ interface BalanceData {
   accounts: Array<{ id: string; name: string; current_balance: number; minimum_balance: number; provider_name: string; type_name: string; status: string; }>;
 }
 interface TxSummary { totalMoneyIn: number; totalMoneyOut: number; totalFees: number; transactionCount: number; netMovement: number; }
-interface TransferSummary { totalTransfers: number; totalAmount: number; totalFees: number; }
 interface LoadingSummary { totalSales: number; totalRevenue: number; totalCost: number; totalProfit: number; }
 interface TodaySummary { transactionCount: number; moneyIn: number; moneyOut: number; feesCollected: number; completedCount: number; pendingCount: number; reversedCount: number; }
 
 export default function Dashboard() {
   const [balances, setBalances] = useState<BalanceData | null>(null);
   const [txSummary, setTxSummary] = useState<TxSummary | null>(null);
-  const [transferSummary, setTransferSummary] = useState<TransferSummary | null>(null);
   const [loadingSummary, setLoadingSummary] = useState<LoadingSummary | null>(null);
   const [todaySummary, setTodaySummary] = useState<TodaySummary | null>(null);
   const [recentTransactions, setRecentTransactions] = useState<any[]>([]);
@@ -30,11 +28,10 @@ export default function Dashboard() {
   const fetchData = useCallback(async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
     try {
-      const [bal, txs, recent, ts, ls, rt, al, today] = await Promise.allSettled([
+      const [bal, txs, recent, ls, rt, al, today] = await Promise.allSettled([
         api.get<BalanceData>('/balances'),
         api.get<{ summary: TxSummary }>('/transactions/summary'),
         api.get<{ data: any[] }>('/transactions?limit=8'),
-        api.get<TransferSummary>('/transfers/summary'),
         api.get<{ summary: LoadingSummary }>('/loading/summary'),
         api.get<{ data: any[] }>('/transfers?limit=5'),
         api.get<{ data: any[]; unreadCount: number }>('/alerts?limit=5'),
@@ -43,7 +40,6 @@ export default function Dashboard() {
       if (bal.status === 'fulfilled') setBalances(bal.value);
       if (txs.status === 'fulfilled') setTxSummary(txs.value.summary);
       if (recent.status === 'fulfilled') setRecentTransactions(recent.value.data);
-      if (ts.status === 'fulfilled') setTransferSummary(ts.value);
       if (ls.status === 'fulfilled') setLoadingSummary(ls.value.summary);
       if (rt.status === 'fulfilled') setRecentTransfers(rt.value.data);
       if (al.status === 'fulfilled') { setAlerts(al.value.data); setUnreadAlerts(al.value.unreadCount); }
@@ -66,7 +62,7 @@ export default function Dashboard() {
     const map = new Map<string, { balance: number; count: number }>();
     for (const a of balances?.accounts || []) {
       const entry = map.get(a.provider_name) || { balance: 0, count: 0 };
-      entry.balance += a.current_balance;
+      entry.balance += Number(a.current_balance) || 0;
       entry.count += 1;
       map.set(a.provider_name, entry);
     }
@@ -204,18 +200,16 @@ export default function Dashboard() {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        {transferSummary && (
-          <div className="card">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-600">Fund Transfers</p>
-                <p className="text-xl font-bold text-gray-900 mt-1">{transferSummary.totalTransfers}</p>
-              </div>
-              <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center"><ArrowLeftRight className="w-5 h-5 text-purple-600" /></div>
+        <div className="card">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Company Income</p>
+              <p className="text-xl font-bold text-yellow-600 mt-1">{loading ? '...' : formatCurrency(txSummary?.totalFees || 0)}</p>
             </div>
-            <p className="text-xs text-gray-500 mt-2">Total: {formatCurrency(transferSummary.totalAmount)} | Service Charges: {formatCurrency(transferSummary.totalFees)}</p>
+            <div className="w-10 h-10 bg-yellow-100 rounded-lg flex items-center justify-center"><Coins className="w-5 h-5 text-yellow-600" /></div>
           </div>
-        )}
+          <p className="text-xs text-gray-500 mt-2">Fees and charges from cash transactions</p>
+        </div>
         {loadingSummary && (
           <div className="card">
             <div className="flex items-center justify-between">
