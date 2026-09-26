@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
@@ -24,6 +24,7 @@ import {
   Database,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { api } from '../lib/api';
 import GlobalSearch from './GlobalSearch';
 
 const navigation = [
@@ -71,6 +72,28 @@ export default function Layout() {
 
   const isAdmin = user?.roles?.includes('administrator');
   const isApprover = isAdmin || user?.roles?.includes('manager');
+  const [pendingApprovals, setPendingApprovals] = useState(0);
+
+  useEffect(() => {
+    if (!isApprover) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await api.get<{ pagination?: { total?: number } }>('/transfers?status=pending&limit=1');
+        if (!cancelled) setPendingApprovals(res.pagination?.total || 0);
+      } catch {
+        // keep last known count on transient errors
+      }
+    };
+    load();
+    window.addEventListener('approvals-changed', load);
+    const timer = setInterval(load, 60000);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('approvals-changed', load);
+      clearInterval(timer);
+    };
+  }, [isApprover, location.pathname]);
 
   return (
     <div className="min-h-screen flex">
@@ -130,6 +153,11 @@ export default function Layout() {
               >
                 <item.icon className="w-5 h-5" />
                 {item.name}
+                {item.href === '/transfer-approvals' && pendingApprovals > 0 && (
+                  <span className="ml-auto bg-red-500 text-white text-xs font-semibold rounded-full px-1.5 py-0.5 leading-none">
+                    {pendingApprovals > 99 ? '99+' : pendingApprovals}
+                  </span>
+                )}
               </Link>
             );
           })}

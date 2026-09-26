@@ -33,6 +33,7 @@ export default function TransferApprovals() {
       ]);
       setPending(p.data);
       setRejected(r.data);
+      window.dispatchEvent(new Event('approvals-changed'));
     } catch (err) {
       console.error('Approvals load error:', err);
     } finally {
