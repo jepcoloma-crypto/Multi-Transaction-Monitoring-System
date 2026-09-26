@@ -69,6 +69,19 @@ router.get('/', authorize('transfers.read'), async (_req: Request, res: Response
   } catch (error) { next(error); }
 });
 
+router.get('/providers', authorize('transfers.read'), async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const providers = await query(
+      `SELECT p.id, p.name, p.code, COUNT(a.id)::int as account_count
+       FROM providers p
+       JOIN accounts a ON a.provider_id = p.id
+       GROUP BY p.id, p.name, p.code
+       ORDER BY p.name`
+    );
+    res.json({ success: true, data: providers });
+  } catch (error) { next(error); }
+});
+
 router.get('/lookup', authorize('transfers.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const sourceProviderId = req.query.sourceProviderId as string;

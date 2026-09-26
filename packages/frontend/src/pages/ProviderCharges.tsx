@@ -3,9 +3,10 @@ import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { Plus, Edit2, Trash2, X } from 'lucide-react';
 
-interface Provider {
+interface ProviderOption {
   id: string;
   name: string;
+  account_count: number;
 }
 
 interface ProviderCharge {
@@ -31,7 +32,7 @@ const emptyForm = {
 
 export default function ProviderCharges() {
   const [charges, setCharges] = useState<ProviderCharge[]>([]);
-  const [providers, setProviders] = useState<Provider[]>([]);
+  const [providers, setProviders] = useState<ProviderOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<ProviderCharge | null>(null);
@@ -45,7 +46,7 @@ export default function ProviderCharges() {
     try {
       const [c, p] = await Promise.all([
         api.get<ProviderCharge[]>('/provider-charges'),
-        api.get<Provider[]>('/providers'),
+        api.get<ProviderOption[]>('/provider-charges/providers'),
       ]);
       setCharges(c);
       setProviders(p);
@@ -109,6 +110,16 @@ export default function ProviderCharges() {
       fetchData();
     } catch (err: any) { alert(err.message); }
   };
+
+  const providerOptions: ProviderOption[] = [...providers];
+  if (editing?.source_provider_id && !providerOptions.some(p => p.id === editing.source_provider_id)) {
+    providerOptions.push({ id: editing.source_provider_id, name: editing.source_provider_name || 'Unknown provider', account_count: 0 });
+  }
+  if (editing?.destination_provider_id && !providerOptions.some(p => p.id === editing.destination_provider_id)) {
+    providerOptions.push({ id: editing.destination_provider_id, name: editing.destination_provider_name || 'Unknown provider', account_count: 0 });
+  }
+
+  const optionLabel = (p: ProviderOption) => (p.account_count > 0 ? `${p.name} (${p.account_count})` : p.name);
 
   return (
     <div className="space-y-6">
@@ -196,17 +207,18 @@ export default function ProviderCharges() {
                   <label className="form-label">From Provider</label>
                   <select value={form.sourceProviderId} onChange={e => setForm({ ...form, sourceProviderId: e.target.value })} className="input">
                     <option value="">Any provider</option>
-                    {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    {providerOptions.map(p => <option key={p.id} value={p.id}>{optionLabel(p)}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="form-label">To Provider</label>
                   <select value={form.destinationProviderId} onChange={e => setForm({ ...form, destinationProviderId: e.target.value })} className="input">
                     <option value="">Any provider</option>
-                    {providers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    {providerOptions.map(p => <option key={p.id} value={p.id}>{optionLabel(p)}</option>)}
                   </select>
                 </div>
               </div>
+              <p className="text-xs text-gray-500">Providers are listed from registered accounts, with their account count</p>
               <div>
                 <label className="form-label">Charge Amount *</label>
                 <input type="number" step="0.01" min="0" required value={form.chargeAmount} onChange={e => setForm({ ...form, chargeAmount: e.target.value })} className="input" placeholder="0.00" />
