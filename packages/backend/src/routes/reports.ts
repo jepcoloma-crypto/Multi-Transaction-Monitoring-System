@@ -48,7 +48,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
 router.get('/transaction-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { startDate, endDate, accountId, typeId } = req.query;
-    const conds: string[] = ['t.status != $1'];
+    const conds: string[] = [`t.status NOT IN ($1, 'pending', 'rejected')`];
     const params: any[] = ['reversed'];
     let pi = 2;
     if (startDate) { conds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }

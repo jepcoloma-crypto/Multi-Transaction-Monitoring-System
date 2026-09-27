@@ -171,9 +171,9 @@ router.get('/today', authorize('transactions.read'), async (req: Request, res: R
     const summary = await queryOne(
       `SELECT
         COUNT(*) as transaction_count,
-        COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as money_in,
-        COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as money_out,
-        COALESCE(SUM(COALESCE(t.fee, 0)), 0) as fees_collected,
+        COALESCE(SUM(CASE WHEN t.status = 'completed' AND tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as money_in,
+        COALESCE(SUM(CASE WHEN t.status = 'completed' AND tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as money_out,
+        COALESCE(SUM(CASE WHEN t.status = 'completed' THEN COALESCE(t.fee, 0) ELSE 0 END), 0) as fees_collected,
         COUNT(CASE WHEN t.status = 'completed' THEN 1 END) as completed_count,
         COUNT(CASE WHEN t.status = 'pending' THEN 1 END) as pending_count,
         COUNT(CASE WHEN t.status = 'reversed' THEN 1 END) as reversed_count
@@ -375,8 +375,8 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     if (!account) throw createError(404, 'Account not found');
     if (account.status === 'closed') throw createError(400, 'Cannot add transactions to a closed account');
 
-    const txType = await queryOne<{ id: string; direction: string }>(
-      'SELECT id, direction FROM transaction_types WHERE id = $1', [resolvedTypeId]
+    const txType = await queryOne<{ id: string; direction: string; code: string }>(
+      'SELECT id, direction, code FROM transaction_types WHERE id = $1', [resolvedTypeId]
     );
     if (!txType) throw createError(404, 'Transaction type not found');
 
@@ -388,6 +388,15 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     const totalCharges = (additionalCharges || []).reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
     const totalAmount = netAmount + totalCharges;
     const entryType = txType.direction === 'in' || txType.direction === 'adjustment' ? 'credit' : 'debit';
+
+    const isOwnerFund = txType.code === 'owner_funding' || txType.code === 'owner_return';
+    const isAdminCreator = (req.user!.roles || []).includes('administrator');
+    const requiresApproval = isOwnerFund && !isAdminCreator;
+    const finalStatus = requiresApproval ? 'pending' : (status || 'completed');
+
+    if (finalStatus !== 'completed' && !isOwnerFund) {
+      throw createError(400, 'Only owner fund movements can be created as pending');
+    }
 
     if (entryType === 'debit') {
       const balance = await queryOne<{ current_balance: string }>(
@@ -410,17 +419,20 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
         txNumber!.nextval, accountId, resolvedTypeId, resolvedCategoryId,
         amountNum, feeNum, netAmount, referenceNumber || null, externalReference || null,
         transactionDate || new Date(), description || null,
-        customerName || null, customerContact || null, status || 'completed', req.user!.userId,
+        customerName || null, customerContact || null, finalStatus, req.user!.userId,
         feeAddedToBalance !== false, JSON.stringify(additionalCharges || []), notes || null, customerId || null,
         paymentMethod || null,
       ]
     );
 
-    const { newBalance } = await processTransaction(
-      accountId, resolvedTypeId, totalAmount, feeNum, entryType as 'debit' | 'credit',
-      transaction!.id, referenceNumber, description, new Date(transactionDate || Date.now()), client,
-      feeAddedToBalance !== false
-    );
+    let newBalance: number | undefined;
+    if (finalStatus === 'completed') {
+      ({ newBalance } = await processTransaction(
+        accountId, resolvedTypeId, totalAmount, feeNum, entryType as 'debit' | 'credit',
+        transaction!.id, referenceNumber, description, new Date(transactionDate || Date.now()), client,
+        feeAddedToBalance !== false
+      ));
+    }
 
     await client.query('COMMIT');
 
@@ -430,7 +442,10 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       entity: 'transaction',
       entityId: transaction!.id,
       ipAddress: req.ip,
-      newData: { accountName: account.name, amount: amountNum, direction: txType.direction, newBalance },
+      newData: {
+        accountName: account.name, amount: amountNum, direction: txType.direction,
+        status: finalStatus, ...(newBalance !== undefined ? { newBalance } : {}),
+      },
     });
 
     res.status(201).json({ success: true, data: transaction });
@@ -475,7 +490,7 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
     const newTotal = chargeTotal(additionalCharges);
     const delta = Math.round((newTotal - oldTotal) * 100) / 100;
 
-    if (delta !== 0 && original.status !== 'reversed') {
+    if (delta !== 0 && original.status === 'completed') {
       const creditLike = original.direction === 'in' || original.direction === 'adjustment';
       const entryType: 'debit' | 'credit' = delta > 0
         ? (creditLike ? 'credit' : 'debit')
@@ -567,6 +582,9 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
     if (!original) throw createError(404, 'Transaction not found');
     assertOwner(req, original, 'transactions.write_all', 'Transaction not found');
     if (original.status === 'reversed') throw createError(400, 'Transaction already reversed');
+    if (original.status === 'pending' || original.status === 'rejected') {
+      throw createError(400, 'Unsettled fund movements cannot be reversed');
+    }
 
     const txType = await queryOne<{ code: string }>(
       'SELECT code FROM transaction_types WHERE id = $1', [original.transaction_type_id]
@@ -650,6 +668,151 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
 
       res.json({ success: true, data: pending });
     }
+  } catch (error) {
+    next(error);
+  }
+});
+
+type OwnerFundCode = 'owner_funding' | 'owner_return';
+
+function assertOwnerFundType(code: string): asserts code is OwnerFundCode {
+  if (code !== 'owner_funding' && code !== 'owner_return') {
+    throw createError(400, 'Only owner fund movements require approval');
+  }
+}
+
+// List owner fund movements awaiting approval (administrators + managers)
+router.get('/owner-funds/pending', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = req.query.status === 'rejected' ? 'rejected' : 'pending';
+    const rows = await query(
+      `SELECT t.id, t.transaction_number, t.amount, t.fee, t.net_amount, t.status, t.transaction_date,
+              t.description, t.notes, t.payment_method, t.reference_number, t.created_at,
+              t.rejection_reason, t.additional_charges,
+              tt.code AS type_code, tt.name AS type_name, tt.direction,
+              a.name AS account_name, a.current_balance,
+              u.username AS created_by_username,
+              ru.username AS rejected_by_username
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       JOIN accounts a ON t.account_id = a.id
+       LEFT JOIN users u ON t.created_by = u.id
+       LEFT JOIN users ru ON t.rejected_by = ru.id
+       WHERE tt.code IN ('owner_funding', 'owner_return') AND t.status = $1
+       ORDER BY t.created_at ASC`,
+      [status]
+    );
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Approve an owner fund movement — funds move only here, never at creation
+router.post('/:id/approve', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    const row = (await client.query(
+      `SELECT t.*, tt.code, tt.direction
+       FROM transactions t JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.id = $1 FOR UPDATE OF t`,
+      [req.params.id]
+    )).rows[0];
+    if (!row) throw createError(404, 'Transaction not found');
+    assertOwnerFundType(row.code);
+    if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be approved');
+    if (row.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own request');
+
+    const account = (await client.query(
+      'SELECT id, name, current_balance, status FROM accounts WHERE id = $1 FOR UPDATE',
+      [row.account_id]
+    )).rows[0];
+    if (!account) throw createError(404, 'Account not found');
+    if (account.status !== 'active') throw createError(400, 'Account is not active');
+
+    const charges = (row.additional_charges || [])
+      .reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+    const totalAmount = parseFloat(row.net_amount || row.amount) + charges;
+    const entryType: 'debit' | 'credit' =
+      row.direction === 'in' || row.direction === 'adjustment' ? 'credit' : 'debit';
+
+    if (entryType === 'debit' && parseFloat(account.current_balance) < totalAmount) {
+      throw createError(400, 'Insufficient balance');
+    }
+
+    const { newBalance } = await processTransaction(
+      row.account_id, row.transaction_type_id, totalAmount, parseFloat(row.fee || 0), entryType,
+      row.id, row.reference_number, row.description, new Date(row.transaction_date), client,
+      row.fee_added_to_balance !== false
+    );
+
+    const updated = (await client.query(
+      `UPDATE transactions SET status = 'completed', approved_by = $1, updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [req.user!.userId, req.params.id]
+    )).rows[0];
+
+    await client.query('COMMIT');
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'transaction.owner_fund_approved',
+      entity: 'transaction',
+      entityId: req.params.id,
+      ipAddress: req.ip,
+      newData: {
+        transactionNumber: updated.transaction_number, accountName: account.name,
+        amount: totalAmount, direction: row.direction, newBalance,
+      },
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+// Reject an owner fund movement — no money ever moves
+router.post('/:id/reject', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { reason } = req.body;
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      throw createError(400, 'Rejection reason is required');
+    }
+
+    const row = await queryOne(
+      `SELECT t.*, tt.code
+       FROM transactions t JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.id = $1`,
+      [req.params.id]
+    );
+    if (!row) throw createError(404, 'Transaction not found');
+    assertOwnerFundType(row.code);
+    if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be rejected');
+    if (row.created_by === req.user!.userId) throw createError(400, 'You cannot reject your own request');
+
+    const updated = await queryOne(
+      `UPDATE transactions
+       SET status = 'rejected', rejected_by = $1, rejection_reason = $2, updated_at = NOW()
+       WHERE id = $3 RETURNING *`,
+      [req.user!.userId, reason.trim(), req.params.id]
+    );
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'transaction.owner_fund_rejected',
+      entity: 'transaction',
+      entityId: req.params.id,
+      ipAddress: req.ip,
+      newData: { transactionNumber: updated!.transaction_number, reason: reason.trim() },
+    });
+
+    res.json({ success: true, data: updated });
   } catch (error) {
     next(error);
   }

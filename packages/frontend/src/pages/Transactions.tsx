@@ -51,6 +51,7 @@ interface Transaction {
   additional_charges: { description: string; amount: number }[];
   notes: string | null;
   payment_method: string | null;
+  rejection_reason: string | null;
 }
 
 interface CustomerHistory {
@@ -414,6 +415,7 @@ export default function Transactions() {
           <option value="pending">Pending</option>
           <option value="completed">Completed</option>
           <option value="reversed">Reversed</option>
+          <option value="rejected">Rejected</option>
           <option value="cancelled">Cancelled</option>
         </select>
         <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
@@ -482,7 +484,7 @@ export default function Transactions() {
                     ) : <span className="text-gray-400 text-xs">-</span>}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' ? 'red' : 'yellow'}`}>{tx.status}</span>
+                    <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' || tx.status === 'rejected' ? 'red' : 'yellow'}`}>{tx.status}</span>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_username || <span className="text-gray-400">-</span>}</td>
                   <td className="px-4 py-3 text-right">
@@ -517,12 +519,24 @@ export default function Transactions() {
               <button onClick={() => setShowDetail(null)}><X className="w-5 h-5" /></button>
             </div>
             <div className="p-4 space-y-3">
+              {showDetail.status === 'pending' && (
+                <div className="bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg text-sm">
+                  Awaiting admin approval — the account balance has not changed yet.
+                </div>
+              )}
+              {showDetail.status === 'rejected' && (
+                <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg text-sm">
+                  Rejected{showDetail.rejection_reason ? `: ${showDetail.rejection_reason}` : ' — no money moved.'}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div><p className="text-xs text-gray-500">Account</p><p className="font-medium">{showDetail.account_name}</p></div>
                 <div><p className="text-xs text-gray-500">Type</p><p className="font-medium">{showDetail.type_name}{showDetail.category_name ? ` / ${showDetail.category_name}` : ''}</p></div>
                 <div><p className="text-xs text-gray-500">Amount</p><p className={`font-bold ${showDetail.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(showDetail.amount)}</p></div>
                 <div><p className="text-xs text-gray-500">Fee (company income)</p><p className="font-medium text-yellow-600">{formatCurrency(showDetail.fee)}</p></div>
-                <div><p className="text-xs text-gray-500">Account Movement</p><p className="font-bold">{formatCurrency((showDetail.fee_added_to_balance ? showDetail.amount : showDetail.amount - showDetail.fee) + (showDetail.additional_charges || []).reduce((sum, c) => sum + c.amount, 0))}</p></div>
+                {(showDetail.status === 'completed' || showDetail.status === 'reversed') && (
+                  <div><p className="text-xs text-gray-500">Account Movement</p><p className="font-bold">{formatCurrency((showDetail.fee_added_to_balance ? showDetail.amount : showDetail.amount - showDetail.fee) + (showDetail.additional_charges || []).reduce((sum, c) => sum + c.amount, 0))}</p></div>
+                )}
                 <div><p className="text-xs text-gray-500">Status</p><p className="font-medium">{showDetail.status}</p></div>
                 <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{new Date(showDetail.transaction_date).toLocaleString()}</p></div>
                 <div><p className="text-xs text-gray-500">Reference</p><p className="font-medium">{showDetail.reference_number || '-'}</p></div>

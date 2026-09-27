@@ -54,6 +54,7 @@ export default function Accounts() {
     minimumBalance: '0', targetBalance: '0', notes: '', currentBalance: '0',
   });
   const [error, setError] = useState('');
+  const [fundsNotice, setFundsNotice] = useState('');
   const [showAddFunds, setShowAddFunds] = useState(false);
   const [fundsMode, setFundsMode] = useState<'in' | 'out'>('in');
   const [addFundsAccount, setAddFundsAccount] = useState<Account | null>(null);
@@ -217,7 +218,7 @@ export default function Accounts() {
       const methodLabel = { cash: 'Cash', gcash: 'GCash', bank: 'Bank Transfer', maya: 'Maya' }[addFundsForm.method as 'cash' | 'gcash' | 'bank' | 'maya'] || addFundsForm.method;
       const action = fundsMode === 'in' ? 'Owner funding' : 'Owner return';
       const description = [`${action} via ${methodLabel}`, addFundsForm.description].filter(Boolean).join(' — ');
-      await api.post('/transactions', {
+      const created = await api.post<{ status?: string }>('/transactions', {
         accountId: addFundsAccount.id,
         transactionTypeId: type.id,
         amount,
@@ -232,6 +233,11 @@ export default function Accounts() {
       setShowAddFunds(false);
       setAddFundsAccount(null);
       resetFundsForm();
+      if (created?.status === 'pending') {
+        setFundsNotice(`₱${amount.toLocaleString()} ${fundsMode === 'in' ? 'funding' : 'return'} submitted — awaiting admin approval. Balance is unchanged until approved.`);
+      } else {
+        setFundsNotice('');
+      }
       fetchAccounts(pagination.page);
       fetchSummary();
     } catch (err: any) {
@@ -248,11 +254,18 @@ export default function Accounts() {
     setAddFundsAccount(account);
     resetFundsForm();
     setError('');
+    setFundsNotice('');
     setShowAddFunds(true);
   };
 
   return (
     <div className="space-y-6">
+      {fundsNotice && (
+        <div className="bg-amber-50 text-amber-800 border border-amber-200 px-3 py-2 rounded-lg text-sm flex items-start justify-between gap-3">
+          <span>{fundsNotice}</span>
+          <button onClick={() => setFundsNotice('')} className="text-amber-600 hover:text-amber-900 shrink-0"><X className="w-4 h-4" /></button>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">Accounts</h2>
