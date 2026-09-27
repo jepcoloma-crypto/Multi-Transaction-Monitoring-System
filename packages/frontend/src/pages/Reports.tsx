@@ -15,6 +15,8 @@ export default function Reports() {
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
   const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '' });
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   useEffect(() => {
     api.get<{ data: Account[] }>('/accounts').then(res => setAccounts(res.data)).catch(() => {});
@@ -39,25 +41,56 @@ export default function Reports() {
 
   useEffect(() => { fetchReport(); }, [fetchReport]);
 
-  const exportCSV = async (type: string) => {
+  const exportType = (report: ReportType): string | null => {
+    switch (report) {
+      case 'account-statement': return 'ledger';
+      case 'transaction-report': return 'transactions';
+      case 'transfer-report': return 'transfers';
+      case 'loading-report': return 'loading';
+      default: return null;
+    }
+  };
+
+  const exportCSV = async () => {
+    const type = exportType(activeReport);
+    if (!type || exporting) return;
+    setExporting(true);
+    setExportError('');
     try {
       const params = new URLSearchParams();
       if (filters.startDate) params.append('startDate', filters.startDate);
       if (filters.endDate) params.append('endDate', filters.endDate);
-      if (activeReport === 'account-statement' && filters.accountId) params.append('accountId', filters.accountId);
+      if (filters.accountId) params.append('accountId', filters.accountId);
+      if (filters.typeId) params.append('typeId', filters.typeId);
+      if (filters.status) params.append('status', filters.status);
+      if (filters.providerId) params.append('providerId', filters.providerId);
       params.append('format', 'csv');
-      const qs = params.toString();
-      const res = await fetch(`${API_BASE}/reports/export/${type}?${qs}`, {
+      const res = await fetch(`${API_BASE}/reports/export/${type}?${params.toString()}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
       });
+      if (!res.ok) {
+        let message = `Export failed (HTTP ${res.status})`;
+        try {
+          const body = await res.json();
+          message = body?.error?.message || body?.message || message;
+        } catch { message = `Export failed (HTTP ${res.status})`; }
+        throw new Error(message);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
       a.download = `${type}_export.csv`;
+      document.body.appendChild(a);
       a.click();
+      a.remove();
       URL.revokeObjectURL(url);
-    } catch (err) { console.error('Report export error:', err); }
+    } catch (err) {
+      console.error('Report export error:', err);
+      setExportError(err instanceof Error ? err.message : 'Export failed. Please try again.');
+    } finally {
+      setExporting(false);
+    }
   };
 
   const reports = [
@@ -78,7 +111,7 @@ export default function Reports() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="lg:col-span-1 space-y-2">
           {reports.map(r => (
-            <button key={r.id} onClick={() => { setActiveReport(r.id); setReportData(null); }}
+            <button key={r.id} onClick={() => { setActiveReport(r.id); setReportData(null); setExportError(''); }}
               className={`w-full text-left p-3 rounded-lg transition-colors ${activeReport === r.id ? 'bg-primary-100 text-primary-700 border border-primary-200' : 'text-gray-700 hover:bg-gray-100'}`}>
               <div className="flex items-center gap-3">
                 <r.icon className="w-5 h-5" />
@@ -93,12 +126,17 @@ export default function Reports() {
 
         <div className="lg:col-span-3 space-y-4">
           <div className="card">
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-start justify-between gap-4 mb-4">
               <h3 className="font-semibold">{reports.find(r => r.id === activeReport)?.name}</h3>
-              <button onClick={() => exportCSV(activeReport === 'account-statement' ? 'ledger' : activeReport.replace('-report', '').replace('account-', ''))}
-                className="btn-secondary flex items-center gap-2 text-sm">
-                <Download className="w-4 h-4" /> Export CSV
-              </button>
+              <div className="text-right shrink-0">
+                {exportType(activeReport) && (
+                  <button onClick={exportCSV} disabled={exporting}
+                    className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                    <Download className="w-4 h-4" /> {exporting ? 'Exporting...' : 'Export CSV'}
+                  </button>
+                )}
+                {exportError && <p className="text-xs text-red-600 mt-1 max-w-[22rem]">{exportError}</p>}
+              </div>
             </div>
 
             <div className="flex flex-wrap gap-3 mb-4">

@@ -238,104 +238,169 @@ router.get('/balance-trends', authorize('reports.read'), async (req: Request, re
   } catch (error) { next(error); }
 });
 
+type ExportColumn = { header: string; key: string };
+
+const csvCell = (value: unknown): string => {
+  const normalized = value instanceof Date ? value.toISOString() : value ?? '';
+  return `"${String(normalized).replace(/"/g, '""')}"`;
+};
+
 router.get('/export/:type', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { type } = req.params;
-    const { startDate, endDate, format } = req.query;
+    const { startDate, endDate, format, accountId, typeId, status, providerId } = req.query;
     const fmt = format === 'csv' ? 'csv' : 'json';
 
     let data: any[] = [];
-    let headers: string[] = [];
+    let columns: ExportColumn[] = [];
 
-    if (type === 'transactions') {
-      const conds: string[] = ['t.status != $1'];
+    if (type === 'transaction' || type === 'transactions') {
+      const conds: string[] = [`t.status NOT IN ($1, 'pending', 'rejected')`];
       const params: any[] = ['reversed'];
       let pi = 2;
       if (startDate) { conds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
       if (endDate) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+      if (accountId) { conds.push(`t.account_id = $${pi++}`); params.push(accountId); }
+      if (typeId) { conds.push(`t.transaction_type_id = $${pi++}`); params.push(typeId); }
       const scope = ownerClause(req, 't', 'transactions.read_all', pi);
-      if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
+      if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
       const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
-        `SELECT t.id, t.transaction_number, tt.name as type_name, tt.direction, a.name as account_name,
+        `SELECT t.transaction_number, tt.name as type_name, tt.direction, a.name as account_name,
                 t.amount, t.fee, tc.name as category_name, t.reference_number, t.description, t.status,
-                t.transaction_date, u.email as created_by_email
+                t.transaction_date, u.username as created_by
          FROM transactions t
          JOIN transaction_types tt ON t.transaction_type_id = tt.id
          LEFT JOIN transaction_categories tc ON t.transaction_category_id = tc.id
          JOIN accounts a ON t.account_id = a.id
          LEFT JOIN users u ON t.created_by = u.id ${wc} ORDER BY t.transaction_date DESC`, params
       );
-      headers = ['Number', 'Type', 'Direction', 'Account', 'Amount', 'Fee', 'Category', 'Reference', 'Description', 'Status', 'Date', 'Created By'];
-    } else if (type === 'transfers') {
-      const seeAll = canSeeAll(req, 'transfers.read_all');
+      columns = [
+        { header: 'Number', key: 'transaction_number' },
+        { header: 'Type', key: 'type_name' },
+        { header: 'Direction', key: 'direction' },
+        { header: 'Account', key: 'account_name' },
+        { header: 'Amount', key: 'amount' },
+        { header: 'Fee', key: 'fee' },
+        { header: 'Category', key: 'category_name' },
+        { header: 'Reference', key: 'reference_number' },
+        { header: 'Description', key: 'description' },
+        { header: 'Status', key: 'status' },
+        { header: 'Date', key: 'transaction_date' },
+        { header: 'Created By', key: 'created_by' },
+      ];
+    } else if (type === 'transfer' || type === 'transfers') {
+      const conds: string[] = [];
+      const params: any[] = [];
+      let pi = 1;
+      if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
+      if (endDate) { conds.push(`t.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+      if (status) { conds.push(`t.status = $${pi++}`); params.push(status); }
+      const scope = ownerClause(req, 't', 'transfers.read_all', pi);
+      if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
+      const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
       data = await query(
         `SELECT t.transfer_number, sa.name as source_name, da.name as destination_name,
-                t.transfer_amount, t.transfer_fee, t.status, t.purpose, t.transfer_date, u.email as created_by_email
+                t.transfer_amount, t.transfer_fee, t.status, t.purpose, t.transfer_date, u.username as created_by
          FROM transfers t JOIN accounts sa ON t.source_account_id = sa.id
          JOIN accounts da ON t.destination_account_id = da.id LEFT JOIN users u ON t.created_by = u.id
-         ${seeAll ? '' : 'WHERE t.created_by = $1'} ORDER BY t.transfer_date DESC`,
-        seeAll ? [] : [req.user!.userId]
+         ${wc} ORDER BY t.transfer_date DESC`, params
       );
-      headers = ['Number', 'Source', 'Destination', 'Amount', 'Fee', 'Status', 'Purpose', 'Date', 'Created By'];
+      columns = [
+        { header: 'Number', key: 'transfer_number' },
+        { header: 'Source', key: 'source_name' },
+        { header: 'Destination', key: 'destination_name' },
+        { header: 'Amount', key: 'transfer_amount' },
+        { header: 'Fee', key: 'transfer_fee' },
+        { header: 'Status', key: 'status' },
+        { header: 'Purpose', key: 'purpose' },
+        { header: 'Date', key: 'transfer_date' },
+        { header: 'Created By', key: 'created_by' },
+      ];
     } else if (type === 'loading') {
-      const seeAll = canSeeAll(req, 'loading.read_all');
+      const conds: string[] = [`lt.status = 'completed'`];
+      const params: any[] = [];
+      let pi = 1;
+      if (startDate) { conds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
+      if (endDate) { conds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+      if (providerId) { conds.push(`lp.provider_id = $${pi++}`); params.push(providerId); }
+      const scope = ownerClause(req, 'lt', 'loading.read_all', pi);
+      if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
+      const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
         `SELECT lt.transaction_number, lp.name as product_name, lt.customer_number, lt.quantity,
                 lt.total_cost, lt.total_revenue, lt.profit, a.name as account_name, lt.status, lt.created_at
          FROM loading_transactions lt JOIN loading_products lp ON lt.product_id = lp.id
          JOIN accounts a ON lt.account_id = a.id
-         ${seeAll ? '' : 'WHERE lt.created_by = $1'} ORDER BY lt.created_at DESC`,
-        seeAll ? [] : [req.user!.userId]
+         ${wc} ORDER BY lt.created_at DESC`, params
       );
-      headers = ['Number', 'Product', 'Customer', 'Qty', 'Cost', 'Revenue', 'Profit', 'Account', 'Status', 'Date'];
+      columns = [
+        { header: 'Number', key: 'transaction_number' },
+        { header: 'Product', key: 'product_name' },
+        { header: 'Customer', key: 'customer_number' },
+        { header: 'Qty', key: 'quantity' },
+        { header: 'Cost', key: 'total_cost' },
+        { header: 'Revenue', key: 'total_revenue' },
+        { header: 'Profit', key: 'profit' },
+        { header: 'Account', key: 'account_name' },
+        { header: 'Status', key: 'status' },
+        { header: 'Date', key: 'created_at' },
+      ];
     } else if (type === 'ledger') {
-      const accountId = req.query.accountId as string;
-      const seeAll = canSeeAll(req, 'accounts.read_all');
-      if (accountId) {
-        const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
-        assertOwner(req, account, 'accounts.read_all', 'Account not found');
+      if (!accountId) {
+        return res.status(400).json({ success: false, error: { message: 'Select an account to export the account statement.' } });
       }
-      const conds: string[] = [];
-      const params: any[] = [];
-      let pi = 1;
-      if (accountId) { conds.push(`le.account_id = $${pi++}`); params.push(accountId); }
+      const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
+      assertOwner(req, account, 'accounts.read_all', 'Account not found');
+      const conds: string[] = ['le.account_id = $1'];
+      const params: any[] = [accountId];
+      let pi = 2;
       if (startDate) { conds.push(`le.entry_date >= $${pi++}`); params.push(startDate); }
       if (endDate) { conds.push(`le.entry_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
-      if (!seeAll) { conds.push(`a.created_by = $${pi++}`); params.push(req.user!.userId); }
-      const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
+      const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
-        `SELECT le.id, a.name as account_name, le.entry_type, le.amount,
+        `SELECT le.id, a.name as account_name, le.entry_type,
                 CASE WHEN le.entry_type = 'credit' THEN le.amount ELSE 0 END as credit,
                 CASE WHEN le.entry_type = 'debit' THEN le.amount ELSE 0 END as debit,
                 le.balance_after, le.description, le.entry_date
          FROM ledger_entries le JOIN accounts a ON le.account_id = a.id
          ${wc} ORDER BY le.entry_date ASC`, params
       );
-      headers = ['ID', 'Account', 'Type', 'Credit', 'Debit', 'Balance', 'Description', 'Date'];
+      columns = [
+        { header: 'ID', key: 'id' },
+        { header: 'Account', key: 'account_name' },
+        { header: 'Type', key: 'entry_type' },
+        { header: 'Credit', key: 'credit' },
+        { header: 'Debit', key: 'debit' },
+        { header: 'Balance', key: 'balance_after' },
+        { header: 'Description', key: 'description' },
+        { header: 'Date', key: 'entry_date' },
+      ];
     } else {
       return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger' } });
     }
 
     if (fmt === 'csv') {
-      const csvRows = [headers.join(',')];
-      data.forEach((row: any) => {
-        const vals = Object.values(row).map(v => `"${String(v ?? '').replace(/"/g, '""')}"`);
-        csvRows.push(vals.join(','));
-      });
-      // Add totals row for ledger export
+      const csvRows = [columns.map(c => c.header).join(',')];
+      data.forEach((row: any) => csvRows.push(columns.map(c => csvCell(row[c.key])).join(',')));
       if (type === 'ledger' && data.length > 0) {
         const totalCredit = data.reduce((sum: number, r: any) => sum + parseFloat(r.credit || '0'), 0);
         const totalDebit = data.reduce((sum: number, r: any) => sum + parseFloat(r.debit || '0'), 0);
         const lastBalance = data[data.length - 1].balance_after;
-        csvRows.push(`"","","TOTAL","${totalCredit.toFixed(2)}","${totalDebit.toFixed(2)}","","","${lastBalance}"`);
+        const totals: Record<string, unknown> = {
+          entry_type: 'TOTAL',
+          credit: totalCredit.toFixed(2),
+          debit: totalDebit.toFixed(2),
+          balance_after: lastBalance,
+        };
+        csvRows.push(columns.map(c => csvCell(totals[c.key] ?? '')).join(','));
       }
-      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${type}_export.csv"`);
-      return res.send(csvRows.join('\n'));
+      return res.send('\uFEFF' + csvRows.join('\r\n'));
     }
 
-    res.json({ success: true, data, headers });
+    res.json({ success: true, data, headers: columns.map(c => c.header) });
   } catch (error) { next(error); }
 });
 
