@@ -143,7 +143,7 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
   try {
     await client.query('BEGIN');
 
-    const { accountId, productId, customerNumber, quantity, paymentMethod, referenceNumber, notes } = req.body;
+    const { accountId, productId, customerNumber, quantity, paymentMethod, referenceNumber, notes, transactionDate } = req.body;
     if (!accountId || !productId || !customerNumber) throw createError(400, 'Account, product, and customer number are required');
 
     const product = await client.query('SELECT * FROM loading_products WHERE id = $1 AND is_active = true', [productId]);
@@ -167,14 +167,15 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     if (parseFloat(acct.rows[0].current_balance) < totalBalanceDeduction) throw createError(400, 'Insufficient balance for loading purchase');
 
     const txNum = await client.query("SELECT nextval('loading_transactions_transaction_number_seq') as nextval");
+    const txDate = transactionDate ? `${transactionDate} ${new Date().toTimeString().slice(0, 8)}` : null;
     const loadingTx = (await client.query(
       `INSERT INTO loading_transactions (transaction_number, account_id, product_id, customer_number, quantity,
        unit_cost, unit_price, total_cost, total_revenue, profit, provider_convenience_fee, company_additional_charge,
-       payment_method, reference_number, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) RETURNING *`,
+       payment_method, reference_number, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16::timestamptz, NOW())) RETURNING *`,
       [txNum.rows[0].nextval, accountId, productId, customerNumber, qty, unitCost, unitPrice, totalCost, totalRevenue, profit,
        providerConvenienceFee, companyAdditionalCharge,
-       paymentMethod || 'cash', referenceNumber || null, req.user!.userId]
+       paymentMethod || 'cash', referenceNumber || null, req.user!.userId, txDate]
     )).rows[0];
 
     // Deduct from account: cost + provider convenience fee
@@ -183,8 +184,8 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
 
     await client.query(
       `INSERT INTO ledger_entries (account_id, entry_type, amount, balance_after, description, entry_date)
-       VALUES ($1, 'debit', $2, $3, $4, NOW())`,
-      [accountId, totalBalanceDeduction, newBalance, `Loading sale to ${customerNumber}: ${product.rows[0].name}${providerConvenienceFee > 0 ? ` (incl. ₱${providerConvenienceFee} conv. fee)` : ''}`]
+       VALUES ($1, 'debit', $2, $3, $4, COALESCE($5::timestamptz, NOW()))`,
+      [accountId, totalBalanceDeduction, newBalance, `Loading sale to ${customerNumber}: ${product.rows[0].name}${providerConvenienceFee > 0 ? ` (incl. ₱${providerConvenienceFee} conv. fee)` : ''}`, txDate]
     );
 
     await client.query('COMMIT');

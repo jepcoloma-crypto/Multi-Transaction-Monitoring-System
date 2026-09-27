@@ -34,7 +34,7 @@ export default function Loading() {
   const [search, setSearch] = useState('');
   const [productSearch, setProductSearch] = useState('');
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
-  const [form, setForm] = useState({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '' });
+  const [form, setForm] = useState({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '', transactionDate: new Date().toISOString().slice(0, 10) });
   const [productForm, setProductForm] = useState({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', providerConvenienceFee: '', companyAdditionalCharge: '', notes: '' });
   const [submitting, setSubmitting] = useState(false);
 
@@ -78,7 +78,7 @@ export default function Loading() {
     try {
       await api.post('/loading', { ...form, quantity: parseInt(form.quantity || '1') });
       setShowModal(false);
-      setForm({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '' });
+      setForm({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '', transactionDate: new Date().toISOString().slice(0, 10) });
       loadData(1);
     } catch (err: any) { alert(err.response?.data?.message || 'Failed'); } finally { setSubmitting(false); }
   };
@@ -344,7 +344,7 @@ export default function Loading() {
                 <label className="form-label">Customer Number *</label>
                 <input type="text" required value={form.customerNumber} onChange={e => setForm({ ...form, customerNumber: e.target.value })} className="input-field" placeholder="e.g., 09171234567" />
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="form-label">Quantity</label>
                   <input type="number" min="1" value={form.quantity} onChange={e => setForm({ ...form, quantity: e.target.value })} className="input-field" />
@@ -357,6 +357,10 @@ export default function Loading() {
                     <option value="maya">Maya</option>
                     <option value="bank">Bank</option>
                   </select>
+                </div>
+                <div>
+                  <label className="form-label">Date</label>
+                  <input type="date" required value={form.transactionDate} onChange={e => setForm({ ...form, transactionDate: e.target.value })} className="input-field" />
                 </div>
               </div>
               <div>

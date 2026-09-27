@@ -65,7 +65,7 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
        LEFT JOIN users u1 ON t.created_by = u1.id
        LEFT JOIN users u2 ON t.approved_by = u2.id
        ${whereClause}
-       ORDER BY t.transaction_date DESC
+       ORDER BY t.created_at DESC
        LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
       [...params, limit, offset]
     );
@@ -233,7 +233,7 @@ router.get('/by-customer-name', authorize('transactions.read'), async (req: Requ
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
        ${listWhere}
-       ORDER BY t.transaction_date DESC`,
+       ORDER BY t.created_at DESC`,
       nameParams
     );
 
