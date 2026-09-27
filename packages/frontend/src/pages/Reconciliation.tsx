@@ -64,13 +64,17 @@ export default function Reconciliation() {
     try {
       const params = new URLSearchParams({ page: String(page), limit: '20' });
       if (filter) params.set('status', filter);
-      const [r, a] = await Promise.all([
+      const [r, a] = await Promise.allSettled([
         api.get<{ data: Reconciliation[]; pagination: any }>(`/reconciliations?${params}`),
         api.get<{ data: Account[] }>('/accounts?limit=100'),
       ]);
-      setRecons(r.data);
-      setPagination(r.pagination);
-      setAccounts(a.data);
+      if (r.status === 'fulfilled') {
+        setRecons(r.value.data);
+        setPagination(r.value.pagination);
+      }
+      if (a.status === 'fulfilled') {
+        setAccounts(a.value.data);
+      }
     } catch (err) { console.error('Reconciliation load error:', err); } finally { setLoading(false); }
   };
 
