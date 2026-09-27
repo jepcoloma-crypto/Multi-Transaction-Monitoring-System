@@ -721,7 +721,7 @@ export default function Transactions() {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg w-full max-w-5xl max-h-[94vh] overflow-y-auto">
+          <div className="bg-white rounded-lg w-full max-w-4xl max-h-[94vh] overflow-y-auto">
             <div className="flex items-center justify-between p-4 border-b">
               <h3 className="text-lg font-semibold">New Transaction</h3>
               <button onClick={() => setShowModal(false)}><X className="w-5 h-5" /></button>
@@ -729,8 +729,8 @@ export default function Transactions() {
             <form onSubmit={handleSubmit} className="p-4 space-y-3">
               {error && <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-sm">{error}</div>}
 
-              <div className="flex flex-col lg:flex-row gap-5">
-                <div className="lg:w-3/5 space-y-3">
+              <div className="flex flex-col lg:flex-row gap-4">
+                <div className="lg:w-1/2 space-y-3">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Account *</label>
                     <AccountSelect
@@ -738,12 +738,12 @@ export default function Transactions() {
                       value={formData.accountId}
                       onChange={(id) => setFormData({ ...formData, accountId: id })}
                       placeholder="Select account"
-                      className="input"
+                      className="input text-sm"
                     />
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Fee Rule *</label>
-                    <select required value={formData.feeRuleId} onChange={(e) => handleRuleChange(e.target.value)} className="input">
+                    <select required value={formData.feeRuleId} onChange={(e) => handleRuleChange(e.target.value)} className="input text-sm">
                       <option value="">Select fee rule</option>
                       {feeRules.map(r => (
                         <option key={r.id} value={r.id}>
@@ -761,15 +761,7 @@ export default function Transactions() {
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
-                      <input type="number" step="0.01" min="0" required value={formData.amount} onChange={(e) => handleAmountChange(e.target.value)} className="input" />
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {[100, 500, 1000, 5000, 10000].map(v => (
-                          <button key={v} type="button" onClick={() => handleAmountChange(String(v))}
-                            className="px-2 py-0.5 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-100">
-                            {formatCurrency(v).replace(/\.00$/, '')}
-                          </button>
-                        ))}
-                      </div>
+                      <input type="number" step="0.01" min="0" required value={formData.amount} onChange={(e) => handleAmountChange(e.target.value)} className="input text-sm" />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Fee</label>
@@ -778,9 +770,19 @@ export default function Transactions() {
                         value={formData.fee}
                         readOnly={feeMode === 'auto'}
                         onChange={(e) => setFormData({ ...formData, fee: e.target.value })}
-                        className={`input ${feeMode === 'auto' ? 'bg-gray-50 text-gray-500 cursor-not-allowed' : 'bg-white'}`}
+                        className={`input text-sm ${feeMode === 'auto' ? 'bg-gray-50 text-gray-500 cursor-not-allowed' : 'bg-white'}`}
                         placeholder={feeMode === 'manual' ? 'Enter fee amount' : ''}
                       />
+                    </div>
+                    <div className="col-span-2">
+                      <div className="flex flex-wrap gap-1">
+                        {[100, 500, 1000, 5000, 10000].map(v => (
+                          <button key={v} type="button" onClick={() => handleAmountChange(String(v))}
+                            className="px-2 py-0.5 text-xs rounded border border-gray-300 text-gray-600 hover:bg-gray-100">
+                            {formatCurrency(v).replace(/\.00$/, '')}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
 
@@ -806,16 +808,74 @@ export default function Transactions() {
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Date &amp; Time *</label>
-                      <input type="datetime-local" required value={formData.transactionDate} onChange={(e) => setFormData({ ...formData, transactionDate: e.target.value })} className="input" />
+                      <input type="datetime-local" required value={formData.transactionDate} onChange={(e) => setFormData({ ...formData, transactionDate: e.target.value })} className="input text-sm" />
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">Reference # *</label>
-                      <input type="text" required value={formData.referenceNumber} onChange={(e) => setFormData({ ...formData, referenceNumber: e.target.value })} className="input" placeholder="Enter reference number" />
+                      <input type="text" required value={formData.referenceNumber} onChange={(e) => setFormData({ ...formData, referenceNumber: e.target.value })} className="input text-sm" placeholder="Enter reference number" />
                     </div>
                   </div>
+                </div>
+
+                <div className="lg:flex-1 space-y-3">
+                  {selectedRule && parseFloat(formData.amount) > 0 && (
+                    <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
+                      <div className="flex justify-between">
+                        <span>Amount</span>
+                        <span className="font-medium">{formatCurrency(inputAmount)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Fee (company income)</span>
+                        <span className="font-medium text-yellow-600">{formatCurrency(feeAmount)}</span>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <span>Additional Charges</span>
+                        <span className="font-medium text-orange-600 whitespace-nowrap">{formatCurrency(chargesTotal)}</span>
+                      </div>
+                      <p className="text-xs text-gray-500">Deducted from the account, not company income.</p>
+                      <div className="flex justify-between border-t pt-1">
+                        <span className="font-semibold">Total Fee</span>
+                        <span className="font-semibold">{formatCurrency(feeAmount + chargesTotal)}</span>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <span>Account movement</span>
+                        <span className={`font-bold ${selectedDirection === 'out' ? '' : 'text-green-600'}`}>
+                          {selectedDirection === 'out' ? '-' : '+'}{formatCurrency(totalOutflow)}
+                        </span>
+                      </div>
+                      {formData.feeAddedToBalance && selectedDirection === 'in' && (
+                        <div className="flex justify-between gap-2">
+                          <span className="font-semibold">Customer pays</span>
+                          <span className="font-bold text-green-700">{formatCurrency(inputAmount + chargesTotal + feeAmount)}</span>
+                        </div>
+                      )}
+                      <p className="text-xs text-gray-500 leading-relaxed">
+                        Cash: {formatBreakdown(inputAmount)}{feeAmount >= 1 && <> &bull; Fee cash: {formatBreakdown(feeAmount)}</>}
+                        {' '}&bull; {selectedDirection === 'out'
+                          ? (formData.feeAddedToBalance ? 'movement = amount + charges' : 'movement = amount - fee + charges')
+                          : 'credited to account'}
+                        {createCharges.filter(c => (parseFloat(c.amount) || 0) > 0).map((c, i) => (
+                          <span key={i}> &bull; {c.description || 'Charge'} {formatCurrency(parseFloat(c.amount) || 0)}</span>
+                        ))}
+                      </p>
+                    </div>
+                  )}
+                  {selectedAccount && totalOutflow > 0 && (
+                    <div className={`flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 rounded-lg text-sm ${hasInsufficientBalance ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
+                      <span>{selectedAccount.name} &mdash; {formatCurrency(selectedAccount.current_balance)} &mdash; {movementLabel}</span>
+                      {hasInsufficientBalance && <span className="font-semibold">(Insufficient balance)</span>}
+                      {!hasInsufficientBalance && (
+                        <span className="text-xs">
+                          {selectedDirection === 'out'
+                            ? (formData.feeAddedToBalance ? '(Fee + charges paid separately)' : '(Fee deducted from amount)')
+                            : '(No balance required)'}
+                        </span>
+                      )}
+                    </div>
+                  )}
 
                   {/* Customer Section */}
-                  <div className="border-t pt-3">
+                  <div>
                     <div className="flex items-center justify-between mb-2">
                       <label className="text-sm font-medium text-gray-700">Customer</label>
                       <div className="flex bg-gray-100 rounded-lg p-0.5">
@@ -834,7 +894,7 @@ export default function Transactions() {
                         const cid = e.target.value;
                         const cust = customers.find(c => c.id === cid);
                         setFormData({ ...formData, customerId: cid, customerName: cust ? `${cust.first_name} ${cust.last_name}` : '' });
-                      }} className="input">
+                      }} className="input text-sm">
                         <option value="">-- Select a customer --</option>
                         {customers.map(c => (
                           <option key={c.id} value={c.id}>{c.last_name}, {c.first_name} {c.phone ? `(📱 ${c.phone})` : ''}</option>
@@ -842,8 +902,8 @@ export default function Transactions() {
                       </select>
                     ) : (
                       <div className="grid grid-cols-2 gap-2">
-                        <input type="text" value={formData.customerName} onChange={(e) => setFormData({ ...formData, customerName: e.target.value })} className="input" placeholder="Customer name" />
-                        <input type="tel" value={formData.customerPhone} onChange={(e) => setFormData({ ...formData, customerPhone: e.target.value })} className="input" placeholder="Mobile number" />
+                        <input type="text" value={formData.customerName} onChange={(e) => setFormData({ ...formData, customerName: e.target.value })} className="input text-sm" placeholder="Customer name" />
+                        <input type="tel" value={formData.customerPhone} onChange={(e) => setFormData({ ...formData, customerPhone: e.target.value })} className="input text-sm" placeholder="Mobile number" />
                       </div>
                     )}
                     {formData.customerMode === 'select' && formData.customerId && (
@@ -853,127 +913,57 @@ export default function Transactions() {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                      <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="input" rows={2} placeholder="Transaction description" />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Notes (Internal)</label>
-                      <textarea value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input" rows={2} placeholder="Internal notes (not visible to customer)" />
-                    </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                    <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="input text-sm" rows={2} placeholder="Transaction description" />
                   </div>
-
-                  {/* Additional Charges */}
-                  <div className="border-t pt-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-sm font-medium text-gray-700">Additional Charges</label>
-                      <div className="flex items-center gap-2">
-                        {chargeTypes.length > 0 && (
-                          <select onChange={e => { if (e.target.value) { addPredefinedCharge(e.target.value); e.target.value = ''; } }} className="input py-1 text-xs w-auto">
-                            <option value="">+ Select charge type</option>
-                            {chargeTypes.map(ct => (
-                              <option key={ct.id} value={ct.id}>{ct.name} ({formatCurrency(ct.default_amount)})</option>
-                            ))}
-                          </select>
-                        )}
-                        <button type="button" onClick={() => setCreateCharges([...createCharges, { description: '', amount: '' }])}
-                          className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
-                          <Plus className="w-3 h-3" /> Custom Charge
-                        </button>
-                      </div>
-                    </div>
-                    {createCharges.length > 0 && (
-                      <div className="space-y-1.5">
-                        {createCharges.map((c, i) => (
-                          <div key={i} className="flex gap-2 items-center">
-                            <input type="text" value={c.description} onChange={e => {
-                              const updated = [...createCharges]; updated[i] = { ...updated[i], description: e.target.value }; setCreateCharges(updated);
-                            }} className="input flex-1 text-xs py-1" placeholder="Charge description" />
-                            <input type="number" step="0.01" min="0" value={c.amount} onChange={e => {
-                              const updated = [...createCharges]; updated[i] = { ...updated[i], amount: e.target.value }; setCreateCharges(updated);
-                            }} className="input w-24 text-xs py-1" placeholder="Amount" />
-                            <button type="button" onClick={() => setCreateCharges(createCharges.filter((_, idx) => idx !== i))} className="p-1 text-gray-400 hover:text-red-600">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </div>
-                        ))}
-                        <p className="text-[11px] text-gray-500">Total charges: {formatCurrency(createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0))}</p>
-                      </div>
-                    )}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Notes (Internal)</label>
+                    <textarea value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input text-sm" rows={2} placeholder="Internal notes (not visible to customer)" />
                   </div>
-                </div>
-
-                <div className="lg:w-2/5 space-y-3">
-                  {selectedRule && parseFloat(formData.amount) > 0 && (
-                    <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
-                      <div className="flex justify-between">
-                        <span>Amount</span>
-                        <span className="font-medium">{formatCurrency(inputAmount)}</span>
-                      </div>
-                      {inputAmount >= 0.01 && (
-                        <p className="text-xs text-gray-500">Cash: {formatBreakdown(inputAmount)}</p>
-                      )}
-                      <div className="flex justify-between">
-                        <span>Fee (company income)</span>
-                        <span className="font-medium text-yellow-600">{formatCurrency(feeAmount)}</span>
-                      </div>
-                      {feeAmount >= 1 && (
-                        <p className="text-xs text-gray-500">Fee cash: {formatBreakdown(feeAmount)}</p>
-                      )}
-                      <div className="flex justify-between gap-2">
-                        <span>Additional Charges <span className="text-xs text-gray-500">(deducted from account, not company income)</span></span>
-                        <span className="font-medium text-orange-600 whitespace-nowrap">{formatCurrency(chargesTotal)}</span>
-                      </div>
-                      {createCharges.filter(c => (parseFloat(c.amount) || 0) > 0).map((c, i) => (
-                        <p key={i} className="flex justify-between text-xs text-gray-500">
-                          <span>{c.description || 'Charge'}</span>
-                          <span>{formatCurrency(parseFloat(c.amount) || 0)}</span>
-                        </p>
-                      ))}
-                      <div className="flex justify-between border-t pt-1">
-                        <span className="font-semibold">Total Fee</span>
-                        <span className="font-semibold">{formatCurrency(feeAmount + chargesTotal)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="font-semibold">Account movement</span>
-                        <span className={`font-bold ${selectedDirection === 'out' ? '' : 'text-green-600'}`}>
-                          {selectedDirection === 'out' ? '-' : '+'}{formatCurrency(totalOutflow)}
-                        </span>
-                      </div>
-                      <p className="text-xs text-gray-500">
-                        {selectedDirection === 'out'
-                          ? (formData.feeAddedToBalance ? 'amount + charges' : 'amount - fee + charges')
-                          : '(credited to account)'}
-                      </p>
-                      {formData.feeAddedToBalance && selectedDirection === 'in' && (
-                        <>
-                          <div className="flex justify-between border-t pt-1">
-                            <span className="font-semibold">Customer pays</span>
-                            <span className="font-bold text-green-700">{formatCurrency(inputAmount + chargesTotal + feeAmount)}</span>
-                          </div>
-                          <p className="text-xs text-gray-500">{formatBreakdown(inputAmount + chargesTotal + feeAmount)}</p>
-                        </>
-                      )}
-                    </div>
-                  )}
-                  {selectedAccount && totalOutflow > 0 && (
-                    <div className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg text-sm ${hasInsufficientBalance ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
-                      <span>Account: {selectedAccount.name} — Balance: {formatCurrency(selectedAccount.current_balance)} — {movementLabel}</span>
-                      {hasInsufficientBalance && <span className="font-semibold">(Insufficient balance)</span>}
-                      {!hasInsufficientBalance && (
-                        <span className="text-xs">
-                          {selectedDirection === 'out'
-                            ? (formData.feeAddedToBalance ? '(Fee + charges paid separately)' : '(Fee deducted from amount)')
-                            : '(Credited to account — no balance required)'}
-                        </span>
-                      )}
-                    </div>
-                  )}
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-1">
+              {/* Additional Charges */}
+              <div className="border-t pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                  <label className="text-sm font-medium text-gray-700">Additional Charges</label>
+                  <div className="flex items-center gap-2">
+                    {chargeTypes.length > 0 && (
+                      <select onChange={e => { if (e.target.value) { addPredefinedCharge(e.target.value); e.target.value = ''; } }} className="input py-1 text-xs w-auto">
+                        <option value="">+ Select charge type</option>
+                        {chargeTypes.map(ct => (
+                          <option key={ct.id} value={ct.id}>{ct.name} ({formatCurrency(ct.default_amount)})</option>
+                        ))}
+                      </select>
+                    )}
+                    <button type="button" onClick={() => setCreateCharges([...createCharges, { description: '', amount: '' }])}
+                      className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
+                      <Plus className="w-3 h-3" /> Custom Charge
+                    </button>
+                  </div>
+                </div>
+                {createCharges.length > 0 && (
+                  <div className="space-y-1.5">
+                    {createCharges.map((c, i) => (
+                      <div key={i} className="flex gap-2 items-center">
+                        <input type="text" value={c.description} onChange={e => {
+                          const updated = [...createCharges]; updated[i] = { ...updated[i], description: e.target.value }; setCreateCharges(updated);
+                        }} className="input text-sm flex-1 py-1" placeholder="Charge description" />
+                        <input type="number" step="0.01" min="0" value={c.amount} onChange={e => {
+                          const updated = [...createCharges]; updated[i] = { ...updated[i], amount: e.target.value }; setCreateCharges(updated);
+                        }} className="input text-sm w-28 py-1" placeholder="Amount" />
+                        <button type="button" onClick={() => setCreateCharges(createCharges.filter((_, idx) => idx !== i))} className="p-1 text-gray-400 hover:text-red-600">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                    <p className="text-[11px] text-gray-500">Total charges: {formatCurrency(createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0))}</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
                 <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!!hasInsufficientBalance || !formData.referenceNumber.trim()}>Create Transaction</button>
               </div>
@@ -1005,38 +995,38 @@ export default function Transactions() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Transaction Date *</label>
                   <input type="datetime-local" required value={editForm.transactionDate}
-                    onChange={(e) => setEditForm({ ...editForm, transactionDate: e.target.value })} className="input" />
+                    onChange={(e) => setEditForm({ ...editForm, transactionDate: e.target.value })} className="input text-sm" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Reference #</label>
                   <input type="text" value={editForm.referenceNumber}
-                    onChange={(e) => setEditForm({ ...editForm, referenceNumber: e.target.value })} className="input" placeholder="Reference number" />
+                    onChange={(e) => setEditForm({ ...editForm, referenceNumber: e.target.value })} className="input text-sm" placeholder="Reference number" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
                   <input type="number" step="0.01" min="0" required value={editForm.amount}
-                    onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} className="input" />
+                    onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} className="input text-sm" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Fee *</label>
                   <input type="number" step="1" min="0" required value={editForm.fee}
-                    onChange={(e) => setEditForm({ ...editForm, fee: e.target.value })} className="input" />
+                    onChange={(e) => setEditForm({ ...editForm, fee: e.target.value })} className="input text-sm" />
                   <p className="text-xs text-gray-500 mt-1">Rounds up to the next whole peso.</p>
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
                   <input type="text" value={editForm.customerName}
-                    onChange={(e) => setEditForm({ ...editForm, customerName: e.target.value })} className="input" placeholder="Customer name" />
+                    onChange={(e) => setEditForm({ ...editForm, customerName: e.target.value })} className="input text-sm" placeholder="Customer name" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Mobile Number</label>
                   <input type="tel" value={editForm.customerContact}
-                    onChange={(e) => setEditForm({ ...editForm, customerContact: e.target.value })} className="input" placeholder="Mobile number" />
+                    onChange={(e) => setEditForm({ ...editForm, customerContact: e.target.value })} className="input text-sm" placeholder="Mobile number" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
                   <select value={editForm.paymentMethod}
-                    onChange={(e) => setEditForm({ ...editForm, paymentMethod: e.target.value })} className="input">
+                    onChange={(e) => setEditForm({ ...editForm, paymentMethod: e.target.value })} className="input text-sm">
                     <option value="">-- None --</option>
                     <option value="cash">Cash</option>
                     <option value="gcash">GCash</option>
@@ -1063,12 +1053,12 @@ export default function Transactions() {
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
                   <textarea value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
-                    className="input" rows={2} placeholder="Transaction description" />
+                    className="input text-sm" rows={2} placeholder="Transaction description" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Notes (Internal)</label>
                   <textarea value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                    className="input" rows={2} placeholder="Internal notes (not visible to customer)" />
+                    className="input text-sm" rows={2} placeholder="Internal notes (not visible to customer)" />
                 </div>
               </div>
 
