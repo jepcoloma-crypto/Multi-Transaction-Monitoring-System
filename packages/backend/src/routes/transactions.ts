@@ -314,6 +314,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       accountId, transactionTypeId, transactionCategoryId, feeRuleId, amount, fee, manualFee,
       referenceNumber, externalReference, transactionDate, description,
       customerName, customerContact, status, feeAddedToBalance, additionalCharges, notes, customerId,
+      paymentMethod,
     } = req.body;
 
     let resolvedTypeId = transactionTypeId;
@@ -402,8 +403,8 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     const transaction = await queryOne(
       `INSERT INTO transactions (transaction_number, account_id, transaction_type_id, transaction_category_id,
        amount, fee, net_amount, reference_number, external_reference, transaction_date, description,
-       customer_name, customer_contact, status, created_by, fee_added_to_balance, additional_charges, notes, customer_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+       customer_name, customer_contact, status, created_by, fee_added_to_balance, additional_charges, notes, customer_id, payment_method)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING *`,
       [
         txNumber!.nextval, accountId, resolvedTypeId, resolvedCategoryId,
@@ -411,6 +412,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
         transactionDate || new Date(), description || null,
         customerName || null, customerContact || null, status || 'completed', req.user!.userId,
         feeAddedToBalance !== false, JSON.stringify(additionalCharges || []), notes || null, customerId || null,
+        paymentMethod || null,
       ]
     );
 

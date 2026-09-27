@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
-import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign, Trash2 } from 'lucide-react';
+import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign, Trash2, Undo2 } from 'lucide-react';
 
 interface Account {
   id: string;
@@ -55,8 +55,11 @@ export default function Accounts() {
   });
   const [error, setError] = useState('');
   const [showAddFunds, setShowAddFunds] = useState(false);
+  const [fundsMode, setFundsMode] = useState<'in' | 'out'>('in');
   const [addFundsAccount, setAddFundsAccount] = useState<Account | null>(null);
-  const [addFundsForm, setAddFundsForm] = useState({ amount: '', description: '' });
+  const [addFundsForm, setAddFundsForm] = useState({
+    amount: '', description: '', date: new Date().toISOString().slice(0, 10), method: 'cash', reference: '',
+  });
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
   const canManage = (account: Account) => isAdmin || account.created_by === user?.id;
@@ -201,30 +204,51 @@ export default function Accounts() {
         setError('Amount must be greater than 0');
         return;
       }
-      const cashInType = transactionTypes.find(t => t.code === 'cash_in');
-      if (!cashInType) {
-        setError('Cash-In transaction type not found');
+      if (fundsMode === 'out' && amount > addFundsAccount.current_balance) {
+        setError('Amount exceeds the current balance');
         return;
       }
+      const code = fundsMode === 'in' ? 'owner_funding' : 'owner_return';
+      const type = transactionTypes.find(t => t.code === code);
+      if (!type) {
+        setError(`Transaction type "${code}" not found`);
+        return;
+      }
+      const methodLabel = { cash: 'Cash', gcash: 'GCash', bank: 'Bank Transfer', maya: 'Maya' }[addFundsForm.method as 'cash' | 'gcash' | 'bank' | 'maya'] || addFundsForm.method;
+      const action = fundsMode === 'in' ? 'Owner funding' : 'Owner return';
+      const description = [`${action} via ${methodLabel}`, addFundsForm.description].filter(Boolean).join(' — ');
       await api.post('/transactions', {
         accountId: addFundsAccount.id,
-        transactionTypeId: cashInType.id,
+        transactionTypeId: type.id,
         amount,
         fee: 0,
         feeAddedToBalance: true,
-        referenceNumber: null,
-        description: addFundsForm.description || `Funds added to ${addFundsAccount.name}`,
-        transactionDate: new Date().toISOString(),
+        referenceNumber: addFundsForm.reference || null,
+        description,
+        transactionDate: `${addFundsForm.date}T${new Date().toTimeString().slice(0, 8)}`,
+        paymentMethod: addFundsForm.method,
         feeRuleId: null,
       });
       setShowAddFunds(false);
       setAddFundsAccount(null);
-      setAddFundsForm({ amount: '', description: '' });
+      resetFundsForm();
       fetchAccounts(pagination.page);
       fetchSummary();
     } catch (err: any) {
       setError(err.message);
     }
+  };
+
+  const resetFundsForm = () => setAddFundsForm({
+    amount: '', description: '', date: new Date().toISOString().slice(0, 10), method: 'cash', reference: '',
+  });
+
+  const openFunds = (account: Account, mode: 'in' | 'out') => {
+    setFundsMode(mode);
+    setAddFundsAccount(account);
+    resetFundsForm();
+    setError('');
+    setShowAddFunds(true);
   };
 
   return (
@@ -329,8 +353,11 @@ export default function Accounts() {
                   <td className="px-4 py-3 text-sm text-gray-600">{account.created_by_email || '-'}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
-                      <button onClick={() => { setAddFundsAccount(account); setShowAddFunds(true); }} className="p-1 text-gray-400 hover:text-green-600" title="Add Funds">
+                      <button onClick={() => openFunds(account, 'in')} className="p-1 text-gray-400 hover:text-green-600" title="Add Funds (from owner)">
                         <DollarSign className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => openFunds(account, 'out')} className="p-1 text-gray-400 hover:text-orange-600" title="Return Funds (to owner)">
+                        <Undo2 className="w-4 h-4" />
                       </button>
                       <button onClick={() => setShowDetail(account)} className="p-1 text-gray-400 hover:text-primary-600" title="View">
                         <Eye className="w-4 h-4" />
@@ -515,21 +542,48 @@ export default function Accounts() {
           </div>
         </div>
       )}
-      {/* Add Funds Modal */}
+      {/* Add / Return Funds Modal */}
       {showAddFunds && addFundsAccount && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-lg w-full max-w-md">
             <div className="flex items-center justify-between p-4 border-b">
-              <h3 className="text-lg font-semibold">Add Funds to {addFundsAccount.name}</h3>
+              <h3 className="text-lg font-semibold">
+                {fundsMode === 'in' ? 'Add Funds to' : 'Return Funds from'} {addFundsAccount.name}
+              </h3>
               <button onClick={() => { setShowAddFunds(false); setAddFundsAccount(null); }}><X className="w-5 h-5" /></button>
             </div>
             <form onSubmit={handleAddFunds} className="p-4 space-y-4">
               {error && <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-sm">{error}</div>}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
+                  <input type="number" step="0.01" min="0.01" required value={addFundsForm.amount}
+                    onChange={(e) => setAddFundsForm({ ...addFundsForm, amount: e.target.value })}
+                    className="input" placeholder="0.00" autoFocus />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date *</label>
+                  <input type="date" required value={addFundsForm.date}
+                    onChange={(e) => setAddFundsForm({ ...addFundsForm, date: e.target.value })}
+                    className="input" />
+                </div>
+              </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
-                <input type="number" step="0.01" min="0.01" required value={addFundsForm.amount}
-                  onChange={(e) => setAddFundsForm({ ...addFundsForm, amount: e.target.value })}
-                  className="input" placeholder="0.00" autoFocus />
+                <label className="block text-sm font-medium text-gray-700 mb-1">Method *</label>
+                <select value={addFundsForm.method}
+                  onChange={(e) => setAddFundsForm({ ...addFundsForm, method: e.target.value })}
+                  className="input">
+                  <option value="cash">Cash</option>
+                  <option value="gcash">GCash</option>
+                  <option value="bank">Bank Transfer</option>
+                  <option value="maya">Maya</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Reference #</label>
+                <input type="text" value={addFundsForm.reference}
+                  onChange={(e) => setAddFundsForm({ ...addFundsForm, reference: e.target.value })}
+                  className="input" placeholder="Optional — required for transfers" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
@@ -539,11 +593,16 @@ export default function Accounts() {
               </div>
               <div className="bg-gray-50 p-3 rounded-lg text-sm">
                 <p>Current Balance: <span className="font-medium">{formatCurrency(addFundsAccount.current_balance)}</span></p>
-                <p>New Balance: <span className="font-bold text-green-600">{formatCurrency(addFundsAccount.current_balance + (parseFloat(addFundsForm.amount) || 0))}</span></p>
+                <p>New Balance: <span className={`font-bold ${fundsMode === 'in' ? 'text-green-600' : 'text-red-600'}`}>
+                  {formatCurrency(addFundsAccount.current_balance + (fundsMode === 'in' ? 1 : -1) * (parseFloat(addFundsForm.amount) || 0))}
+                </span></p>
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <button type="button" onClick={() => { setShowAddFunds(false); setAddFundsAccount(null); }} className="btn-secondary">Cancel</button>
-                <button type="submit" className="btn-primary flex items-center gap-2"><DollarSign className="w-4 h-4" /> Add Funds</button>
+                <button type="submit" className={`btn-primary flex items-center gap-2 ${fundsMode === 'out' ? 'bg-orange-600 hover:bg-orange-700' : ''}`}>
+                  {fundsMode === 'in' ? <DollarSign className="w-4 h-4" /> : <Undo2 className="w-4 h-4" />}
+                  {fundsMode === 'in' ? 'Add Funds' : 'Return Funds'}
+                </button>
               </div>
             </form>
           </div>

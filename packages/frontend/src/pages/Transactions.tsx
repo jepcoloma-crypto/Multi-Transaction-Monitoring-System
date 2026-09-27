@@ -50,6 +50,7 @@ interface Transaction {
   fee_added_to_balance: boolean;
   additional_charges: { description: string; amount: number }[];
   notes: string | null;
+  payment_method: string | null;
 }
 
 interface CustomerHistory {
@@ -135,18 +136,23 @@ export default function Transactions() {
   };
 
   const fetchMeta = async () => {
-    const [rules, a, ct, cust] = await Promise.allSettled([
+    const [rules, a, ct, cust, allTypes] = await Promise.allSettled([
       api.get<FeeRule[]>('/transaction-fees'),
       api.get<{ data: Account[] }>('/accounts?limit=100'),
       api.get<{ id: string; name: string; default_amount: number }[]>('/additional-charges'),
       api.get<{ data: CustomerOption[] }>('/customers?limit=500'),
+      api.get<{ id: string; name: string; code: string }[]>('/transaction-types/types'),
     ]);
     if (rules.status === 'fulfilled') {
       setFeeRules(rules.value.filter(r => r.is_active));
       const seen = new Map<string, { id: string; name: string }>();
       rules.value.filter(r => r.is_active).forEach(r => { if (!seen.has(r.type_code)) seen.set(r.type_code, { id: r.transaction_type_id, name: r.type_name }); });
+      if (allTypes.status === 'fulfilled') allTypes.value.forEach(t => { if (!seen.has(t.code)) seen.set(t.code, { id: t.id, name: t.name }); });
       setFilterTypes(Array.from(seen.values()));
     } else console.error('Transactions meta: fee rules failed:', rules.reason);
+    if (allTypes.status === 'fulfilled' && rules.status !== 'fulfilled') {
+      setFilterTypes(allTypes.value.map(t => ({ id: t.id, name: t.name })));
+    }
     if (a.status === 'fulfilled') setAccounts(a.value.data);
     else console.error('Transactions meta: accounts failed:', a.reason);
     if (ct.status === 'fulfilled') setChargeTypes(ct.value.filter((c: any) => c.is_active));
@@ -520,6 +526,7 @@ export default function Transactions() {
                 <div><p className="text-xs text-gray-500">Status</p><p className="font-medium">{showDetail.status}</p></div>
                 <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{new Date(showDetail.transaction_date).toLocaleString()}</p></div>
                 <div><p className="text-xs text-gray-500">Reference</p><p className="font-medium">{showDetail.reference_number || '-'}</p></div>
+                {showDetail.payment_method && <div><p className="text-xs text-gray-500">Method</p><p className="font-medium capitalize">{showDetail.payment_method}</p></div>}
                 {showDetail.customer_name && <div><p className="text-xs text-gray-500">Customer</p><p className="font-medium">{showDetail.customer_name}</p></div>}
               </div>
               {showDetail.description && <div><p className="text-xs text-gray-500">Description</p><p className="text-sm">{showDetail.description}</p></div>}
