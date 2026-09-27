@@ -570,6 +570,174 @@ router.patch('/:id/notes', authorize('transactions.write'), async (req: Request,
   }
 });
 
+// Administrator-only edit. Safe metadata is always editable; amount/fee changes move the
+// account balance and shift the ledger's running balance from the edited entry onward.
+router.patch('/:id', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  if (!(req.user!.roles || []).includes('administrator')) {
+    return next(createError(403, 'Only administrators can edit transactions'));
+  }
+
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    const row = (await client.query(
+      `SELECT t.*, tt.direction
+       FROM transactions t JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.id = $1 FOR UPDATE OF t`,
+      [req.params.id]
+    )).rows[0];
+    if (!row) throw createError(404, 'Transaction not found');
+    if (row.status !== 'completed' && row.status !== 'pending') {
+      throw createError(400, 'Only completed or pending transactions can be edited');
+    }
+
+    const body = req.body || {};
+    const provided = (key: string) => body[key] !== undefined && body[key] !== null;
+
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const updates: string[] = [];
+    const params: any[] = [];
+    const set = (column: string, value: any) => {
+      params.push(value);
+      updates.push(`${column} = $${params.length}`);
+    };
+
+    const transactionDate = provided('transactionDate') ? new Date(body.transactionDate) : null;
+    if (transactionDate && Number.isNaN(transactionDate.getTime())) throw createError(400, 'Invalid transaction date');
+
+    if (transactionDate) set('transaction_date', transactionDate.toISOString());
+    if (provided('referenceNumber')) set('reference_number', String(body.referenceNumber).trim() || null);
+    if (provided('externalReference')) set('external_reference', String(body.externalReference).trim() || null);
+    if (provided('description')) set('description', String(body.description).trim() || null);
+    if (provided('customerName')) set('customer_name', String(body.customerName).trim() || null);
+    if (provided('customerContact')) set('customer_contact', String(body.customerContact).trim() || null);
+    if (provided('paymentMethod')) set('payment_method', String(body.paymentMethod).trim() || null);
+    if (provided('notes')) set('notes', String(body.notes).trim() || null);
+
+    const amountInput = provided('amount') ? Number(body.amount) : parseFloat(row.amount);
+    if (!Number.isFinite(amountInput) || amountInput < 0) throw createError(400, 'Amount cannot be negative');
+
+    const feeInput = provided('fee') ? Number(body.fee) : parseFloat(row.fee || '0');
+    if (!Number.isFinite(feeInput) || feeInput < 0) throw createError(400, 'Fee cannot be negative');
+    const feeNum = Math.ceil(feeInput - 1e-9);
+
+    const feeAddedToBalance = provided('feeAddedToBalance') ? body.feeAddedToBalance !== false : row.fee_added_to_balance !== false;
+
+    const deductFee = feeAddedToBalance === false && feeNum > 0;
+    if (deductFee && amountInput < feeNum) {
+      throw createError(400, 'Fee cannot exceed the transaction amount when deducted from transaction amount');
+    }
+    const netAmount = deductFee ? round2(amountInput - feeNum) : amountInput;
+
+    set('amount', round2(amountInput));
+    set('fee', feeNum);
+    set('net_amount', round2(netAmount));
+    set('fee_added_to_balance', feeAddedToBalance);
+
+    const chargesTotal = round2((row.additional_charges || [])
+      .reduce((sum: number, c: any) => sum + (parseFloat(c?.amount) || 0), 0));
+    const oldLedgerAmount = round2(parseFloat(row.net_amount) + chargesTotal);
+    const newLedgerAmount = round2(netAmount + chargesTotal);
+    const entryType: 'debit' | 'credit' =
+      row.direction === 'in' || row.direction === 'adjustment' ? 'credit' : 'debit';
+    const balanceDelta = round2((entryType === 'credit' ? 1 : -1) * (newLedgerAmount - oldLedgerAmount));
+
+    let ledgerEntryId: string | null = null;
+    if (row.status === 'completed') {
+      const ledger = (await client.query(
+        'SELECT id FROM ledger_entries WHERE transaction_id = $1 ORDER BY id FOR UPDATE',
+        [req.params.id]
+      )).rows;
+      if (balanceDelta !== 0 && ledger.length === 0) {
+        throw createError(400, 'No ledger entry found for this transaction — balance not adjusted');
+      }
+      ledgerEntryId = ledger.length > 0 ? ledger[0].id : null;
+
+      if (ledgerEntryId) {
+        const ledgerSets: string[] = [];
+        const ledgerParams: any[] = [];
+        const ledgerSet = (column: string, value: any) => {
+          ledgerParams.push(value);
+          ledgerSets.push(`${column} = $${ledgerParams.length}`);
+        };
+        if (transactionDate) ledgerSet('entry_date', transactionDate.toISOString());
+        if (provided('referenceNumber')) ledgerSet('reference_number', String(body.referenceNumber).trim() || null);
+        if (provided('description')) ledgerSet('description', String(body.description).trim() || null);
+        if (balanceDelta !== 0) ledgerSet('amount', newLedgerAmount);
+
+        if (ledgerSets.length > 0) {
+          await client.query(
+            `UPDATE ledger_entries SET ${ledgerSets.join(', ')} WHERE id = $${ledgerParams.length + 1}`,
+            [...ledgerParams, ledgerEntryId]
+          );
+        }
+      }
+    }
+
+    updates.push('updated_at = NOW()');
+    const updated = (await client.query(
+      `UPDATE transactions SET ${updates.join(', ')} WHERE id = $${params.length + 1} RETURNING *`,
+      [...params, req.params.id]
+    )).rows[0];
+
+    if (row.status === 'completed' && balanceDelta !== 0) {
+      const account = (await client.query(
+        'SELECT current_balance FROM accounts WHERE id = $1 FOR UPDATE',
+        [row.account_id]
+      )).rows[0];
+      const nextBalance = round2(parseFloat(account.current_balance) + balanceDelta);
+      if (nextBalance < 0) throw createError(400, 'Insufficient balance for this amount change');
+      await client.query(
+        'UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2',
+        [nextBalance, row.account_id]
+      );
+
+      await client.query(
+        `WITH ord AS (
+           SELECT id, ROW_NUMBER() OVER (ORDER BY entry_date, id) AS rn
+           FROM ledger_entries WHERE account_id = $1
+         )
+         UPDATE ledger_entries le
+         SET balance_after = le.balance_after + $3::numeric
+         FROM ord
+         WHERE le.id = ord.id AND ord.rn >= (SELECT rn FROM ord WHERE id = $2)`,
+        [row.account_id, ledgerEntryId, balanceDelta.toFixed(2)]
+      );
+    }
+
+    await client.query('COMMIT');
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'transaction.updated',
+      entity: 'transaction',
+      entityId: req.params.id,
+      ipAddress: req.ip,
+      oldData: {
+        amount: parseFloat(row.amount), fee: parseFloat(row.fee || '0'),
+        netAmount: parseFloat(row.net_amount), transactionDate: row.transaction_date,
+        referenceNumber: row.reference_number, customerName: row.customer_name,
+        paymentMethod: row.payment_method, description: row.description,
+      },
+      newData: {
+        transactionNumber: updated.transaction_number, amount: parseFloat(updated.amount),
+        fee: parseFloat(updated.fee), netAmount: parseFloat(updated.net_amount),
+        transactionDate: updated.transaction_date, referenceNumber: updated.reference_number,
+        customerName: updated.customer_name, paymentMethod: updated.payment_method,
+        description: updated.description, balanceDelta,
+      },
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
 router.post('/:id/reverse', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {

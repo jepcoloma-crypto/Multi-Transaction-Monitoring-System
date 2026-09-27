@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2 } from 'lucide-react';
+import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
 
@@ -44,6 +44,7 @@ interface Transaction {
   reference_number: string | null;
   description: string | null;
   customer_name: string | null;
+  customer_contact: string | null;
   transaction_date: string;
   status: string;
   created_by_username: string | null;
@@ -101,6 +102,14 @@ export default function Transactions() {
   const [error, setError] = useState('');
   const [customerHistory, setCustomerHistory] = useState<CustomerHistory | null>(null);
   const [showCustomerHistory, setShowCustomerHistory] = useState(false);
+  const [editTx, setEditTx] = useState<Transaction | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [editForm, setEditForm] = useState({
+    transactionDate: '', amount: '', fee: '', feeAddedToBalance: true,
+    referenceNumber: '', description: '', customerName: '', customerContact: '',
+    paymentMethod: '', notes: '',
+  });
 
   const fetchTransactions = async (page = 1) => {
     setLoading(true);
@@ -134,6 +143,68 @@ export default function Transactions() {
       fetchTransactions(pagination.page);
       fetchSummary();
     } catch (err: any) { alert(err.message); }
+  };
+
+  const canEdit = (tx: Transaction) => isAdmin && (tx.status === 'completed' || tx.status === 'pending');
+
+  const toInputDateTime = (iso: string) => {
+    const d = new Date(iso);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  const openEdit = (tx: Transaction) => {
+    setEditError('');
+    setEditTx(tx);
+    setEditForm({
+      transactionDate: toInputDateTime(tx.transaction_date),
+      amount: String(tx.amount),
+      fee: String(tx.fee),
+      feeAddedToBalance: tx.fee_added_to_balance,
+      referenceNumber: tx.reference_number || '',
+      description: tx.description || '',
+      customerName: tx.customer_name || '',
+      customerContact: tx.customer_contact || '',
+      paymentMethod: tx.payment_method || '',
+      notes: tx.notes || '',
+    });
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editTx) return;
+
+    const amount = Number(editForm.amount);
+    const fee = Number(editForm.fee);
+    const parsedDate = new Date(editForm.transactionDate);
+    if (!editForm.transactionDate || Number.isNaN(parsedDate.getTime())) return setEditError('Transaction date is required');
+    if (!Number.isFinite(amount) || amount < 0) return setEditError('Amount cannot be negative');
+    if (!Number.isFinite(fee) || fee < 0) return setEditError('Fee cannot be negative');
+
+    setEditError('');
+    setEditSaving(true);
+    try {
+      const updated = await api.patch<Transaction>(`/transactions/${editTx.id}`, {
+        transactionDate: parsedDate.toISOString(),
+        referenceNumber: editForm.referenceNumber,
+        description: editForm.description,
+        customerName: editForm.customerName,
+        customerContact: editForm.customerContact,
+        paymentMethod: editForm.paymentMethod,
+        notes: editForm.notes,
+        amount,
+        fee,
+        feeAddedToBalance: editForm.feeAddedToBalance,
+      });
+      if (showDetail && showDetail.id === editTx.id) setShowDetail({ ...showDetail, ...updated });
+      setEditTx(null);
+      fetchTransactions(pagination.page);
+      fetchSummary();
+    } catch (err: any) {
+      setEditError(err?.message || 'Failed to update transaction');
+    } finally {
+      setEditSaving(false);
+    }
   };
 
   const fetchMeta = async () => {
@@ -489,6 +560,9 @@ export default function Transactions() {
                   <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_username || <span className="text-gray-400">-</span>}</td>
                   <td className="px-4 py-3 text-right">
                     <button onClick={() => setShowDetail(tx)} className="p-1 text-gray-400 hover:text-primary-600"><Eye className="w-4 h-4" /></button>
+                    {canEdit(tx) && (
+                      <button onClick={() => openEdit(tx)} title="Edit transaction" className="p-1 text-gray-400 hover:text-primary-600"><Pencil className="w-4 h-4" /></button>
+                    )}
                     {isAdmin && (
                       <button onClick={() => handleDelete(tx.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                     )}
@@ -605,8 +679,8 @@ export default function Transactions() {
                           const newNotes = e.target.value;
                           if (newNotes !== showDetail.notes) {
                             try {
-                              const result = await api.patch<{ data: { notes: string } }>(`/transactions/${showDetail.id}/notes`, { notes: newNotes });
-                              setShowDetail({ ...showDetail, notes: result.data.notes });
+                              const updated = await api.patch<{ notes: string | null }>(`/transactions/${showDetail.id}/notes`, { notes: newNotes });
+                              setShowDetail({ ...showDetail, notes: updated.notes });
                             } catch (err) { console.error('Failed to update notes'); }
                           }
                         }}
@@ -622,8 +696,8 @@ export default function Transactions() {
                         const notes = prompt('Add internal notes:');
                         if (notes !== null) {
                           try {
-                            const result = await api.patch<{ data: { notes: string } }>(`/transactions/${showDetail.id}/notes`, { notes });
-                            setShowDetail({ ...showDetail, notes: result.data.notes });
+                            const updated = await api.patch<{ notes: string | null }>(`/transactions/${showDetail.id}/notes`, { notes });
+                            setShowDetail({ ...showDetail, notes: updated.notes });
                           } catch (err) { console.error('Failed to add notes'); }
                         }
                       }}
@@ -885,6 +959,111 @@ export default function Transactions() {
               <div className="flex justify-end gap-2 pt-4">
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
                 <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!!hasInsufficientBalance || !formData.referenceNumber.trim()}>Create Transaction</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {editTx && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-4 border-b">
+              <div>
+                <h3 className="text-lg font-semibold">Edit Transaction #{editTx.transaction_number}</h3>
+                <p className="text-xs text-gray-500">{editTx.account_name} &bull; {editTx.type_name}</p>
+              </div>
+              <button onClick={() => setEditTx(null)}><X className="w-5 h-5" /></button>
+            </div>
+            <form onSubmit={handleEditSubmit} className="p-4 space-y-4">
+              {editError && <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-sm">{editError}</div>}
+
+              <div className="bg-blue-50 border border-blue-200 text-blue-800 px-3 py-2 rounded-lg text-xs">
+                {editTx.status === 'pending'
+                  ? 'This record is awaiting approval — no money has moved yet, so changes here do not affect any balance.'
+                  : 'Changing the Amount or Fee adjusts the account balance and the ledger. Reversed and rejected records cannot be edited.'}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Transaction Date *</label>
+                  <input type="datetime-local" required value={editForm.transactionDate}
+                    onChange={(e) => setEditForm({ ...editForm, transactionDate: e.target.value })} className="input" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Reference #</label>
+                  <input type="text" value={editForm.referenceNumber}
+                    onChange={(e) => setEditForm({ ...editForm, referenceNumber: e.target.value })} className="input" placeholder="Reference number" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
+                  <input type="number" step="0.01" min="0" required value={editForm.amount}
+                    onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })} className="input" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Fee *</label>
+                  <input type="number" step="1" min="0" required value={editForm.fee}
+                    onChange={(e) => setEditForm({ ...editForm, fee: e.target.value })} className="input" />
+                  <p className="text-xs text-gray-500 mt-1">Rounds up to the next whole peso.</p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Fee Handling</label>
+                <div className="flex rounded-md border border-gray-300 overflow-hidden w-fit">
+                  <button type="button" onClick={() => setEditForm({ ...editForm, feeAddedToBalance: true })}
+                    className={`px-3 py-1 text-xs font-medium ${editForm.feeAddedToBalance ? 'bg-primary-600 text-white' : 'bg-white text-gray-500 hover:text-gray-700'}`}>
+                    Separate (charged on top)
+                  </button>
+                  <button type="button" onClick={() => setEditForm({ ...editForm, feeAddedToBalance: false })}
+                    className={`px-3 py-1 text-xs font-medium ${!editForm.feeAddedToBalance ? 'bg-primary-600 text-white' : 'bg-white text-gray-500 hover:text-gray-700'}`}>
+                    Deducted from amount
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Fee is company income either way. &quot;Deducted&quot; also removes it from the account movement.</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Customer</label>
+                  <input type="text" value={editForm.customerName}
+                    onChange={(e) => setEditForm({ ...editForm, customerName: e.target.value })} className="input" placeholder="Customer name" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Mobile Number</label>
+                  <input type="tel" value={editForm.customerContact}
+                    onChange={(e) => setEditForm({ ...editForm, customerContact: e.target.value })} className="input" placeholder="Mobile number" />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Payment Method</label>
+                <select value={editForm.paymentMethod}
+                  onChange={(e) => setEditForm({ ...editForm, paymentMethod: e.target.value })} className="input">
+                  <option value="">-- None --</option>
+                  <option value="cash">Cash</option>
+                  <option value="gcash">GCash</option>
+                  <option value="bank">Bank Transfer</option>
+                  <option value="maya">Maya</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                <textarea value={editForm.description} onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                  className="input" rows={2} placeholder="Transaction description" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Notes (Internal)</label>
+                <textarea value={editForm.notes} onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                  className="input" rows={2} placeholder="Internal notes (not visible to customer)" />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-4">
+                <button type="button" onClick={() => setEditTx(null)} className="btn-secondary">Cancel</button>
+                <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={editSaving}>
+                  {editSaving ? 'Saving...' : 'Save Changes'}
+                </button>
               </div>
             </form>
           </div>
