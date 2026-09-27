@@ -217,7 +217,7 @@ export default function Loading() {
                     {filteredTxns.map(t => (
                       <tr key={t.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 font-mono text-sm">{t.transaction_number}</td>
-                        <td className="px-4 py-3 text-sm whitespace-nowrap">{new Date(t.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}</td>
+                        <td className="px-4 py-3 text-sm whitespace-nowrap">{(() => { const d = new Date(t.created_at); return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}/${d.getFullYear()}`; })()}</td>
                         <td className="px-4 py-3 text-sm">{t.customer_number}</td>
                         <td className="px-4 py-3 text-sm">{t.product_name}</td>
                         <td className="px-4 py-3 text-sm text-center">{t.quantity}</td>
