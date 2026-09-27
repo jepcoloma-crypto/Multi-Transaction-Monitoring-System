@@ -200,6 +200,7 @@ export default function Loading() {
                   <thead className="bg-gray-50">
                     <tr>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase w-12">#</th>
+                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer</th>
                       <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Product</th>
                       <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase w-12">Qty</th>
@@ -216,6 +217,7 @@ export default function Loading() {
                     {filteredTxns.map(t => (
                       <tr key={t.id} className="hover:bg-gray-50">
                         <td className="px-4 py-3 font-mono text-sm">{t.transaction_number}</td>
+                        <td className="px-4 py-3 text-sm whitespace-nowrap">{new Date(t.created_at).toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' })}</td>
                         <td className="px-4 py-3 text-sm">{t.customer_number}</td>
                         <td className="px-4 py-3 text-sm">{t.product_name}</td>
                         <td className="px-4 py-3 text-sm text-center">{t.quantity}</td>
