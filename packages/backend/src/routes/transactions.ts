@@ -588,8 +588,10 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
       [req.params.id]
     )).rows[0];
     if (!row) throw createError(404, 'Transaction not found');
-    if (row.status !== 'completed' && row.status !== 'pending') {
-      throw createError(400, 'Only completed or pending transactions can be edited');
+    if (row.status !== 'pending') {
+      throw createError(400, row.status === 'completed'
+        ? 'Completed transactions are locked — request a reversal instead'
+        : 'Only pending transactions can be edited');
     }
 
     const body = req.body || {};
@@ -641,7 +643,9 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
     const newLedgerAmount = round2(netAmount + chargesTotal);
     const entryType: 'debit' | 'credit' =
       row.direction === 'in' || row.direction === 'adjustment' ? 'credit' : 'debit';
-    const balanceDelta = round2((entryType === 'credit' ? 1 : -1) * (newLedgerAmount - oldLedgerAmount));
+    const balanceDelta = row.status === 'completed'
+      ? round2((entryType === 'credit' ? 1 : -1) * (newLedgerAmount - oldLedgerAmount))
+      : 0;
 
     let ledgerEntryId: string | null = null;
     if (row.status === 'completed') {
@@ -989,16 +993,22 @@ router.post('/:id/reject', authorize('transactions.approve'), async (req: Reques
 // List pending reversals (admin/manager)
 router.get('/reversals/pending', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const status = req.query.status === 'rejected' ? 'rejected' : 'pending';
     const rows = await query(
       `SELECT pr.*, t.transaction_number, t.amount AS original_amount, t.status AS original_status,
-              u.username AS requested_by_username
+              t.description, tt.name AS type_name, tt.direction, a.name AS account_name,
+              u.username AS requested_by_username, ru.username AS decided_by_username
        FROM pending_reversals pr
        JOIN transactions t ON pr.entity_id = t.id
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       JOIN accounts a ON t.account_id = a.id
        JOIN users u ON pr.requested_by = u.id
-       WHERE pr.entity_type = 'transaction' AND pr.status = 'pending'
-       ORDER BY pr.created_at ASC`
+       LEFT JOIN users ru ON pr.approved_by = ru.id
+       WHERE pr.entity_type = 'transaction' AND pr.status = $1
+       ORDER BY pr.created_at ASC`,
+      [status]
     );
-    res.json({ success: true, data: rows });
+    res.json({ success: true, data: { data: rows } });
   } catch (error) {
     next(error);
   }

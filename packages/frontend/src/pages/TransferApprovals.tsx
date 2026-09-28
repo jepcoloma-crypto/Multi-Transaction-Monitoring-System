@@ -21,24 +21,34 @@ interface OwnerFund {
   account_name: string; current_balance: string; created_by_username: string;
 }
 
-type Source = 'transfers' | 'funds';
+type Source = 'transfers' | 'funds' | 'reversals';
 type Tab = 'pending' | 'rejected';
+
+interface Reversal {
+  id: string; transaction_number: number; original_amount: string; original_status: string;
+  reversal_amount: string; reason: string | null; status: string; created_at: string;
+  updated_at: string; requested_by_username: string; decided_by_username: string | null;
+  account_name: string; type_name: string; direction: string; description: string | null;
+}
 
 const paymentLabel = (m: string) =>
   ({ cash: 'Cash', gcash: 'GCash', bank: 'Bank Transfer', maya: 'Maya' } as Record<string, string>)[m] || m || '—';
 
 export default function TransferApprovals() {
   const { user } = useAuth();
-  const isApprover = user?.roles?.includes('administrator') || user?.roles?.includes('manager');
+  const isAdmin = user?.roles?.includes('administrator') ?? false;
+  const isApprover = isAdmin || user?.roles?.includes('manager');
   const [source, setSource] = useState<Source>('transfers');
   const [tab, setTab] = useState<Tab>('pending');
   const [pending, setPending] = useState<Transfer[]>([]);
   const [rejected, setRejected] = useState<Transfer[]>([]);
   const [fundsPending, setFundsPending] = useState<OwnerFund[]>([]);
   const [fundsRejected, setFundsRejected] = useState<OwnerFund[]>([]);
+  const [reversals, setReversals] = useState<Reversal[]>([]);
+  const [reversalsRejected, setReversalsRejected] = useState<Reversal[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
-  const [rejecting, setRejecting] = useState<{ kind: Source; record: Transfer | OwnerFund } | null>(null);
+  const [rejecting, setRejecting] = useState<{ kind: Source; record: Transfer | OwnerFund | Reversal } | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -51,15 +61,19 @@ export default function TransferApprovals() {
         api.get<{ data: Transfer[] }>('/transfers?status=rejected&limit=20'),
         api.get<{ data: OwnerFund[] } | OwnerFund[]>('/transactions/owner-funds/pending?status=pending'),
         api.get<{ data: OwnerFund[] } | OwnerFund[]>('/transactions/owner-funds/pending?status=rejected'),
+        api.get<{ data: Reversal[] } | Reversal[]>('/transactions/reversals/pending?status=pending'),
+        api.get<{ data: Reversal[] } | Reversal[]>('/transactions/reversals/pending?status=rejected'),
       ]);
       const value = (r: PromiseSettledResult<unknown>) => (r.status === 'fulfilled' ? r.value : undefined);
       setPending(unwrapRows<Transfer>(value(results[0])));
       setRejected(unwrapRows<Transfer>(value(results[1])));
       setFundsPending(unwrapRows<OwnerFund>(value(results[2])));
       setFundsRejected(unwrapRows<OwnerFund>(value(results[3])));
+      setReversals(unwrapRows<Reversal>(value(results[4])));
+      setReversalsRejected(unwrapRows<Reversal>(value(results[5])));
       const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
       setLoadError(failed.length > 0
-        ? `Could not load ${failed.length} of the 4 approval queues — ${failed[0].reason?.message || 'request failed'}`
+        ? `Could not load ${failed.length} of the ${results.length} approval queues — ${failed[0].reason?.message || 'request failed'}`
         : '');
       window.dispatchEvent(new Event('approvals-changed'));
     } catch (err) {
@@ -114,6 +128,22 @@ export default function TransferApprovals() {
     }
   };
 
+  const approveReversal = async (r: Reversal) => {
+    if (!window.confirm(
+      `Approve the reversal of transaction #${r.transaction_number} (${r.type_name} on ${r.account_name})? ` +
+      `${formatCurrency(parseFloat(String(r.reversal_amount)))} will be reversed and the original record becomes Reversed.`
+    )) return;
+    setBusy(true);
+    try {
+      await api.post(`/transactions/reversals/${r.id}/approve`);
+      await loadData();
+    } catch (err: any) {
+      alert(err.message || 'Failed to approve reversal');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const submitReject = async () => {
     if (!rejecting) return;
     if (!reason.trim()) { alert('Please provide a rejection reason'); return; }
@@ -121,7 +151,9 @@ export default function TransferApprovals() {
     try {
       const url = rejecting.kind === 'transfers'
         ? `/transfers/${rejecting.record.id}/reject`
-        : `/transactions/${rejecting.record.id}/reject`;
+        : rejecting.kind === 'reversals'
+          ? `/transactions/reversals/${rejecting.record.id}/reject`
+          : `/transactions/${rejecting.record.id}/reject`;
       await api.post(url, { reason: reason.trim() });
       setRejecting(null);
       setReason('');
@@ -135,22 +167,30 @@ export default function TransferApprovals() {
 
   const rows = source === 'transfers'
     ? { pend: pending, rej: rejected }
-    : { pend: fundsPending, rej: fundsRejected };
+    : source === 'funds'
+      ? { pend: fundsPending, rej: fundsRejected }
+      : { pend: reversals, rej: reversalsRejected };
+  const sourceLabel = source === 'transfers' ? 'transfers' : source === 'funds' ? 'fund movements' : 'reversal requests';
   const pendingCount = rows.pend.length;
   const pendingTotal = source === 'transfers'
     ? pending.reduce((sum, t) => sum + parseFloat(String(t.total_source_deduction)), 0)
-    : fundsPending.reduce((sum, f) => sum + parseFloat(String(f.amount)), 0);
-  const totalPending = pending.length + fundsPending.length;
+    : source === 'funds'
+      ? fundsPending.reduce((sum, f) => sum + parseFloat(String(f.amount)), 0)
+      : reversals.reduce((sum, r) => sum + parseFloat(String(r.reversal_amount)), 0);
+  const totalPending = pending.length + fundsPending.length + reversals.length;
 
   const sources: { key: Source; label: string; count: number }[] = [
     { key: 'transfers', label: 'Transfers', count: pending.length },
     { key: 'funds', label: 'Owner Funds', count: fundsPending.length },
+    { key: 'reversals', label: 'Reversals', count: reversals.length },
   ];
 
   const rejectingLabel = rejecting
     ? rejecting.kind === 'transfers'
       ? `Reject transfer #${(rejecting.record as Transfer).transfer_number}`
-      : `Reject ${(rejecting.record as OwnerFund).type_name} #${(rejecting.record as OwnerFund).transaction_number}`
+      : rejecting.kind === 'reversals'
+        ? `Reject reversal request #${(rejecting.record as Reversal).transaction_number}`
+        : `Reject ${(rejecting.record as OwnerFund).type_name} #${(rejecting.record as OwnerFund).transaction_number}`
     : '';
 
   return (
@@ -158,7 +198,7 @@ export default function TransferApprovals() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Approvals</h1>
-          <p className="text-sm text-gray-500 mt-1">Review pending transfers and owner fund movements. Funds move only when you approve.</p>
+          <p className="text-sm text-gray-500 mt-1">Review pending transfers, owner fund movements and reversal requests. Funds move only when you approve.</p>
         </div>
         <div className="flex gap-3">
           <div className="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
@@ -166,7 +206,7 @@ export default function TransferApprovals() {
             <p className="text-lg font-semibold text-amber-600">{totalPending}</p>
           </div>
           <div className="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
-            <p className="text-xs text-gray-500">{source === 'transfers' ? 'Awaiting decision' : 'Awaiting decision'}</p>
+            <p className="text-xs text-gray-500">Awaiting decision</p>
             <p className="text-lg font-semibold text-gray-900">{formatCurrency(pendingTotal)}</p>
           </div>
         </div>
@@ -231,22 +271,32 @@ export default function TransferApprovals() {
           pendingCount === 0 ? (
             <div className="p-10 text-center">
               <Inbox className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-              <p className="text-sm text-gray-500">No {source === 'transfers' ? 'transfers' : 'fund movements'} awaiting approval.</p>
+              <p className="text-sm text-gray-500">No {sourceLabel} awaiting approval.</p>
             </div>
           ) : source === 'transfers' ? (
             <TransferPendingTable rows={pending} busy={busy} onApprove={approveTransfer} onReject={(t) => { setRejecting({ kind: 'transfers', record: t }); setReason(''); }} />
-          ) : (
+          ) : source === 'funds' ? (
             <FundPendingTable rows={fundsPending} busy={busy} onApprove={approveFund} onReject={(f) => { setRejecting({ kind: 'funds', record: f }); setReason(''); }} />
+          ) : (
+            <ReversalPendingTable
+              rows={reversals}
+              busy={busy}
+              canDecide={isAdmin}
+              onApprove={approveReversal}
+              onReject={(r) => { setRejecting({ kind: 'reversals', record: r }); setReason(''); }}
+            />
           )
         ) : rows.rej.length === 0 ? (
           <div className="p-10 text-center">
             <Inbox className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-            <p className="text-sm text-gray-500">No rejected {source === 'transfers' ? 'transfers' : 'fund movements'}.</p>
+            <p className="text-sm text-gray-500">No rejected {sourceLabel}.</p>
           </div>
         ) : source === 'transfers' ? (
           <TransferRejectedTable rows={rejected} />
-        ) : (
+        ) : source === 'funds' ? (
           <FundRejectedTable rows={fundsRejected} />
+        ) : (
+          <ReversalRejectedTable rows={reversalsRejected} />
         )}
       </div>
 
@@ -264,6 +314,12 @@ export default function TransferApprovals() {
                     {formatCurrency((rejecting.record as Transfer).transfer_amount)} from{' '}
                     <strong>{(rejecting.record as Transfer).source_name}</strong> to{' '}
                     <strong>{(rejecting.record as Transfer).destination_name}</strong>. The money will not move.
+                  </>
+                ) : rejecting.kind === 'reversals' ? (
+                  <>
+                    Reversal of transaction <strong>#{(rejecting.record as Reversal).transaction_number}</strong> on{' '}
+                    <strong>{(rejecting.record as Reversal).account_name}</strong>. The original record stays{' '}
+                    <strong>{(rejecting.record as Reversal).original_status}</strong> and no balance changes.
                   </>
                 ) : (
                   <>
@@ -499,6 +555,105 @@ function FundRejectedTable({ rows }: { rows: OwnerFund[] }) {
                 </span>
               </td>
               <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(f.created_at).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReversalPendingTable({ rows, busy, canDecide, onApprove, onReject }: {
+  rows: Reversal[]; busy: boolean; canDecide: boolean;
+  onApprove: (r: Reversal) => void; onReject: (r: Reversal) => void;
+}) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 text-gray-500">
+          <tr>
+            <th className="px-4 py-3 text-left font-medium">Tx#</th>
+            <th className="px-4 py-3 text-left font-medium">Type</th>
+            <th className="px-4 py-3 text-left font-medium">Account</th>
+            <th className="px-4 py-3 text-right font-medium">Original</th>
+            <th className="px-4 py-3 text-right font-medium">Balance Impact</th>
+            <th className="px-4 py-3 text-left font-medium">Reason</th>
+            <th className="px-4 py-3 text-left font-medium">Requested By</th>
+            <th className="px-4 py-3 text-left font-medium">Requested</th>
+            <th className="px-4 py-3 text-center font-medium">Actions</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {rows.map((r) => {
+            const impact = parseFloat(String(r.reversal_amount));
+            const reversesIn = r.direction === 'in';
+            return (
+              <tr key={r.id} className="hover:bg-gray-50">
+                <td className="px-4 py-3 font-medium text-gray-900">#{r.transaction_number}</td>
+                <td className="px-4 py-3">
+                  <span className={`badge-${reversesIn ? 'red' : 'green'}`}>{r.type_name}</span>
+                </td>
+                <td className="px-4 py-3 text-gray-900">{r.account_name}</td>
+                <td className="px-4 py-3 text-right text-gray-700">{formatCurrency(parseFloat(String(r.original_amount)))}</td>
+                <td
+                  className={`px-4 py-3 text-right font-semibold ${reversesIn ? 'text-red-600' : 'text-green-600'}`}
+                  title="Balance change once approved"
+                >
+                  {reversesIn ? '−' : '+'}{formatCurrency(impact)}
+                </td>
+                <td className="px-4 py-3 text-gray-500 max-w-[240px]">
+                  <span className="block truncate" title={r.reason || r.description || ''}>
+                    {r.reason || r.description || '—'}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-gray-700">{r.requested_by_username || '—'}</td>
+                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(r.created_at).toLocaleString()}</td>
+                <td className="px-4 py-3">
+                  {canDecide
+                    ? <ActionButtons busy={busy} onApprove={() => onApprove(r)} onReject={() => onReject(r)} />
+                    : <span className="text-xs text-gray-400 whitespace-nowrap">Administrator only</span>}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ReversalRejectedTable({ rows }: { rows: Reversal[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 text-gray-500">
+          <tr>
+            <th className="px-4 py-3 text-left font-medium">Tx#</th>
+            <th className="px-4 py-3 text-left font-medium">Type</th>
+            <th className="px-4 py-3 text-left font-medium">Account</th>
+            <th className="px-4 py-3 text-right font-medium">Original</th>
+            <th className="px-4 py-3 text-left font-medium">Requested By</th>
+            <th className="px-4 py-3 text-left font-medium">Reason</th>
+            <th className="px-4 py-3 text-left font-medium">Rejected By</th>
+            <th className="px-4 py-3 text-left font-medium">Rejected</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {rows.map((r) => (
+            <tr key={r.id} className="hover:bg-gray-50">
+              <td className="px-4 py-3 font-medium text-gray-900">#{r.transaction_number}</td>
+              <td className="px-4 py-3">{r.type_name}</td>
+              <td className="px-4 py-3 text-gray-900">{r.account_name}</td>
+              <td className="px-4 py-3 text-right text-gray-700">{formatCurrency(parseFloat(String(r.original_amount)))}</td>
+              <td className="px-4 py-3 text-gray-700">{r.requested_by_username || '—'}</td>
+              <td className="px-4 py-3 text-red-600 max-w-[260px]">
+                <span className="inline-flex items-start gap-1">
+                  <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  {r.reason || '—'}
+                </span>
+              </td>
+              <td className="px-4 py-3 text-gray-700">{r.decided_by_username || '—'}</td>
+              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(r.updated_at).toLocaleString()}</td>
             </tr>
           ))}
         </tbody>

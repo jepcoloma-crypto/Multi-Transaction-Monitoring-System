@@ -79,11 +79,16 @@ export default function Layout() {
     let cancelled = false;
     const load = async () => {
       try {
-        const [t, f] = await Promise.all([
+        const [t, f, rev] = await Promise.all([
           api.get<{ pagination?: { total?: number } }>('/transfers?status=pending&limit=1'),
           api.get<unknown>('/transactions/owner-funds/pending?status=pending'),
+          api.get<unknown>('/transactions/reversals/pending?status=pending'),
         ]);
-        if (!cancelled) setPendingApprovals((t.pagination?.total || 0) + unwrapRows(f).length);
+        if (!cancelled) {
+          setPendingApprovals(
+            (t.pagination?.total || 0) + unwrapRows(f).length + unwrapRows(rev).length,
+          );
+        }
       } catch {
         // keep last known count on transient errors
       }

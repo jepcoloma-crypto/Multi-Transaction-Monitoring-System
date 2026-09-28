@@ -145,7 +145,7 @@ export default function Transactions() {
     } catch (err: any) { alert(err.message); }
   };
 
-  const canEdit = (tx: Transaction) => isAdmin && (tx.status === 'completed' || tx.status === 'pending');
+  const canEdit = (tx: Transaction) => isAdmin && tx.status === 'pending';
 
   const toInputDateTime = (iso: string) => {
     const d = new Date(iso);
@@ -994,7 +994,7 @@ export default function Transactions() {
               <div className="bg-blue-50 border border-blue-200 text-blue-800 px-3 py-2 rounded-lg text-xs">
                 {editTx.status === 'pending'
                   ? 'This record is awaiting approval — no money has moved yet, so changes here do not affect any balance.'
-                  : 'Changing the Amount or Fee adjusts the account balance and the ledger. Reversed and rejected records cannot be edited.'}
+                  : 'Completed transactions are locked. Open the record and use Request Reversal to correct a completed transaction.'}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
