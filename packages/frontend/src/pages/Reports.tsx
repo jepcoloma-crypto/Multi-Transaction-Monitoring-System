@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation';
 
 interface Account { id: string; name: string; masked_account_number: string; }
 
@@ -99,6 +99,7 @@ export default function Reports() {
     { id: 'transaction-report' as ReportType, name: 'Transaction Report', icon: FileText, desc: 'Transaction history with filters' },
     { id: 'transfer-report' as ReportType, name: 'Transfer Report', icon: ArrowLeftRight, desc: 'Fund transfer history' },
     { id: 'loading-report' as ReportType, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
+    { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
   ];
 
   return (
@@ -212,44 +213,76 @@ export default function Reports() {
           ) : activeReport === 'account-statement' && reportData.entries ? (
             <div className="space-y-4">
               <div className="card">
-                <h4 className="font-medium mb-2">{reportData.account?.name} - Ledger Entries</h4>
-                <div className="grid grid-cols-3 gap-4 text-sm">
+                <div className="flex items-start justify-between gap-4 mb-3">
+                  <h4 className="font-medium">{reportData.account?.name} — Account Statement</h4>
+                  <span className={`text-xs font-medium px-2 py-1 rounded-full ${reportData.reconciled ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {reportData.reconciled ? 'Reconciled' : `Out of balance by ${formatCurrency(Math.abs(reportData.reconciliationGap || 0))}`}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div><p className="text-gray-500">Opening Balance</p><p className="font-bold">{formatCurrency(reportData.openingBalance || 0)}</p></div>
                   <div><p className="text-gray-500">Total In</p><p className="font-bold text-finance-green">{formatCurrency(reportData.summary?.totalIn || 0)}</p></div>
                   <div><p className="text-gray-500">Total Out</p><p className="font-bold text-finance-red">{formatCurrency(reportData.summary?.totalOut || 0)}</p></div>
-                  <div><p className="text-gray-500">Net</p><p className="font-bold">{formatCurrency(reportData.summary?.netMovement || 0)}</p></div>
+                  <div><p className="text-gray-500">Net Movement</p><p className="font-bold">{formatCurrency(reportData.summary?.netMovement || 0)}</p></div>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm mt-3">
+                  <div><p className="text-gray-500">Statement Closes</p><p className="font-bold">{formatCurrency(reportData.closingBalance || 0)}</p></div>
+                  <div><p className="text-gray-500">Current Balance</p><p className="font-bold">{formatCurrency(reportData.summary?.currentBalance || 0)}</p></div>
+                  <div><p className="text-gray-500">Entries</p><p className="font-bold">{reportData.summary?.entryCount || 0}</p></div>
+                  <div><p className="text-gray-500">Account</p><p className="font-bold">{reportData.account?.masked_account_number || reportData.account?.account_reference || '—'}</p></div>
                 </div>
               </div>
               <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[800px]">
+                  <table className="w-full min-w-[1200px]">
                     <thead className="bg-gray-50">
                       <tr>
-                        <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
-                        <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
-                        <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
-                        <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Credit</th>
-                        <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Debit</th>
-                        <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Balance</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reference</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Credit</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Debit</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Charges</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Balance</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
                       {reportData.entries.map((e: any) => (
                         <tr key={e.id} className="hover:bg-gray-50">
-                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{new Date(e.entry_date).toLocaleDateString()}</td>
-                          <td className="px-6 py-3.5 whitespace-nowrap"><span className={`text-xs font-medium ${e.entry_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}>{e.entry_type}</span></td>
-                          <td className="px-6 py-3.5 text-sm">{e.description || e.type_name || '-'}</td>
-                          <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap text-green-600">{e.entry_type === 'credit' ? formatCurrency(e.amount) : ''}</td>
-                          <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap text-red-600">{e.entry_type === 'debit' ? formatCurrency(e.amount) : ''}</td>
-                          <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(e.balance_after)}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{new Date(e.entry_date).toLocaleDateString()}</td>
+                          <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">{e.transaction_number ? `#${e.transaction_number}` : (e.transfer_number ? `#${e.transfer_number}` : (e.transaction_reference || e.transfer_reference || e.reference_number || '—'))}</td>
+                          <td className="px-4 py-3.5 whitespace-nowrap">
+                            <span className={`text-xs font-medium ${e.entry_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}>
+                              {e.type_name || (e.entry_source ? e.entry_source.charAt(0).toUpperCase() + e.entry_source.slice(1) : e.entry_type)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm">{e.description || e.transaction_description || e.display_name || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{e.customer_name || '—'}</td>
+                          <td className="px-4 py-3.5 whitespace-nowrap">
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${(e.transaction_status || e.transfer_status) === 'reversed' ? 'bg-amber-100 text-amber-700' : (e.transaction_status || e.transfer_status) === 'completed' ? 'bg-green-100 text-green-700' : (e.transaction_status || e.transfer_status) ? 'bg-gray-100 text-gray-600' : 'bg-gray-50 text-gray-400'}`}>
+                              {e.transaction_status || e.transfer_status || (e.entry_source === 'transaction' ? '—' : 'ledger')}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap text-green-600">{e.entry_type === 'credit' ? formatCurrency(e.amount) : ''}</td>
+                          <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap text-red-600">{e.entry_type === 'debit' ? formatCurrency(e.amount) : ''}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{e.fee !== null && e.fee !== undefined && parseFloat(e.fee) !== 0 ? formatCurrency(e.fee) : ''}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{e.charges_total > 0 ? formatCurrency(e.charges_total) : ''}</td>
+                          <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(e.balance_after)}</td>
                         </tr>
                       ))}
                     </tbody>
                     <tfoot className="bg-gray-100 border-t-2 border-gray-300">
                       <tr className="font-bold">
-                        <td className="px-6 py-3.5 text-sm" colSpan={3}>Total</td>
-                        <td className="px-6 py-3.5 text-sm text-right text-green-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
-                        <td className="px-6 py-3.5 text-sm text-right text-red-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
-                        <td className="px-6 py-3.5 text-sm text-right">{reportData.entries.length > 0 ? formatCurrency(reportData.entries[reportData.entries.length - 1].balance_after) : '₱0.00'}</td>
+                        <td className="px-4 py-3.5 text-sm" colSpan={6}>Total ({reportData.entries.length} entries)</td>
+                        <td className="px-4 py-3.5 text-sm text-right text-green-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
+                        <td className="px-4 py-3.5 text-sm text-right text-red-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
+                        <td className="px-4 py-3.5 text-sm text-right">{formatCurrency(reportData.entries.reduce((sum: number, e: any) => sum + (parseFloat(e.fee) || 0), 0))}</td>
+                        <td className="px-4 py-3.5 text-sm text-right">{formatCurrency(reportData.entries.reduce((sum: number, e: any) => sum + (e.charges_total || 0), 0))}</td>
+                        <td className="px-4 py-3.5 text-sm text-right">{reportData.entries.length > 0 ? formatCurrency(reportData.entries[reportData.entries.length - 1].balance_after) : '₱0.00'}</td>
                       </tr>
                     </tfoot>
                   </table>
@@ -382,6 +415,55 @@ export default function Reports() {
                           <td className="px-6 py-3.5 text-sm text-finance-green text-right whitespace-nowrap">{formatCurrency(s.total_revenue)}</td>
                           <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(s.profit)}</td>
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{new Date(s.created_at).toLocaleDateString()}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'balance-reconciliation' && reportData.accounts ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div className="card"><p className="text-gray-500">Accounts</p><p className="text-2xl font-bold mt-1">{reportData.summary?.totalAccounts || 0}</p></div>
+                <div className="card"><p className="text-gray-500">Reconciled</p><p className="text-2xl font-bold mt-1 text-finance-green">{reportData.summary?.reconciled || 0}</p></div>
+                <div className="card"><p className="text-gray-500">Mismatched</p><p className={`text-2xl font-bold mt-1 ${reportData.summary?.mismatched ? 'text-finance-red' : ''}`}>{reportData.summary?.mismatched || 0}</p></div>
+                <div className="card"><p className="text-gray-500">Broken Chain Links</p><p className={`text-2xl font-bold mt-1 ${reportData.summary?.brokenChainLinks ? 'text-finance-red' : ''}`}>{reportData.summary?.brokenChainLinks || 0}</p></div>
+              </div>
+              <div className="card overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1000px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Opening</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Ledger Net</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Expected</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actual</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Gap</th>
+                        <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Entries</th>
+                        <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Broken</th>
+                        <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Unlinked</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.accounts.map((a: any) => (
+                        <tr key={a.id} className={`hover:bg-gray-50 ${a.reconciled ? '' : 'bg-red-50'}`}>
+                          <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">{a.name}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{formatCurrency(a.openingBalance)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{formatCurrency(a.netMovement)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{formatCurrency(a.expectedBalance)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{formatCurrency(a.currentBalance)}</td>
+                          <td className={`px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap ${a.gap ? 'text-finance-red' : 'text-gray-400'}`}>{a.gap ? formatCurrency(a.gap) : '—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-center">{a.entryCount}</td>
+                          <td className={`px-4 py-3.5 text-sm text-center ${a.chainBreaks ? 'text-finance-red font-bold' : 'text-gray-400'}`}>{a.chainBreaks}</td>
+                          <td className={`px-4 py-3.5 text-sm text-center ${a.unlinkedEntries ? 'text-amber-600' : 'text-gray-400'}`}>{a.unlinkedEntries}</td>
+                          <td className="px-4 py-3.5 text-sm">
+                            {a.reconciled
+                              ? <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">OK</span>
+                              : <span className="text-xs text-finance-red">{a.issues.join('; ')}</span>}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

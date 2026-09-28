@@ -157,10 +157,10 @@ router.post('/accounts', authorize('accounts.write'), upload.single('file'), asy
 
         const openingBalance = parseFloat(row.opening_balance || row.balance || '0');
         await query(
-          `INSERT INTO accounts (name, provider_id, account_type_id, masked_account_number, account_reference, current_balance, minimum_balance, target_balance, status, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9)`,
+          `INSERT INTO accounts (name, provider_id, account_type_id, masked_account_number, account_reference, opening_balance, current_balance, minimum_balance, target_balance, status, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10)`,
           [name, provider.id, acctType.id, row.masked_number || row.masked_account_number || '****0000', row.reference || row.account_reference || null,
-           openingBalance, parseFloat(row.minimum_balance || '1000'), parseFloat(row.target_balance || '100000'), req.user!.userId]
+           openingBalance, openingBalance, parseFloat(row.minimum_balance || '1000'), parseFloat(row.target_balance || '100000'), req.user!.userId]
         );
         results.created++;
       } catch (err: any) {

@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { query, queryOne } from '../database/connection';
+import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
@@ -273,8 +273,17 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
       newBalance = parsed;
     }
 
-    const updated = await queryOne(
-      `UPDATE accounts SET
+    const previousBalance = parseFloat(existing.current_balance);
+    const balanceDelta = newBalance === null ? 0 : Math.round((newBalance - previousBalance) * 100) / 100;
+    const balanceToWrite = balanceDelta === 0 ? null : (newBalance as number);
+
+    const client = await getClient();
+    let updated: any = null;
+    try {
+      await client.query('BEGIN');
+
+      updated = (await client.query(
+        `UPDATE accounts SET
         name = COALESCE($1, name),
         masked_account_number = COALESCE($2, masked_account_number),
         account_reference = COALESCE($3, account_reference),
@@ -289,28 +298,42 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
         current_balance = COALESCE($11, current_balance),
         updated_at = NOW()
        WHERE id = $10 RETURNING *`,
-      [
-        name || existing.name,
-        maskedAccountNumber !== undefined ? maskedAccountNumber : existing.masked_account_number,
-        accountReference !== undefined ? accountReference : existing.account_reference,
-        owner !== undefined ? owner : existing.owner,
-        purpose !== undefined ? purpose : existing.purpose,
-        minimumBalance !== undefined ? minimumBalance : existing.minimum_balance,
-        targetBalance !== undefined ? targetBalance : existing.target_balance,
-        status || existing.status,
-        notes !== undefined ? notes : existing.notes,
-        accountId,
-        newBalance,
-        providerId || null,
-        accountTypeId || null,
-      ]
-    );
+        [
+          name || existing.name,
+          maskedAccountNumber !== undefined ? maskedAccountNumber : existing.masked_account_number,
+          accountReference !== undefined ? accountReference : existing.account_reference,
+          owner !== undefined ? owner : existing.owner,
+          purpose !== undefined ? purpose : existing.purpose,
+          minimumBalance !== undefined ? minimumBalance : existing.minimum_balance,
+          targetBalance !== undefined ? targetBalance : existing.target_balance,
+          status || existing.status,
+          notes !== undefined ? notes : existing.notes,
+          accountId,
+          newBalance,
+          providerId || null,
+          accountTypeId || null,
+        ]
+      )).rows[0] || null;
 
-    if (newBalance !== null && parseFloat(existing.current_balance) !== newBalance) {
-      await query(
-        'INSERT INTO account_balance_history (account_id, balance, recorded_by) VALUES ($1, $2, $3)',
-        [accountId, newBalance, req.user!.userId]
-      );
+      if (balanceToWrite !== null) {
+        await client.query(
+          `INSERT INTO ledger_entries (account_id, entry_type, amount, balance_after, reference_number, description, entry_date)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+          [accountId, balanceDelta > 0 ? 'credit' : 'debit', Math.abs(balanceDelta), balanceToWrite, 'ADMIN-ADJ',
+           `Balance adjusted by administrator: ${previousBalance.toFixed(2)} to ${balanceToWrite.toFixed(2)}`]
+        );
+        await client.query(
+          'INSERT INTO account_balance_history (account_id, balance, recorded_by) VALUES ($1, $2, $3)',
+          [accountId, balanceToWrite, req.user!.userId]
+        );
+      }
+
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
 
     await createAuditLog({

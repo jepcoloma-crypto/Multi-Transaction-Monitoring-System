@@ -6,6 +6,8 @@ import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 const router = Router();
 router.use(authenticate);
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 router.get('/account-statement', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { accountId, startDate, endDate } = req.query;
@@ -21,25 +23,175 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
     const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
     assertOwner(req, account, 'accounts.read_all', 'Account not found');
     const entries = await query(
-      `SELECT le.*, t.transaction_number, tt.name as type_name, tt.direction
+      `SELECT le.id, le.entry_type, le.amount, le.balance_after, le.reference_number,
+              le.description, le.entry_date, le.created_at, le.transaction_id, le.transfer_id,
+              t.transaction_number, t.status AS transaction_status, t.customer_name, t.customer_contact,
+              t.fee, t.net_amount, t.additional_charges, t.payment_method, t.notes,
+              t.reference_number AS transaction_reference, t.description AS transaction_description,
+              t.transaction_date, t.created_at AS transaction_created_at,
+              tt.name AS type_name, tt.code AS type_code, tt.direction,
+              tr.status AS transfer_status, tr.transfer_number, tr.transfer_reference,
+              tr.purpose AS transfer_purpose, tr.transfer_amount, tr.transfer_fee,
+              sa.name AS source_account_name, da.name AS destination_account_name
        FROM ledger_entries le
        LEFT JOIN transactions t ON le.transaction_id = t.id
        LEFT JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN transfers tr ON le.transfer_id = tr.id
+       LEFT JOIN accounts sa ON tr.source_account_id = sa.id
+       LEFT JOIN accounts da ON tr.destination_account_id = da.id
        ${wc} ORDER BY le.created_at ASC, le.id ASC`, params
     );
-
-    let runningBalance = entries.length > 0 ? parseFloat(entries[0].balance_after) - (entries[0].entry_type === 'credit' ? parseFloat(entries[0].amount) : -parseFloat(entries[0].amount)) : 0;
-    const statement = entries.map((e: any) => {
-      runningBalance = parseFloat(e.balance_after);
-      return { ...e, running_balance: runningBalance };
-    });
 
     const moneyIn = entries.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0);
     const moneyOut = entries.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0);
 
+    let running = entries.length > 0
+      ? parseFloat(entries[0].balance_after) - (entries[0].entry_type === 'credit' ? parseFloat(entries[0].amount) : -parseFloat(entries[0].amount))
+      : parseFloat(account.opening_balance || '0');
+    const openingBalance = running;
+    const statement = entries.map((e: any) => {
+      running = parseFloat(e.balance_after);
+      const charges = Array.isArray(e.additional_charges)
+        ? e.additional_charges.reduce((s: number, c: any) => s + (parseFloat(c?.amount) || 0), 0)
+        : 0;
+      return {
+        ...e,
+        running_balance: running,
+        charges_total: charges,
+        entry_source: e.transaction_id ? 'transaction'
+          : e.transfer_id ? 'transfer'
+          : /^loading\b/i.test(e.description || '') ? 'loading'
+          : 'adjustment',
+        display_name: e.transaction_number
+          ? `${e.type_name || 'Transaction'} #${e.transaction_number}`
+          : e.transfer_id
+            ? `Transfer ${e.transfer_number ? `#${e.transfer_number} ` : ''}${e.source_account_name || '?'} → ${e.destination_account_name || '?'}`
+            : e.description || 'Adjustment',
+      };
+    });
+
+    const lastBalance = entries.length > 0 ? parseFloat(entries[entries.length - 1].balance_after) : null;
+    const currentBalance = parseFloat(account.current_balance);
+    const reconciled = lastBalance !== null
+      ? lastBalance === currentBalance
+      : openingBalance === currentBalance;
+
     res.json({
       success: true, data: {
-        account, entries: statement, summary: { totalIn: moneyIn, totalOut: moneyOut, netMovement: moneyIn - moneyOut, entryCount: entries.length }
+        account,
+        entries: statement,
+        openingBalance,
+        closingBalance: lastBalance ?? currentBalance,
+        reconciled,
+        reconciliationGap: round2((lastBalance ?? currentBalance) - currentBalance),
+        summary: {
+          totalIn: moneyIn,
+          totalOut: moneyOut,
+          netMovement: moneyIn - moneyOut,
+          entryCount: entries.length,
+          openingBalance,
+          closingBalance: lastBalance ?? currentBalance,
+          currentBalance,
+        },
+      }
+    });
+  } catch (error) { next(error); }
+});
+
+router.get('/balance-reconciliation', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const scope = ownerClause(req, 'a', 'accounts.read_all', 1);
+    const wc = scope.clause ? `WHERE ${scope.clause}` : '';
+    const rows = await query(
+      `WITH ledger AS (
+         SELECT le.account_id,
+                COUNT(*) AS entries,
+                COALESCE(SUM(CASE WHEN le.entry_type = 'credit' THEN le.amount ELSE -le.amount END), 0) AS net,
+                COUNT(*) FILTER (WHERE le.balance_after < 0) AS negatives,
+                COUNT(*) FILTER (WHERE le.transaction_id IS NULL AND le.transfer_id IS NULL) AS unlinked
+         FROM ledger_entries le
+         GROUP BY le.account_id
+       ),
+       chain AS (
+         SELECT account_id,
+                COUNT(*) FILTER (
+                  WHERE prev_balance IS NOT NULL
+                    AND balance_after <> prev_balance + CASE WHEN entry_type = 'credit' THEN amount ELSE -amount END
+                ) AS broken
+         FROM (
+           SELECT le.account_id, le.entry_type, le.amount, le.balance_after,
+                  LAG(le.balance_after) OVER (
+                    PARTITION BY le.account_id ORDER BY le.created_at, le.id
+                  ) AS prev_balance
+           FROM ledger_entries le
+         ) x
+         GROUP BY account_id
+       ),
+       lastrow AS (
+         SELECT DISTINCT ON (account_id) account_id, balance_after
+         FROM ledger_entries
+         ORDER BY account_id, created_at DESC, id DESC
+       )
+       SELECT a.id, a.name, a.opening_balance, a.current_balance, a.status,
+              COALESCE(ledger.net, 0) AS net,
+              COALESCE(ledger.entries, 0) AS entries,
+              COALESCE(ledger.negatives, 0) AS negatives,
+              COALESCE(ledger.unlinked, 0) AS unlinked,
+              COALESCE(chain.broken, 0) AS chain_breaks,
+              lastrow.balance_after AS last_ledger_balance
+       FROM accounts a
+       LEFT JOIN ledger ON ledger.account_id = a.id
+       LEFT JOIN chain ON chain.account_id = a.id
+       LEFT JOIN lastrow ON lastrow.account_id = a.id
+       ${wc}
+       ORDER BY a.name`,
+      scope.params
+    );
+
+    const accounts = rows.map((r: any) => {
+      const opening = round2(parseFloat(r.opening_balance));
+      const net = round2(parseFloat(r.net));
+      const expected = round2(opening + net);
+      const actual = round2(parseFloat(r.current_balance));
+      const gap = round2(expected - actual);
+      const last = r.last_ledger_balance === null ? null : round2(parseFloat(r.last_ledger_balance));
+      const issues: string[] = [];
+      if (gap !== 0) issues.push(`balance gap of ${gap.toFixed(2)}`);
+      if (Number(r.chain_breaks) > 0) issues.push(`${r.chain_breaks} broken chain link(s)`);
+      if (Number(r.negatives) > 0) issues.push(`${r.negatives} negative balance(s)`);
+      if (last !== null && last !== actual) issues.push(`last ledger row ${last.toFixed(2)} differs from balance ${actual.toFixed(2)}`);
+      return {
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        openingBalance: opening,
+        netMovement: net,
+        expectedBalance: expected,
+        currentBalance: actual,
+        gap,
+        entryCount: Number(r.entries),
+        chainBreaks: Number(r.chain_breaks),
+        negativeBalances: Number(r.negatives),
+        unlinkedEntries: Number(r.unlinked),
+        lastLedgerBalance: last,
+        issues,
+        reconciled: issues.length === 0,
+      };
+    });
+
+    const broken = accounts.filter((a) => !a.reconciled);
+    res.json({
+      success: true,
+      data: {
+        accounts,
+        summary: {
+          totalAccounts: accounts.length,
+          reconciled: accounts.length - broken.length,
+          mismatched: broken.length,
+          totalGap: round2(accounts.reduce((s, a) => s + a.gap, 0)),
+          brokenChainLinks: accounts.reduce((s, a) => s + a.chainBreaks, 0),
+          negativeBalances: accounts.reduce((s, a) => s + a.negativeBalances, 0),
+        },
       }
     });
   } catch (error) { next(error); }
