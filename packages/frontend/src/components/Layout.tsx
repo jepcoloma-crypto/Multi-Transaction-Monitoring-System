@@ -78,20 +78,18 @@ export default function Layout() {
     if (!isApprover) return;
     let cancelled = false;
     const load = async () => {
-      try {
-        const [t, f, rev] = await Promise.all([
-          api.get<{ pagination?: { total?: number } }>('/transfers?status=pending&limit=1'),
-          api.get<unknown>('/transactions/owner-funds/pending?status=pending'),
-          api.get<unknown>('/transactions/reversals/pending?status=pending'),
-        ]);
-        if (!cancelled) {
-          setPendingApprovals(
-            (t.pagination?.total || 0) + unwrapRows(f).length + unwrapRows(rev).length,
-          );
-        }
-      } catch {
-        // keep last known count on transient errors
-      }
+      const results = await Promise.allSettled([
+        api.get<{ pagination?: { total?: number } }>('/transfers?status=pending&limit=1'),
+        api.get<unknown>('/transactions/owner-funds/pending?status=pending'),
+        api.get<unknown>('/transactions/reversals/pending?status=pending'),
+      ]);
+      if (cancelled) return;
+      const [transfers, funds, rev] = results;
+      let total = 0;
+      if (transfers.status === 'fulfilled') total += transfers.value.pagination?.total || 0;
+      if (funds.status === 'fulfilled') total += unwrapRows(funds.value).length;
+      if (rev.status === 'fulfilled') total += unwrapRows(rev.value).length;
+      setPendingApprovals(total);
     };
     load();
     window.addEventListener('approvals-changed', load);

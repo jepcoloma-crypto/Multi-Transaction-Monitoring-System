@@ -990,8 +990,9 @@ router.post('/:id/reject', authorize('transactions.approve'), async (req: Reques
   }
 });
 
-// List pending reversals (admin/manager)
-router.get('/reversals/pending', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+// List pending reversals (admin/manager). Requires transactions.approve so operators
+// cannot read other people's reversal requests — parity with /owner-funds/pending.
+router.get('/reversals/pending', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = req.query.status === 'rejected' ? 'rejected' : 'pending';
     const rows = await query(
@@ -1024,17 +1025,20 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     await client.query('BEGIN');
 
     const pending = (await client.query(
-      `SELECT * FROM pending_reversals WHERE id = $1 AND status = 'pending'`,
+      `SELECT * FROM pending_reversals WHERE id = $1 AND status = 'pending' FOR UPDATE`,
       [req.params.reversalId]
     )).rows[0];
     if (!pending) throw createError(404, 'Pending reversal not found or already processed');
+    if (pending.requested_by === req.user!.userId) {
+      throw createError(403, 'You cannot approve your own reversal request');
+    }
 
-    const original = await queryOne(
+    const original = (await client.query(
       `SELECT t.*, tt.direction FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        WHERE t.id = $1`,
       [pending.entity_id]
-    );
+    )).rows[0];
     if (!original) throw createError(404, 'Original transaction not found');
     if (original.status === 'reversed') throw createError(400, 'Transaction already reversed');
 
@@ -1048,12 +1052,12 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     );
 
     const reverseEntryType = original.direction === 'in' ? 'debit' : 'credit';
-    const reverseTypeId = await queryOne<{ id: string }>(
+    const reverseTypeId = (await client.query<{ id: string }>(
       `SELECT id FROM transaction_types WHERE code = $1`,
       [original.direction === 'in' ? 'adjustment_out' : 'adjustment_in']
-    );
+    )).rows[0];
 
-    const reverseTx = await queryOne(
+    const reverseTx = (await client.query(
       `INSERT INTO transactions (account_id, transaction_type_id, amount, fee, net_amount,
        reference_number, transaction_date, description, status, created_by)
        VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6)
@@ -1064,7 +1068,7 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
         `Reversal: ${pending.reason || original.description || 'Admin approved reversal'}`,
         req.user!.userId,
       ]
-    );
+    )).rows[0];
 
     await processTransaction(
       original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
@@ -1073,10 +1077,12 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
       new Date(), client
     );
 
-    await client.query(
-      `UPDATE pending_reversals SET status = 'approved', approved_by = $1, updated_at = NOW() WHERE id = $2`,
+    const approved = await client.query(
+      `UPDATE pending_reversals SET status = 'approved', approved_by = $1, updated_at = NOW()
+       WHERE id = $2 AND status = 'pending'`,
       [req.user!.userId, req.params.reversalId]
     );
+    if (approved.rowCount !== 1) throw createError(409, 'This reversal request was already processed');
 
     await client.query('COMMIT');
 
@@ -1100,29 +1106,42 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
 
 // Reject a pending reversal (admin only)
 router.post('/reversals/:reversalId/reject', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
-  const isAdmin = req.user!.roles.includes('administrator');
-  if (!isAdmin) throw createError(403, 'Only administrators can reject reversals');
+  try {
+    const isAdmin = req.user!.roles.includes('administrator');
+    if (!isAdmin) throw createError(403, 'Only administrators can reject reversals');
 
-  const { reason } = req.body;
+    const { reason } = req.body;
 
-  const pending = await queryOne(
-    `UPDATE pending_reversals SET status = 'rejected', approved_by = $1, reason = COALESCE($2, reason), updated_at = NOW()
-     WHERE id = $3 AND status = 'pending'
-     RETURNING *`,
-    [req.user!.userId, reason || null, req.params.reversalId]
-  );
-  if (!pending) throw createError(404, 'Pending reversal not found or already processed');
+    const target = await queryOne<{ requested_by: string }>(
+      `SELECT requested_by FROM pending_reversals WHERE id = $1 AND status = 'pending'`,
+      [req.params.reversalId]
+    );
+    if (!target) throw createError(404, 'Pending reversal not found or already processed');
+    if (target.requested_by === req.user!.userId) {
+      throw createError(403, 'You cannot reject your own reversal request');
+    }
 
-  await createAuditLog({
-    userId: req.user!.userId,
-    action: 'transaction.reversal_rejected',
-    entity: 'transaction',
-    entityId: pending.entity_id,
-    ipAddress: req.ip,
-    newData: { reason },
-  });
+    const pending = await queryOne(
+      `UPDATE pending_reversals SET status = 'rejected', approved_by = $1, reason = COALESCE($2, reason), updated_at = NOW()
+       WHERE id = $3 AND status = 'pending'
+       RETURNING *`,
+      [req.user!.userId, reason || null, req.params.reversalId]
+    );
+    if (!pending) throw createError(404, 'Pending reversal not found or already processed');
 
-  res.json({ success: true, data: pending });
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'transaction.reversal_rejected',
+      entity: 'transaction',
+      entityId: pending.entity_id,
+      ipAddress: req.ip,
+      newData: { reason },
+    });
+
+    res.json({ success: true, data: pending });
+  } catch (error) {
+    next(error);
+  }
 });
 
 router.delete('/:id', authorize('transactions.delete'), async (req: Request, res: Response, next: NextFunction) => {
