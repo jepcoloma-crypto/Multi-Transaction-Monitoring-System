@@ -503,7 +503,7 @@ export default function Transactions() {
       </div>
 
       <div className="card overflow-x-auto">
-        <table className="w-full min-w-[1000px]">
+        <table className="w-full min-w-[1100px]">
           <thead className="bg-gray-50">
             <tr>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Tx#</th>
@@ -511,6 +511,7 @@ export default function Transactions() {
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reference</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee</th>
               <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee Handling</th>
@@ -521,9 +522,9 @@ export default function Transactions() {
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={11} className="text-center py-8 text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={12} className="text-center py-8 text-gray-500">Loading...</td></tr>
             ) : transactions.length === 0 ? (
-              <tr><td colSpan={11} className="text-center py-8 text-gray-500">No transactions found</td></tr>
+              <tr><td colSpan={12} className="text-center py-8 text-gray-500">No transactions found</td></tr>
             ) : (
               transactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-gray-50">
@@ -542,6 +543,11 @@ export default function Transactions() {
                         {tx.customer_name}
                       </button>
                     ) : <span className="text-gray-400">-</span>}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">
+                    <div className="max-w-[180px] truncate" title={tx.reference_number || undefined}>
+                      {tx.reference_number || <span className="text-gray-400">-</span>}
+                    </div>
                   </td>
                   <td className={`px-4 py-3 text-sm text-right font-medium ${tx.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
                     {tx.direction === 'in' ? '+' : '-'}{formatCurrency(tx.amount)}
