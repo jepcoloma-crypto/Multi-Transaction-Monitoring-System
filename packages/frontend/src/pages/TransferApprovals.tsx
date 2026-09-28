@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { api } from '../lib/api';
+import { api, unwrapRows } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import { Check, X, Clock, Inbox, ShieldAlert, AlertCircle } from 'lucide-react';
@@ -37,6 +37,7 @@ export default function TransferApprovals() {
   const [fundsPending, setFundsPending] = useState<OwnerFund[]>([]);
   const [fundsRejected, setFundsRejected] = useState<OwnerFund[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [rejecting, setRejecting] = useState<{ kind: Source; record: Transfer | OwnerFund } | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
@@ -45,19 +46,25 @@ export default function TransferApprovals() {
     if (!isApprover) return;
     setLoading(true);
     try {
-      const [p, r, fp, fr] = await Promise.all([
+      const results = await Promise.allSettled([
         api.get<{ data: Transfer[] }>('/transfers?status=pending&limit=50'),
         api.get<{ data: Transfer[] }>('/transfers?status=rejected&limit=20'),
-        api.get<{ data: OwnerFund[] }>('/transactions/owner-funds/pending?status=pending'),
-        api.get<{ data: OwnerFund[] }>('/transactions/owner-funds/pending?status=rejected'),
+        api.get<{ data: OwnerFund[] } | OwnerFund[]>('/transactions/owner-funds/pending?status=pending'),
+        api.get<{ data: OwnerFund[] } | OwnerFund[]>('/transactions/owner-funds/pending?status=rejected'),
       ]);
-      setPending(p.data);
-      setRejected(r.data);
-      setFundsPending(fp.data);
-      setFundsRejected(fr.data);
+      const value = (r: PromiseSettledResult<unknown>) => (r.status === 'fulfilled' ? r.value : undefined);
+      setPending(unwrapRows<Transfer>(value(results[0])));
+      setRejected(unwrapRows<Transfer>(value(results[1])));
+      setFundsPending(unwrapRows<OwnerFund>(value(results[2])));
+      setFundsRejected(unwrapRows<OwnerFund>(value(results[3])));
+      const failed = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+      setLoadError(failed.length > 0
+        ? `Could not load ${failed.length} of the 4 approval queues — ${failed[0].reason?.message || 'request failed'}`
+        : '');
       window.dispatchEvent(new Event('approvals-changed'));
     } catch (err) {
       console.error('Approvals load error:', err);
+      setLoadError(err instanceof Error ? err.message : 'Failed to load approvals');
     } finally {
       setLoading(false);
     }
@@ -164,6 +171,13 @@ export default function TransferApprovals() {
           </div>
         </div>
       </div>
+
+      {loadError && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 text-sm flex items-start justify-between gap-4">
+          <span>{loadError}</span>
+          <button onClick={() => loadData()} className="shrink-0 font-medium underline hover:no-underline">Retry</button>
+        </div>
+      )}
 
       <div className="flex gap-2">
         {sources.map((s) => (

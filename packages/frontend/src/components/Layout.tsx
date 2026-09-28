@@ -24,7 +24,7 @@ import {
   Database,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { api } from '../lib/api';
+import { api, unwrapRows } from '../lib/api';
 import GlobalSearch from './GlobalSearch';
 
 const navigation = [
@@ -81,9 +81,9 @@ export default function Layout() {
       try {
         const [t, f] = await Promise.all([
           api.get<{ pagination?: { total?: number } }>('/transfers?status=pending&limit=1'),
-          api.get<{ data: unknown[] }>('/transactions/owner-funds/pending?status=pending'),
+          api.get<unknown>('/transactions/owner-funds/pending?status=pending'),
         ]);
-        if (!cancelled) setPendingApprovals((t.pagination?.total || 0) + (f.data?.length || 0));
+        if (!cancelled) setPendingApprovals((t.pagination?.total || 0) + unwrapRows(f).length);
       } catch {
         // keep last known count on transient errors
       }

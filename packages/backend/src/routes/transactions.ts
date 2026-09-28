@@ -870,7 +870,7 @@ router.get('/owner-funds/pending', authorize('transactions.approve'), async (req
        ORDER BY t.created_at ASC`,
       [status]
     );
-    res.json({ success: true, data: rows });
+    res.json({ success: true, data: { data: rows } });
   } catch (error) {
     next(error);
   }

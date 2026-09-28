@@ -25,6 +25,12 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return data.data;
 }
 
+export function unwrapRows<T>(value: unknown): T[] {
+  if (Array.isArray(value)) return value as T[];
+  const nested = (value as { data?: unknown } | null | undefined)?.data;
+  return Array.isArray(nested) ? (nested as T[]) : [];
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: any, isFormData = false) => request<T>(path, {
