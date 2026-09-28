@@ -295,7 +295,7 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
     assertOwner(req, transaction, 'transactions.read_all', 'Transaction not found');
 
     const ledgerEntries = await query(
-      `SELECT * FROM ledger_entries WHERE transaction_id = $1 ORDER BY entry_date`,
+      `SELECT * FROM ledger_entries WHERE transaction_id = $1 ORDER BY created_at, id`,
       [req.params.id]
     );
 
@@ -699,7 +699,7 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
 
       await client.query(
         `WITH ord AS (
-           SELECT id, ROW_NUMBER() OVER (ORDER BY entry_date, id) AS rn
+           SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn
            FROM ledger_entries WHERE account_id = $1
          )
          UPDATE ledger_entries le

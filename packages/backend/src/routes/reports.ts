@@ -25,7 +25,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
        FROM ledger_entries le
        LEFT JOIN transactions t ON le.transaction_id = t.id
        LEFT JOIN transaction_types tt ON t.transaction_type_id = tt.id
-       ${wc} ORDER BY le.entry_date ASC`, params
+       ${wc} ORDER BY le.created_at ASC, le.id ASC`, params
     );
 
     let runningBalance = entries.length > 0 ? parseFloat(entries[0].balance_after) - (entries[0].entry_type === 'credit' ? parseFloat(entries[0].amount) : -parseFloat(entries[0].amount)) : 0;
@@ -364,7 +364,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
                 CASE WHEN le.entry_type = 'debit' THEN le.amount ELSE 0 END as debit,
                 le.balance_after, le.description, le.entry_date
          FROM ledger_entries le JOIN accounts a ON le.account_id = a.id
-         ${wc} ORDER BY le.entry_date ASC`, params
+         ${wc} ORDER BY le.created_at ASC, le.id ASC`, params
       );
       columns = [
         { header: 'ID', key: 'id' },
