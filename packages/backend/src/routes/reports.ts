@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
+import { auditLedger } from '../services/ledgerAudit';
 
 const router = Router();
 router.use(authenticate);
@@ -103,98 +104,24 @@ router.get('/balance-reconciliation', authorize('reports.read'), async (req: Req
   try {
     const scope = ownerClause(req, 'a', 'accounts.read_all', 1);
     const wc = scope.clause ? `WHERE ${scope.clause}` : '';
-    const rows = await query(
-      `WITH ledger AS (
-         SELECT le.account_id,
-                COUNT(*) AS entries,
-                COALESCE(SUM(CASE WHEN le.entry_type = 'credit' THEN le.amount ELSE -le.amount END), 0) AS net,
-                COUNT(*) FILTER (WHERE le.balance_after < 0) AS negatives,
-                COUNT(*) FILTER (WHERE le.source_id IS NULL) AS unlinked
-         FROM ledger_entries le
-         GROUP BY le.account_id
-       ),
-       chain AS (
-         SELECT account_id,
-                COUNT(*) FILTER (
-                  WHERE prev_balance IS NOT NULL
-                    AND balance_after <> prev_balance + CASE WHEN entry_type = 'credit' THEN amount ELSE -amount END
-                ) AS broken
-         FROM (
-           SELECT le.account_id, le.entry_type, le.amount, le.balance_after,
-                  LAG(le.balance_after) OVER (
-                    PARTITION BY le.account_id ORDER BY le.created_at, le.id
-                  ) AS prev_balance
-           FROM ledger_entries le
-         ) x
-         GROUP BY account_id
-       ),
-       lastrow AS (
-         SELECT DISTINCT ON (account_id) account_id, balance_after
-         FROM ledger_entries
-         ORDER BY account_id, created_at DESC, id DESC
-       )
-       SELECT a.id, a.name, a.opening_balance, a.current_balance, a.status,
-              COALESCE(ledger.net, 0) AS net,
-              COALESCE(ledger.entries, 0) AS entries,
-              COALESCE(ledger.negatives, 0) AS negatives,
-              COALESCE(ledger.unlinked, 0) AS unlinked,
-              COALESCE(chain.broken, 0) AS chain_breaks,
-              lastrow.balance_after AS last_ledger_balance
+    const accounts = await query(
+      `SELECT a.id, a.name, a.status, a.opening_balance, a.current_balance
        FROM accounts a
-       LEFT JOIN ledger ON ledger.account_id = a.id
-       LEFT JOIN chain ON chain.account_id = a.id
-       LEFT JOIN lastrow ON lastrow.account_id = a.id
        ${wc}
-       ORDER BY a.name`,
+       ORDER BY a.name, a.id`,
       scope.params
     );
 
-    const accounts = rows.map((r: any) => {
-      const opening = round2(parseFloat(r.opening_balance));
-      const net = round2(parseFloat(r.net));
-      const expected = round2(opening + net);
-      const actual = round2(parseFloat(r.current_balance));
-      const gap = round2(expected - actual);
-      const last = r.last_ledger_balance === null ? null : round2(parseFloat(r.last_ledger_balance));
-      const issues: string[] = [];
-      if (gap !== 0) issues.push(`balance gap of ${gap.toFixed(2)}`);
-      if (Number(r.chain_breaks) > 0) issues.push(`${r.chain_breaks} broken chain link(s)`);
-      if (Number(r.negatives) > 0) issues.push(`${r.negatives} negative balance(s)`);
-      if (last !== null && last !== actual) issues.push(`last ledger row ${last.toFixed(2)} differs from balance ${actual.toFixed(2)}`);
-      return {
-        id: r.id,
-        name: r.name,
-        status: r.status,
-        openingBalance: opening,
-        netMovement: net,
-        expectedBalance: expected,
-        currentBalance: actual,
-        gap,
-        entryCount: Number(r.entries),
-        chainBreaks: Number(r.chain_breaks),
-        negativeBalances: Number(r.negatives),
-        unlinkedEntries: Number(r.unlinked),
-        lastLedgerBalance: last,
-        issues,
-        reconciled: issues.length === 0,
-      };
-    });
+    const entries = await query(
+      `SELECT le.account_id, le.id, le.entry_type, le.amount, le.balance_after, le.source_id, le.created_at
+       FROM ledger_entries le
+       JOIN accounts a ON a.id = le.account_id
+       ${wc}
+       ORDER BY le.created_at, le.id`,
+      scope.params
+    );
 
-    const broken = accounts.filter((a) => !a.reconciled);
-    res.json({
-      success: true,
-      data: {
-        accounts,
-        summary: {
-          totalAccounts: accounts.length,
-          reconciled: accounts.length - broken.length,
-          mismatched: broken.length,
-          totalGap: round2(accounts.reduce((s, a) => s + a.gap, 0)),
-          brokenChainLinks: accounts.reduce((s, a) => s + a.chainBreaks, 0),
-          negativeBalances: accounts.reduce((s, a) => s + a.negativeBalances, 0),
-        },
-      }
-    });
+    res.json({ success: true, data: auditLedger(accounts, entries) });
   } catch (error) { next(error); }
 });
 

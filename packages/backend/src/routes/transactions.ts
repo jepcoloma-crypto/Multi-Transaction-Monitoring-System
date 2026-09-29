@@ -478,6 +478,9 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
     const original = originalRes.rows[0];
     if (!original) throw createError(404, 'Transaction not found');
     assertOwner(req, original, 'transactions.write_all', 'Transaction not found');
+    if (original.status === 'completed' && !(req.user!.roles || []).includes('administrator')) {
+      throw createError(403, 'Only administrators can adjust charges on a completed transaction');
+    }
 
     const chargeTotal = (charges: any): number =>
       Math.round(
@@ -637,78 +640,11 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
     set('net_amount', round2(netAmount));
     set('fee_added_to_balance', feeAddedToBalance);
 
-    const chargesTotal = round2((row.additional_charges || [])
-      .reduce((sum: number, c: any) => sum + (parseFloat(c?.amount) || 0), 0));
-    const oldLedgerAmount = round2(parseFloat(row.net_amount) + chargesTotal);
-    const newLedgerAmount = round2(netAmount + chargesTotal);
-    const entryType: 'debit' | 'credit' =
-      row.direction === 'in' || row.direction === 'adjustment' ? 'credit' : 'debit';
-    const balanceDelta = row.status === 'completed'
-      ? round2((entryType === 'credit' ? 1 : -1) * (newLedgerAmount - oldLedgerAmount))
-      : 0;
-
-    let ledgerEntryId: string | null = null;
-    if (row.status === 'completed') {
-      const ledger = (await client.query(
-        'SELECT id FROM ledger_entries WHERE transaction_id = $1 ORDER BY id FOR UPDATE',
-        [req.params.id]
-      )).rows;
-      if (balanceDelta !== 0 && ledger.length === 0) {
-        throw createError(400, 'No ledger entry found for this transaction — balance not adjusted');
-      }
-      ledgerEntryId = ledger.length > 0 ? ledger[0].id : null;
-
-      if (ledgerEntryId) {
-        const ledgerSets: string[] = [];
-        const ledgerParams: any[] = [];
-        const ledgerSet = (column: string, value: any) => {
-          ledgerParams.push(value);
-          ledgerSets.push(`${column} = $${ledgerParams.length}`);
-        };
-        if (transactionDate) ledgerSet('entry_date', transactionDate.toISOString());
-        if (provided('referenceNumber')) ledgerSet('reference_number', String(body.referenceNumber).trim() || null);
-        if (provided('description')) ledgerSet('description', String(body.description).trim() || null);
-        if (balanceDelta !== 0) ledgerSet('amount', newLedgerAmount);
-
-        if (ledgerSets.length > 0) {
-          await client.query(
-            `UPDATE ledger_entries SET ${ledgerSets.join(', ')} WHERE id = $${ledgerParams.length + 1}`,
-            [...ledgerParams, ledgerEntryId]
-          );
-        }
-      }
-    }
-
     updates.push('updated_at = NOW()');
     const updated = (await client.query(
       `UPDATE transactions SET ${updates.join(', ')} WHERE id = $${params.length + 1} RETURNING *`,
       [...params, req.params.id]
     )).rows[0];
-
-    if (row.status === 'completed' && balanceDelta !== 0) {
-      const account = (await client.query(
-        'SELECT current_balance FROM accounts WHERE id = $1 FOR UPDATE',
-        [row.account_id]
-      )).rows[0];
-      const nextBalance = round2(parseFloat(account.current_balance) + balanceDelta);
-      if (nextBalance < 0) throw createError(400, 'Insufficient balance for this amount change');
-      await client.query(
-        'UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2',
-        [nextBalance, row.account_id]
-      );
-
-      await client.query(
-        `WITH ord AS (
-           SELECT id, ROW_NUMBER() OVER (ORDER BY created_at, id) AS rn
-           FROM ledger_entries WHERE account_id = $1
-         )
-         UPDATE ledger_entries le
-         SET balance_after = le.balance_after + $3::numeric
-         FROM ord
-         WHERE le.id = ord.id AND ord.rn >= (SELECT rn FROM ord WHERE id = $2)`,
-        [row.account_id, ledgerEntryId, balanceDelta.toFixed(2)]
-      );
-    }
 
     await client.query('COMMIT');
 
@@ -729,7 +665,7 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
         fee: parseFloat(updated.fee), netAmount: parseFloat(updated.net_amount),
         transactionDate: updated.transaction_date, referenceNumber: updated.reference_number,
         customerName: updated.customer_name, paymentMethod: updated.payment_method,
-        description: updated.description, balanceDelta,
+        description: updated.description, balanceDelta: 0,
       },
     });
 
@@ -1172,8 +1108,10 @@ router.delete('/:id', authorize('transactions.delete'), async (req: Request, res
     );
     const transaction = original.rows[0];
     assertOwner(req, transaction, 'transactions.write_all', 'Transaction not found');
-    if (transaction.status === 'reversed') {
-      throw createError(400, 'Reversed transactions cannot be deleted — its reversal is already recorded');
+    if (transaction.status === 'completed' || transaction.status === 'reversed') {
+      throw createError(400, transaction.status === 'reversed'
+        ? 'Reversed transactions cannot be deleted — its reversal is already recorded'
+        : 'Completed transactions cannot be deleted — request a reversal instead');
     }
 
     // Restore account balance for completed transactions

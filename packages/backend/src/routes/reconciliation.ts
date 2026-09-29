@@ -7,6 +7,8 @@ import { createAuditLog } from '../services/audit';
 const router = Router();
 router.use(authenticate);
 
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 router.get('/', authorize('reconciliation.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -76,39 +78,67 @@ router.post('/', authorize('reconciliation.write'), async (req: Request, res: Re
 });
 
 router.post('/:id/adjust', authorize('reconciliation.write'), async (req: Request, res: Response, next: NextFunction) => {
+  if (!(req.user!.roles || []).includes('administrator')) {
+    return next(createError(403, 'Only administrators can apply a reconciliation adjustment'));
+  }
+
   const client = await getClient();
   try {
     await client.query('BEGIN');
 
-    const recon = await client.query('SELECT * FROM reconciliations WHERE id = $1 FOR UPDATE', [req.params.id]);
-    if (!recon.rows[0]) throw createError(404, 'Reconciliation not found');
+    const recon = (await client.query('SELECT * FROM reconciliations WHERE id = $1 FOR UPDATE', [req.params.id])).rows[0];
+    if (!recon) throw createError(404, 'Reconciliation not found');
 
     const { adjustmentAmount, reason } = req.body;
     if (!adjustmentAmount || !reason) throw createError(400, 'Adjustment amount and reason are required');
 
     const adjAmount = parseFloat(adjustmentAmount);
-    const acct = await client.query('SELECT current_balance FROM accounts WHERE id = $1 FOR UPDATE', [recon.rows[0].account_id]);
-    const newBalance = parseFloat(acct.rows[0].current_balance) + adjAmount;
+    if (!Number.isFinite(adjAmount) || adjAmount === 0) {
+      throw createError(400, 'Adjustment amount must be a non-zero number');
+    }
 
-    await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, recon.rows[0].account_id]);
+    const acct = (await client.query(
+      'SELECT current_balance, opening_balance FROM accounts WHERE id = $1 FOR UPDATE',
+      [recon.account_id]
+    )).rows[0];
+    const currentBalance = round2(parseFloat(acct.current_balance));
+
+    const prevRow = (await client.query(
+      'SELECT balance_after FROM ledger_entries WHERE account_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1',
+      [recon.account_id]
+    )).rows[0];
+    const prevBalance = prevRow
+      ? round2(parseFloat(prevRow.balance_after))
+      : round2(parseFloat(acct.opening_balance || '0'));
+
+    // Layering an adjustment onto a ledger/balance disagreement would bury the
+    // original discrepancy under a second one, so it is refused outright.
+    if (prevBalance !== currentBalance) {
+      throw createError(409, `Ledger and balance disagree (ledger ${prevBalance.toFixed(2)}, balance ${currentBalance.toFixed(2)}) — reconcile the imbalance before applying an adjustment`);
+    }
+
+    const newBalance = round2(prevBalance + adjAmount);
+    if (newBalance < 0) throw createError(400, 'Adjustment would take the account below zero');
+
+    await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, recon.account_id]);
 
     const entryType = adjAmount >= 0 ? 'credit' : 'debit';
     await client.query(
-      `INSERT INTO ledger_entries (account_id, source_type, entry_type, amount, balance_after, description, entry_date)
-       VALUES ($1, 'adjustment', $2, $3, $4, $5, NOW())`,
-      [recon.rows[0].account_id, entryType, Math.abs(adjAmount), newBalance, `Reconciliation adjustment: ${reason}`]
+      `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
+       VALUES ($1, 'reconciliation', $2, $3, $4, $5, $6, NOW())`,
+      [recon.account_id, recon.id, entryType, Math.abs(adjAmount), newBalance, `Reconciliation adjustment: ${reason}`]
     );
 
-    const newVariance = recon.rows[0].actual_balance - newBalance;
+    const newVariance = round2(parseFloat(recon.actual_balance) - newBalance);
     await client.query(
       `UPDATE reconciliations SET actual_balance = $1, variance = $2, status = 'adjusted', reconciled_by = $3, reconciled_at = NOW(), updated_at = NOW() WHERE id = $4`,
-      [recon.rows[0].actual_balance, newVariance, req.user!.userId, req.params.id]
+      [recon.actual_balance, newVariance, req.user!.userId, req.params.id]
     );
 
     await client.query('COMMIT');
 
     await createAuditLog({ userId: req.user!.userId, action: 'reconciliation.adjusted', entity: 'reconciliation', entityId: req.params.id, ipAddress: req.ip,
-      newData: { adjustment: adjAmount, reason, newBalance } });
+      newData: { adjustment: adjAmount, reason, prevBalance, newBalance, variance: newVariance } });
 
     res.json({ success: true, message: 'Adjustment applied' });
   } catch (error) { await client.query('ROLLBACK'); next(error); } finally { client.release(); }
