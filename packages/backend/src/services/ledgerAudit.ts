@@ -54,17 +54,21 @@ export interface LedgerAuditResult {
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 const toNumber = (v: number | string): number => (typeof v === 'number' ? v : parseFloat(v));
-const toCents = (v: number | string): number => Math.round(toNumber(v) * 100);
 const toMillis = (v: Date | string): number => (v instanceof Date ? v.getTime() : new Date(v).getTime());
 
-const byWriteOrder = (a: LedgerAuditEntry, b: LedgerAuditEntry): number =>
+export const toCents = (v: number | string): number => Math.round(toNumber(v) * 100);
+export const fromCents = (c: number): number => round2(c / 100);
+
+// Ledger rows are read in write order (created_at, then id) — not date order —
+// so every consumer of the chain walks it identically.
+export const compareWriteOrder = (a: LedgerAuditEntry, b: LedgerAuditEntry): number =>
   toMillis(a.created_at) - toMillis(b.created_at) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 function auditAccount(account: LedgerAuditAccount, entries: LedgerAuditEntry[]): AccountAudit {
   const opening = round2(toNumber(account.opening_balance));
   const actual = round2(toNumber(account.current_balance));
 
-  const sorted = [...entries].sort(byWriteOrder);
+  const sorted = [...entries].sort(compareWriteOrder);
 
   let netCents = 0;
   let negatives = 0;

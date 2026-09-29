@@ -3,6 +3,7 @@ import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
+import { loadScopedLedger } from '../services/ledgerQuery';
 
 const router = Router();
 router.use(authenticate);
@@ -103,23 +104,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
 router.get('/balance-reconciliation', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const scope = ownerClause(req, 'a', 'accounts.read_all', 1);
-    const wc = scope.clause ? `WHERE ${scope.clause}` : '';
-    const accounts = await query(
-      `SELECT a.id, a.name, a.status, a.opening_balance, a.current_balance
-       FROM accounts a
-       ${wc}
-       ORDER BY a.name, a.id`,
-      scope.params
-    );
-
-    const entries = await query(
-      `SELECT le.account_id, le.id, le.entry_type, le.amount, le.balance_after, le.source_id, le.created_at
-       FROM ledger_entries le
-       JOIN accounts a ON a.id = le.account_id
-       ${wc}
-       ORDER BY le.created_at, le.id`,
-      scope.params
-    );
+    const { accounts, entries } = await loadScopedLedger(scope);
 
     res.json({ success: true, data: auditLedger(accounts, entries) });
   } catch (error) { next(error); }

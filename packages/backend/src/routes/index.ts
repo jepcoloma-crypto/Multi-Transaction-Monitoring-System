@@ -26,6 +26,7 @@ import additionalChargeRoutes from './additionalCharges';
 import providerChargeRoutes from './providerCharges';
 import customerRoutes from './customers';
 import backupRoutes from './backup';
+import correctionRoutes from './corrections';
 
 const router = Router();
 
@@ -56,5 +57,6 @@ router.use('/additional-charges', additionalChargeRoutes);
 router.use('/provider-charges', providerChargeRoutes);
 router.use('/customers', customerRoutes);
 router.use('/backup', backupRoutes);
+router.use('/corrections', correctionRoutes);
 
 export default router;
