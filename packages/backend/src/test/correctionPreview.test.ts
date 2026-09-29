@@ -66,19 +66,21 @@ test('raising a credit moves the balance up and the account still reconciles', (
   assert.equal(acc.reconciled, true);
 });
 
-test('the chain shifts from the corrected row onward, leaving earlier rows untouched', () => {
+test('the correction is appended rather than rewriting the original row', () => {
   const { accounts, entries, rows } = threeRowFixture();
   const sim = simulateCorrection(accounts, entries, rows, { a1: 150 });
 
-  assert.deepEqual(sim.ledgerRows, [
-    { id: 'e2', accountId: 'a1', amountAfter: 150, balanceAfter: 1250 },
+  assert.deepEqual(sim.corrections, [
+    { accountId: 'a1', entryType: 'credit', amount: 50, balanceAfter: 1371 },
   ]);
 
-  // e1 keeps 1100 and e3 lands on 1371 — if the shift started any earlier or
-  // stopped any later, the chain check above would break instead of passing.
+  // Four rows, not three: the posted row keeps 100.00 and the delta is written
+  // after it. An in-place edit would have left entryCount at 3 and silently
+  // changed what was originally posted.
   const acc = sim.affectedAccountsAfter[0];
-  assert.equal(acc.chainBreaks, 0);
+  assert.equal(acc.entryCount, 4);
   assert.equal(acc.gap, 0);
+  assert.equal(acc.chainBreaks, 0);
 });
 
 test('rows are ordered by write order regardless of input order', () => {
@@ -86,14 +88,14 @@ test('rows are ordered by write order regardless of input order', () => {
   const forward = simulateCorrection(accounts, entries, rows, { a1: 150 });
   const reversed = simulateCorrection(accounts, [...entries].reverse(), rows, { a1: 150 });
 
-  assert.deepEqual(reversed.ledgerRows, forward.ledgerRows);
+  assert.deepEqual(reversed.corrections, forward.corrections);
   assert.deepEqual(
     reversed.affectedAccountsAfter.map((a) => [a.chainBreaks, a.gap]),
     forward.affectedAccountsAfter.map((a) => [a.chainBreaks, a.gap])
   );
 });
 
-test('raising a debit reduces the balance', () => {
+test('raising a debit appends an opposite-sign row and reduces the balance', () => {
   const accounts = [account('a1', 1000, 900)];
   const entries = [entry('e1', 'a1', { entry_type: 'debit', amount: '100.00', balance_after: '900.00' })];
   const rows = [row('e1', 'a1', 'debit', '100.00')];
@@ -102,8 +104,15 @@ test('raising a debit reduces the balance', () => {
 
   assert.equal(sim.changes[0].balanceDelta, -5000);
   assert.deepEqual(sim.balances, [{ accountId: 'a1', before: 900, after: 850 }]);
-  assert.equal(sim.affectedAccountsAfter[0].gap, 0);
-  assert.equal(sim.affectedAccountsAfter[0].reconciled, true);
+  assert.deepEqual(sim.corrections, [
+    { accountId: 'a1', entryType: 'debit', amount: 50, balanceAfter: 850 },
+  ]);
+
+  const acc = sim.affectedAccountsAfter[0];
+  assert.equal(acc.entryCount, 2);
+  assert.equal(acc.gap, 0);
+  assert.equal(acc.chainBreaks, 0);
+  assert.equal(acc.reconciled, true);
 });
 
 test('a transfer corrects both accounts in opposite directions', () => {
@@ -120,6 +129,10 @@ test('a transfer corrects both accounts in opposite directions', () => {
   assert.deepEqual(sim.balances, [
     { accountId: 'a1', before: 900, after: 910 },
     { accountId: 'a2', before: 10000, after: 9900 },
+  ]);
+  assert.deepEqual(sim.corrections, [
+    { accountId: 'a1', entryType: 'credit', amount: 10, balanceAfter: 910 },
+    { accountId: 'a2', entryType: 'debit', amount: 100, balanceAfter: 9900 },
   ]);
   assert.deepEqual(sim.problems, []);
   assert.ok(sim.affectedAccountsAfter.every((a) => a.reconciled));
@@ -183,12 +196,14 @@ test('non-numeric and negative amounts are rejected', () => {
   );
 });
 
-test('a no-op correction leaves the account exactly as it was', () => {
+test('a no-op correction appends nothing and leaves the account as it was', () => {
   const { accounts, entries, rows } = threeRowFixture();
   const sim = simulateCorrection(accounts, entries, rows, { a1: 100 });
 
   assert.equal(sim.changes[0].balanceDelta, 0);
+  assert.deepEqual(sim.corrections, []);
   assert.deepEqual(sim.balances, [{ accountId: 'a1', before: 1321, after: 1321 }]);
+  assert.equal(sim.affectedAccountsAfter[0].entryCount, 3);
   assert.equal(sim.affectedAccountsAfter[0].gap, 0);
   assert.equal(sim.affectedAccountsAfter[0].chainBreaks, 0);
   assert.equal(sim.affectedAccountsAfter[0].reconciled, true);

@@ -66,7 +66,7 @@ test('verifyShape rejects a partially-linked transfer', () => {
     entryTypes: ['debit'],
   });
   assert.equal(verdict.ok, false);
-  assert.ok(verdict.problems.some((p) => p.includes('expected 2 ledger row(s)')));
+  assert.ok(verdict.problems.some((p) => p.includes('expected at least 2 ledger row(s)')));
   assert.ok(verdict.problems.some((p) => p.includes('one credit row and one debit row')));
 });
 
@@ -80,13 +80,30 @@ test('verifyShape rejects a transfer whose two rows share one account', () => {
   assert.ok(verdict.problems.some((p) => p.includes('expected 2 account(s)')));
 });
 
-test('verifyShape rejects a single-account source holding two rows', () => {
-  const verdict = verifyShape(CORRECTION_STRATEGY.transaction, {
+test('verifyShape accepts a record that has already been corrected', () => {
+  // Corrections append, so a corrected transaction owns two rows on one account
+  // and a corrected transfer owns four across two — both are well formed.
+  const txn = verifyShape(CORRECTION_STRATEGY.transaction, {
     rowCount: 2,
     accountIds: ['a1'],
     entryTypes: ['credit', 'debit'],
   });
+  assert.deepEqual(txn, { ok: true, problems: [] });
+
+  const transfer = verifyShape(CORRECTION_STRATEGY.transfer, {
+    rowCount: 4,
+    accountIds: ['a1', 'a2'],
+    entryTypes: ['credit', 'debit'],
+  });
+  assert.deepEqual(transfer, { ok: true, problems: [] });
+});
+
+test('verifyShape rejects a single-account source spanning two accounts', () => {
+  const verdict = verifyShape(CORRECTION_STRATEGY.transaction, {
+    rowCount: 2,
+    accountIds: ['a1', 'a2'],
+    entryTypes: ['credit', 'debit'],
+  });
   assert.equal(verdict.ok, false);
-  assert.ok(verdict.problems.some((p) => p.includes('expected 1 ledger row(s)')));
-  assert.ok(verdict.problems.some((p) => p.includes('more than one row per account')));
+  assert.ok(verdict.problems.some((p) => p.includes('expected 1 account(s)')));
 });

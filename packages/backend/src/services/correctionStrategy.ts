@@ -6,6 +6,7 @@ export type CorrectionSource = 'transaction' | 'transfer' | 'loading' | 'reconci
 
 export interface CorrectionStrategy {
   source: CorrectionSource;
+  /** Rows an uncorrected record owns — a floor, since corrections append. */
   ledgerRows: number;
   accounts: number;
   crossAccount: boolean;
@@ -79,16 +80,21 @@ export interface ShapeVerdict {
   problems: string[];
 }
 
-// A correction must never be planned against a record that owns a different
-// number of ledger rows than its strategy promises — a partially-linked
-// transfer is exactly how one account gets corrected and the other doesn't.
+// A correction must never be planned against a record that owns fewer ledger
+// rows than its strategy promises — a partially-linked transfer is exactly how
+// one account gets corrected and the other doesn't.
+//
+// Corrections append, so an already-corrected record owns MORE rows than its
+// base count. The guard therefore checks a floor on rows plus the structural
+// facts that cannot be repaired away: how many accounts it spans, and whether a
+// bidirectional source really has both directions present.
 export function verifyShape(strategy: CorrectionStrategy, observed: ObservedShape): ShapeVerdict {
   const problems: string[] = [];
 
   if (observed.rowCount === 0) {
     problems.push('no ledger rows are linked to this record');
-  } else if (observed.rowCount !== strategy.ledgerRows) {
-    problems.push(`expected ${strategy.ledgerRows} ledger row(s) for a ${strategy.source} but found ${observed.rowCount}`);
+  } else if (observed.rowCount < strategy.ledgerRows) {
+    problems.push(`expected at least ${strategy.ledgerRows} ledger row(s) for a ${strategy.source} but found ${observed.rowCount}`);
   }
 
   if (observed.accountIds.length !== strategy.accounts) {
@@ -101,10 +107,6 @@ export function verifyShape(strategy: CorrectionStrategy, observed: ObservedShap
     if (!(hasCredit && hasDebit)) {
       problems.push('a transfer must own one credit row and one debit row');
     }
-  }
-
-  if (observed.rowCount > 0 && observed.rowCount !== observed.accountIds.length && !strategy.crossAccount) {
-    problems.push('a single-account source must not own more than one row per account');
   }
 
   return { ok: problems.length === 0, problems };

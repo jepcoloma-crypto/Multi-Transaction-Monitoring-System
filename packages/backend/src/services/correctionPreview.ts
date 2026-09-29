@@ -2,6 +2,11 @@
 // returns what a proposed correction would leave behind. It never touches the
 // database, so the preview the operator sees and the gate the commit checks are
 // the same arithmetic, and both are testable without a server.
+//
+// Corrections append. The original row keeps the amount it was posted with, and
+// a correcting row of the opposite sign is written after it — the same thing a
+// reversal does. Rewriting the original would silently move history, which is
+// what the completed-transaction lock exists to prevent.
 import { createError } from '../middleware/error';
 import { auditLedger, compareWriteOrder, toCents, fromCents } from './ledgerAudit';
 import type { AccountAudit, LedgerAuditAccount, LedgerAuditEntry } from './ledgerAudit';
@@ -16,9 +21,16 @@ export interface PlannedChange {
   balanceDelta: number;
 }
 
+export interface CorrectionEntry {
+  accountId: string;
+  entryType: 'credit' | 'debit';
+  amount: number;
+  balanceAfter: number;
+}
+
 export interface Simulation {
   changes: PlannedChange[];
-  ledgerRows: { id: string; accountId: string; amountAfter: number; balanceAfter: number }[];
+  corrections: CorrectionEntry[];
   balances: { accountId: string; before: number; after: number }[];
   affectedAccountsAfter: AccountAudit[];
   problems: string[];
@@ -62,64 +74,55 @@ export function simulateCorrection(
   });
 
   const sortedByAccount = groupInWriteOrder(entries);
+  const ownedRowIds = new Set(rows.map((r) => r.id));
+  const ownedSourceId = entries.find((e) => ownedRowIds.has(e.id))?.source_id ?? null;
   const deltaByAccount = new Map<string, number>();
   for (const account of accounts) deltaByAccount.set(account.id, 0);
   for (const change of changes) {
     deltaByAccount.set(change.accountId, (deltaByAccount.get(change.accountId) ?? 0) + change.balanceDelta);
   }
 
-  // The chain shifts from the first owned row onward; rows written before it are
-  // history this correction does not touch. The owned row's amount changes too —
-  // moving only balance_after would leave netMovement stale and the chain broken.
-  const firstOwnedIndex = new Map<string, number>();
-  for (const row of rows) {
-    const list = sortedByAccount.get(row.account_id) || [];
-    const index = list.findIndex((e) => e.id === row.id);
-    const current = firstOwnedIndex.get(row.account_id);
-    if (index !== -1 && (current === undefined || index < current)) {
-      firstOwnedIndex.set(row.account_id, index);
+  const problems: string[] = [];
+  const corrections: CorrectionEntry[] = [];
+  const simulatedAccounts: LedgerAuditAccount[] = [];
+  const simulatedEntries: LedgerAuditEntry[] = [];
+
+  for (const account of accounts) {
+    const delta = deltaByAccount.get(account.id) ?? 0;
+    const list = sortedByAccount.get(account.id) || [];
+    const balanceAfter = fromCents(toCents(account.current_balance) + delta);
+
+    if (balanceAfter < 0) problems.push(`account ${account.name} would fall to ${balanceAfter.toFixed(2)}`);
+
+    simulatedAccounts.push({ ...account, current_balance: balanceAfter });
+    simulatedEntries.push(...list);
+
+    if (delta !== 0) {
+      const last = list[list.length - 1];
+      const chainEnd = last ? toCents(last.balance_after) : toCents(account.opening_balance);
+      corrections.push({
+        accountId: account.id,
+        entryType: delta > 0 ? 'credit' : 'debit',
+        amount: fromCents(Math.abs(delta)),
+        balanceAfter: fromCents(chainEnd + delta),
+      });
+      // Dated after every existing row so the write-order sort puts the
+      // correction last, matching where it will really land, and carrying the
+      // source it corrects so the preview does not report it as unlinked.
+      const stamp = new Date((last ? new Date(last.created_at).getTime() : Date.now()) + 1000);
+      simulatedEntries.push({
+        id: `correction-${account.id}`,
+        account_id: account.id,
+        entry_type: delta > 0 ? 'credit' : 'debit',
+        amount: fromCents(Math.abs(delta)),
+        balance_after: fromCents(chainEnd + delta),
+        source_id: ownedSourceId,
+        created_at: stamp,
+      });
     }
   }
 
-  const amountForLedgerId = new Map<string, number>();
-  for (const change of changes) amountForLedgerId.set(change.ledgerId, change.toAmount);
-
-  const simulatedEntries: LedgerAuditEntry[] = [];
-  for (const [accountId, list] of sortedByAccount) {
-    const delta = deltaByAccount.get(accountId) ?? 0;
-    const start = firstOwnedIndex.get(accountId) ?? list.length;
-    list.forEach((entry, i) => {
-      const proposedAmount = amountForLedgerId.get(entry.id);
-      const balanceAfter = delta === 0 || i < start
-        ? entry.balance_after
-        : fromCents(toCents(entry.balance_after) + delta);
-      simulatedEntries.push({
-        ...entry,
-        amount: proposedAmount === undefined ? entry.amount : proposedAmount,
-        balance_after: balanceAfter,
-      });
-    });
-  }
-
-  const problems: string[] = [];
-  const simulatedAccounts = accounts.map((account) => {
-    const next = fromCents(toCents(account.current_balance) + (deltaByAccount.get(account.id) ?? 0));
-    if (next < 0) problems.push(`account ${account.name} would fall to ${next.toFixed(2)}`);
-    return { ...account, current_balance: next };
-  });
-
   const after = auditLedger(simulatedAccounts, simulatedEntries);
-
-  const ledgerRows = rows.map((row) => {
-    const change = changes.find((c) => c.ledgerId === row.id)!;
-    const entry = simulatedEntries.find((e) => e.id === row.id)!;
-    return {
-      id: row.id,
-      accountId: row.account_id,
-      amountAfter: change.toAmount,
-      balanceAfter: parseFloat(String(entry.balance_after)),
-    };
-  });
 
   const balances = accounts.map((account) => ({
     accountId: account.id,
@@ -127,7 +130,7 @@ export function simulateCorrection(
     after: fromCents(toCents(account.current_balance) + (deltaByAccount.get(account.id) ?? 0)),
   }));
 
-  return { changes, ledgerRows, balances, affectedAccountsAfter: after.accounts, problems };
+  return { changes, corrections, balances, affectedAccountsAfter: after.accounts, problems };
 }
 
 function groupInWriteOrder(entries: LedgerAuditEntry[]): Map<string, LedgerAuditEntry[]> {
