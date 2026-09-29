@@ -1064,7 +1064,7 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
        VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6)
        RETURNING *`,
       [
-        original.account_id, reverseTypeId!.id, original.amount,
+        original.account_id, reverseTypeId!.id, totalOriginalAmount,
         `REV-${original.transaction_number}`,
         `Reversal: ${pending.reason || original.description || 'Admin approved reversal'}`,
         req.user!.userId,
