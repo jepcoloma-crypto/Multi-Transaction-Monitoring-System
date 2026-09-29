@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, localDateValue } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign, Trash2, Undo2 } from 'lucide-react';
 
@@ -59,7 +59,7 @@ export default function Accounts() {
   const [fundsMode, setFundsMode] = useState<'in' | 'out'>('in');
   const [addFundsAccount, setAddFundsAccount] = useState<Account | null>(null);
   const [addFundsForm, setAddFundsForm] = useState({
-    amount: '', description: '', date: new Date().toISOString().slice(0, 10), method: 'cash', reference: '',
+    amount: '', description: '', date: localDateValue(), method: 'cash', reference: '',
   });
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
@@ -246,7 +246,7 @@ export default function Accounts() {
   };
 
   const resetFundsForm = () => setAddFundsForm({
-    amount: '', description: '', date: new Date().toISOString().slice(0, 10), method: 'cash', reference: '',
+    amount: '', description: '', date: localDateValue(), method: 'cash', reference: '',
   });
 
   const openFunds = (account: Account, mode: 'in' | 'out') => {

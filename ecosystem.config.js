@@ -8,6 +8,7 @@ module.exports = {
       interpreter: 'none',
       env: {
         PORT: 3001,
+        TZ: 'Asia/Manila',
       },
       max_memory_restart: '256M',
       watch: false,

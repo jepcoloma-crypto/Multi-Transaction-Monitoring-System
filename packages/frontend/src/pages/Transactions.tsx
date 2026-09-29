@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, localDateTimeValue } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
@@ -96,7 +96,7 @@ export default function Transactions() {
   const [chargeTypes, setChargeTypes] = useState<{ id: string; name: string; default_amount: number }[]>([]);
   const [formData, setFormData] = useState({
     accountId: '', feeRuleId: '', amount: '',
-    fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: new Date().toISOString().slice(0, 16),
+    fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(),
     feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select' as 'select' | 'manual', customerPhone: '',
   });
   const [error, setError] = useState('');
@@ -147,11 +147,7 @@ export default function Transactions() {
 
   const canEdit = (tx: Transaction) => isAdmin && tx.status === 'pending';
 
-  const toInputDateTime = (iso: string) => {
-    const d = new Date(iso);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  };
+  const toInputDateTime = (iso: string) => localDateTimeValue(new Date(iso));
 
   const openEdit = (tx: Transaction) => {
     setEditError('');
@@ -333,7 +329,7 @@ export default function Transactions() {
     setFormData({
       accountId: accounts.find(a => a.status === 'active')?.id || '', feeRuleId: '',
       amount: '', fee: '0', referenceNumber: '', description: '', customerName: '',
-      transactionDate: new Date().toISOString().slice(0, 16), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
+      transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
     });
     setCreateCharges([]);
     setFeeMode('auto');
@@ -366,7 +362,7 @@ export default function Transactions() {
         customerId: formData.customerMode === 'select' ? formData.customerId || undefined : undefined,
       });
       setShowModal(false);
-      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: new Date().toISOString().slice(0, 16), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '' });
+      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '' });
       fetchTransactions(pagination.page);
       fetchSummary();
     } catch (err: any) { setError(err.message); }

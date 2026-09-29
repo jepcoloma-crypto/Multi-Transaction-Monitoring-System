@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, localDateValue } from '../lib/format';
 import { Smartphone, Plus, Search, Package, X, Edit2, Trash2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import Pagination from '../components/Pagination';
@@ -34,7 +34,7 @@ export default function Loading() {
   const [search, setSearch] = useState('');
   const [productSearch, setProductSearch] = useState('');
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
-  const [form, setForm] = useState({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '', transactionDate: new Date().toISOString().slice(0, 10) });
+  const [form, setForm] = useState({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '', transactionDate: localDateValue() });
   const [productForm, setProductForm] = useState({ name: '', providerId: '', costPrice: '', sellingPrice: '', denomination: '', providerConvenienceFee: '', companyAdditionalCharge: '', notes: '' });
   const [submitting, setSubmitting] = useState(false);
 
@@ -78,7 +78,7 @@ export default function Loading() {
     try {
       await api.post('/loading', { ...form, quantity: parseInt(form.quantity || '1') });
       setShowModal(false);
-      setForm({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '', transactionDate: new Date().toISOString().slice(0, 10) });
+      setForm({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '', transactionDate: localDateValue() });
       loadData(1);
     } catch (err: any) { alert(err.response?.data?.message || 'Failed'); } finally { setSubmitting(false); }
   };
