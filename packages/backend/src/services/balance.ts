@@ -58,10 +58,12 @@ export async function createLedgerEntry(
   const shouldRelease = !client;
 
   try {
+    const sourceType = transactionId ? 'transaction' : transferId ? 'transfer' : 'adjustment';
+    const sourceId = transactionId || transferId || null;
     await conn.query(
-      `INSERT INTO ledger_entries (account_id, transaction_id, transfer_id, entry_type, amount, balance_after, reference_number, description, entry_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [accountId, transactionId, transferId, entryType, amount, balanceAfter, referenceNumber, description, entryDate]
+      `INSERT INTO ledger_entries (account_id, transaction_id, transfer_id, source_type, source_id, entry_type, amount, balance_after, reference_number, description, entry_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [accountId, transactionId, transferId, sourceType, sourceId, entryType, amount, balanceAfter, referenceNumber, description, entryDate]
     );
   } finally {
     if (shouldRelease) conn.release();

@@ -112,8 +112,8 @@ async function moveTransferFunds(
 
   const srcDesc = `Transfer to ${dstAcct.name}: ${transfer.purpose || ''}` + (charge > 0 ? ` (incl. ${charge.toFixed(2)} service charge)` : '');
   const srcLedger = (await client.query(
-    `INSERT INTO ledger_entries (account_id, transfer_id, entry_type, amount, balance_after, description, entry_date)
-     VALUES ($1, $2, 'debit', $3, $4, $5, $6) RETURNING id`,
+    `INSERT INTO ledger_entries (account_id, transfer_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
+     VALUES ($1, $2, 'transfer', $2, 'debit', $3, $4, $5, $6) RETURNING id`,
     [transfer.source_account_id, transfer.id, totalDeduction, srcBalance, srcDesc, transfer.transfer_date]
   )).rows[0];
   await client.query(
@@ -127,8 +127,8 @@ async function moveTransferFunds(
     [dstBalance.toFixed(2), transfer.destination_account_id]);
 
   const dstLedger = (await client.query(
-    `INSERT INTO ledger_entries (account_id, transfer_id, entry_type, amount, balance_after, description, entry_date)
-     VALUES ($1, $2, 'credit', $3, $4, $5, $6) RETURNING id`,
+    `INSERT INTO ledger_entries (account_id, transfer_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
+     VALUES ($1, $2, 'transfer', $2, 'credit', $3, $4, $5, $6) RETURNING id`,
     [transfer.destination_account_id, transfer.id, destinationAmount, dstBalance, `Transfer from ${srcAcct.name}: ${transfer.purpose || ''}`, transfer.transfer_date]
   )).rows[0];
   await client.query(

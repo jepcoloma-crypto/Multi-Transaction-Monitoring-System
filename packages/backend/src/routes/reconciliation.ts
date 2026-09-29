@@ -94,8 +94,8 @@ router.post('/:id/adjust', authorize('reconciliation.write'), async (req: Reques
 
     const entryType = adjAmount >= 0 ? 'credit' : 'debit';
     await client.query(
-      `INSERT INTO ledger_entries (account_id, entry_type, amount, balance_after, description, entry_date)
-       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      `INSERT INTO ledger_entries (account_id, source_type, entry_type, amount, balance_after, description, entry_date)
+       VALUES ($1, 'adjustment', $2, $3, $4, $5, NOW())`,
       [recon.rows[0].account_id, entryType, Math.abs(adjAmount), newBalance, `Reconciliation adjustment: ${reason}`]
     );
 

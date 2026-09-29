@@ -25,6 +25,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
     const entries = await query(
       `SELECT le.id, le.entry_type, le.amount, le.balance_after, le.reference_number,
               le.description, le.entry_date, le.created_at, le.transaction_id, le.transfer_id,
+              le.source_type, le.source_id,
               t.transaction_number, t.status AS transaction_status, t.customer_name, t.customer_contact,
               t.fee, t.net_amount, t.additional_charges, t.payment_method, t.notes,
               t.reference_number AS transaction_reference, t.description AS transaction_description,
@@ -58,10 +59,10 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
         ...e,
         running_balance: running,
         charges_total: charges,
-        entry_source: e.transaction_id ? 'transaction'
+        entry_source: e.source_type ?? (e.transaction_id ? 'transaction'
           : e.transfer_id ? 'transfer'
           : /^loading\b/i.test(e.description || '') ? 'loading'
-          : 'adjustment',
+          : 'adjustment'),
         display_name: e.transaction_number
           ? `${e.type_name || 'Transaction'} #${e.transaction_number}`
           : e.transfer_id
@@ -108,7 +109,7 @@ router.get('/balance-reconciliation', authorize('reports.read'), async (req: Req
                 COUNT(*) AS entries,
                 COALESCE(SUM(CASE WHEN le.entry_type = 'credit' THEN le.amount ELSE -le.amount END), 0) AS net,
                 COUNT(*) FILTER (WHERE le.balance_after < 0) AS negatives,
-                COUNT(*) FILTER (WHERE le.transaction_id IS NULL AND le.transfer_id IS NULL) AS unlinked
+                COUNT(*) FILTER (WHERE le.source_id IS NULL) AS unlinked
          FROM ledger_entries le
          GROUP BY le.account_id
        ),

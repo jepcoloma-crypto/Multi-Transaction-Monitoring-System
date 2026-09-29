@@ -92,8 +92,8 @@ router.post('/transactions', authorize('transactions.write'), upload.single('fil
 
         await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, accountId]);
         await client.query(
-          `INSERT INTO ledger_entries (account_id, transaction_id, entry_type, amount, balance_after, description, entry_date)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          `INSERT INTO ledger_entries (account_id, transaction_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
+           VALUES ($1, $2, 'transaction', $2, $3, $4, $5, $6, $7)`,
           [accountId, tx.id, txType.direction === 'in' ? 'credit' : 'debit', amount, newBalance, description || `Imported ${typeName}`, txDate]
         );
 
@@ -227,18 +227,19 @@ router.post('/loading', authorize('loading.write'), upload.single('file'), async
         const profit = totalRevenue - totalCost;
 
         const txNum = await client.query("SELECT nextval('loading_transactions_transaction_number_seq') as nextval");
-        await client.query(
+        const importedLoading = (await client.query(
           `INSERT INTO loading_transactions (transaction_number, account_id, product_id, customer_number, quantity, unit_cost, unit_price, total_cost, total_revenue, profit, status, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', $11)`,
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', $11)
+           RETURNING id`,
           [txNum.rows[0].nextval, accountId, product.id, customerNumber, quantity, unitCost, unitPrice, totalCost, totalRevenue, profit, req.user!.userId]
-        );
+        )).rows[0];
 
         const acct = await client.query('SELECT current_balance FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
         const newBalance = parseFloat(acct.rows[0].current_balance) - totalCost;
         await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, accountId]);
         await client.query(
-          `INSERT INTO ledger_entries (account_id, entry_type, amount, balance_after, description, entry_date) VALUES ($1, 'debit', $2, $3, $4, NOW())`,
-          [accountId, totalCost, newBalance, `Imported loading sale: ${productName} x${quantity}`]
+          `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date) VALUES ($1, 'loading', $2, 'debit', $3, $4, $5, NOW())`,
+          [importedLoading.id, accountId, totalCost, newBalance, `Imported loading sale: ${productName} x${quantity}`]
         );
 
         results.created++;

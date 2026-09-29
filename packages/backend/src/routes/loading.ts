@@ -183,9 +183,9 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, accountId]);
 
     await client.query(
-      `INSERT INTO ledger_entries (account_id, entry_type, amount, balance_after, description, entry_date)
-       VALUES ($1, 'debit', $2, $3, $4, COALESCE($5::timestamptz, NOW()))`,
-      [accountId, totalBalanceDeduction, newBalance, `Loading sale to ${customerNumber}: ${product.rows[0].name}${providerConvenienceFee > 0 ? ` (incl. ₱${providerConvenienceFee} conv. fee)` : ''}`, txDate]
+      `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
+       VALUES ($1, 'loading', $2, 'debit', $3, $4, $5, COALESCE($6::timestamptz, NOW()))`,
+      [accountId, loadingTx.id, totalBalanceDeduction, newBalance, `Loading sale to ${customerNumber}: ${product.rows[0].name}${providerConvenienceFee > 0 ? ` (incl. ₱${providerConvenienceFee} conv. fee)` : ''}`, txDate]
     );
 
     await client.query('COMMIT');

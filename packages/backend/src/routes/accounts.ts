@@ -317,8 +317,8 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
 
       if (balanceToWrite !== null) {
         await client.query(
-          `INSERT INTO ledger_entries (account_id, entry_type, amount, balance_after, reference_number, description, entry_date)
-           VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
+          `INSERT INTO ledger_entries (account_id, source_type, entry_type, amount, balance_after, reference_number, description, entry_date)
+           VALUES ($1, 'adjustment', $2, $3, $4, $5, $6, NOW())`,
           [accountId, balanceDelta > 0 ? 'credit' : 'debit', Math.abs(balanceDelta), balanceToWrite, 'ADMIN-ADJ',
            `Balance adjusted by administrator: ${previousBalance.toFixed(2)} to ${balanceToWrite.toFixed(2)}`]
         );
