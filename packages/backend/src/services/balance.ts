@@ -1,4 +1,5 @@
 import { query, queryOne, getClient } from '../database/connection';
+import { createError } from '../middleware/error';
 
 export async function getAccountBalance(accountId: string): Promise<number> {
   const result = await queryOne<{ current_balance: string }>(
@@ -27,7 +28,7 @@ export async function updateAccountBalance(
     } else {
       newBalance = Math.round((currentBalance - amount) * 100) / 100;
       if (newBalance < 0) {
-        throw new Error('Insufficient balance');
+        throw createError(400, 'Insufficient balance');
       }
     }
 

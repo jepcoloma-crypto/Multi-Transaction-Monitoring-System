@@ -1017,8 +1017,9 @@ router.get('/reversals/pending', authorize('transactions.approve'), async (req: 
 
 // Approve a pending reversal (admin only)
 router.post('/reversals/:reversalId/approve', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
-  const isAdmin = req.user!.roles.includes('administrator');
-  if (!isAdmin) throw createError(403, 'Only administrators can approve reversals');
+  if (!req.user!.roles.includes('administrator')) {
+    return next(createError(403, 'Only administrators can approve reversals'));
+  }
 
   const client = await getClient();
   try {
@@ -1070,12 +1071,24 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
       ]
     )).rows[0];
 
-    await processTransaction(
-      original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
-      reverseEntryType as 'debit' | 'credit', reverseTx!.id,
-      `REV-${original.transaction_number}`, `Reversal: ${pending.reason || 'Admin approved reversal'}`,
-      new Date(), client
-    );
+    try {
+      await processTransaction(
+        original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
+        reverseEntryType as 'debit' | 'credit', reverseTx!.id,
+        `REV-${original.transaction_number}`, `Reversal: ${pending.reason || 'Admin approved reversal'}`,
+        new Date(), client
+      );
+    } catch (err: any) {
+      if (err?.message !== 'Insufficient balance') throw err;
+      const acct = (await client.query(
+        `SELECT name, current_balance FROM accounts WHERE id = $1`,
+        [original.account_id]
+      )).rows[0];
+      if (!acct) throw err;
+      throw createError(400,
+        `Cannot approve reversal: it would take ${acct.name} below zero ` +
+        `(balance ₱${Number(acct.current_balance).toFixed(2)}, reversal needs ₱${totalOriginalAmount.toFixed(2)})`);
+    }
 
     const approved = await client.query(
       `UPDATE pending_reversals SET status = 'approved', approved_by = $1, updated_at = NOW()
