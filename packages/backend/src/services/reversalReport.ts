@@ -54,6 +54,18 @@ const reasonFromDescription = (description: unknown): string | null => {
   return stripped === '' ? null : stripped;
 };
 
+// A reversal records its reason in a different place depending on how it ran:
+// an approved request carries its own, a direct administrator reversal only
+// writes the audit entry, and the compensating entry's description is the last
+// surviving copy. Anything reading a reversal's reason needs this order.
+export function reversalReason(
+  requestReason: unknown,
+  auditReason: unknown,
+  description: unknown,
+): string | null {
+  return asText(requestReason) ?? asText(auditReason) ?? reasonFromDescription(description);
+}
+
 export interface ReversalSourceRow {
   id: string;
   transaction_number: number | string;
@@ -195,7 +207,7 @@ export function buildReversalReport(
       ledgerEntryType: asText(row.ledger_entry_type),
       ledgerAmount: row.ledger_amount === null || row.ledger_amount === undefined ? null : money(toCents(row.ledger_amount)),
       ledgerBalanceAfter: row.ledger_balance_after === null || row.ledger_balance_after === undefined ? null : money(toCents(row.ledger_balance_after)),
-      reason: asText(row.reason) ?? asText(row.audit_reason) ?? reasonFromDescription(row.reversal_description),
+      reason: reversalReason(row.reason, row.audit_reason, row.reversal_description),
       requestedBy,
       approvedBy,
       reversedBy: approvedBy ?? auditActor ?? requestedBy,

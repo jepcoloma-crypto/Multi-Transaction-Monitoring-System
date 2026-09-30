@@ -246,7 +246,7 @@ export default function Reports() {
               </div>
               <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1200px]">
+                  <table className="w-full min-w-[1350px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
@@ -255,6 +255,7 @@ export default function Reports() {
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reversal Reason</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Credit</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Debit</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee</th>
@@ -279,6 +280,11 @@ export default function Reports() {
                               {e.transaction_status || e.transfer_status || (e.entry_source === 'transaction' ? '—' : 'ledger')}
                             </span>
                           </td>
+                          <td className="px-4 py-3.5 text-sm text-gray-700">
+                            {e.transaction_status === 'reversed' && e.reversal_reason
+                              ? e.reversal_reason
+                              : <span className="text-gray-400">—</span>}
+                          </td>
                           <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap text-green-600">{e.entry_type === 'credit' ? formatCurrency(e.amount) : ''}</td>
                           <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap text-red-600">{e.entry_type === 'debit' ? formatCurrency(e.amount) : ''}</td>
                           <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{e.fee !== null && e.fee !== undefined && parseFloat(e.fee) !== 0 ? formatCurrency(e.fee) : ''}</td>
@@ -289,7 +295,7 @@ export default function Reports() {
                     </tbody>
                     <tfoot className="bg-gray-100 border-t-2 border-gray-300">
                       <tr className="font-bold">
-                        <td className="px-4 py-3.5 text-sm" colSpan={6}>Total ({reportData.entries.length} entries)</td>
+                        <td className="px-4 py-3.5 text-sm" colSpan={7}>Total ({reportData.entries.length} entries)</td>
                         <td className="px-4 py-3.5 text-sm text-right text-green-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
                         <td className="px-4 py-3.5 text-sm text-right text-red-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
                         <td className="px-4 py-3.5 text-sm text-right">{formatCurrency(reportData.entries.reduce((sum: number, e: any) => sum + (parseFloat(e.fee) || 0), 0))}</td>

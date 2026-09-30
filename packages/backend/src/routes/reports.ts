@@ -3,13 +3,48 @@ import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
-import { buildReversalReport } from '../services/reversalReport';
+import { buildReversalReport, reversalReason } from '../services/reversalReport';
 import { loadScopedLedger } from '../services/ledgerQuery';
 
 const router = Router();
 router.use(authenticate);
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// Where a reversal leaves its trail: the compensating entry, the request that
+// authorised it and the audit entry a direct administrator reversal writes
+// instead. Every query that has to say why a transaction is reversed joins the
+// same three, because reading only one of them reports blanks for the reversals
+// that were never requested. Guarded on t.status so a row that is not reversed
+// costs a boolean test rather than three index probes.
+const REVERSAL_TRAIL_JOINS = `
+  LEFT JOIN LATERAL (
+    SELECT r.id, r.transaction_number, r.amount, r.created_at, r.description
+    FROM transactions r
+    WHERE t.status = 'reversed'
+      AND r.reference_number = 'REV-' || t.transaction_number::text
+      AND r.status = 'completed'
+      AND r.description LIKE 'Reversal:%'
+    ORDER BY r.created_at ASC
+    LIMIT 1
+  ) rev ON true
+  LEFT JOIN LATERAL (
+    SELECT p.status, p.reason, p.requested_by, p.approved_by, p.created_at, p.updated_at
+    FROM pending_reversals p
+    WHERE t.status = 'reversed'
+      AND p.entity_type = 'transaction' AND p.entity_id = t.id
+    ORDER BY (p.status = 'approved') DESC, p.created_at DESC
+    LIMIT 1
+  ) pr ON true
+  LEFT JOIN LATERAL (
+    SELECT al.user_id, al.new_data->>'reason' AS reason
+    FROM audit_logs al
+    WHERE t.status = 'reversed'
+      AND al.entity_id = t.id::text AND al.action = 'transaction.reversed'
+    ORDER BY al.created_at DESC
+    LIMIT 1
+  ) audit ON true
+`;
 
 router.get('/account-statement', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -36,13 +71,16 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
               tt.name AS type_name, tt.code AS type_code, tt.direction,
               tr.status AS transfer_status, tr.transfer_number, tr.transfer_reference,
               tr.purpose AS transfer_purpose, tr.transfer_amount, tr.transfer_fee,
-              sa.name AS source_account_name, da.name AS destination_account_name
+              sa.name AS source_account_name, da.name AS destination_account_name,
+              pr.reason AS reversal_request_reason, audit.reason AS reversal_audit_reason,
+              rev.description AS reversal_entry_description
        FROM ledger_entries le
        LEFT JOIN transactions t ON le.transaction_id = t.id
        LEFT JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN transfers tr ON le.transfer_id = tr.id
        LEFT JOIN accounts sa ON tr.source_account_id = sa.id
        LEFT JOIN accounts da ON tr.destination_account_id = da.id
+       ${REVERSAL_TRAIL_JOINS}
        ${wc} ORDER BY le.created_at ASC, le.id ASC`, params
     );
 
@@ -54,12 +92,14 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
       : parseFloat(account.opening_balance || '0');
     const openingBalance = running;
     const statement = entries.map((e: any) => {
+      const { reversal_request_reason, reversal_audit_reason, reversal_entry_description, ...entry } = e;
       running = parseFloat(e.balance_after);
       const charges = Array.isArray(e.additional_charges)
         ? e.additional_charges.reduce((s: number, c: any) => s + (parseFloat(c?.amount) || 0), 0)
         : 0;
       return {
-        ...e,
+        ...entry,
+        reversal_reason: reversalReason(reversal_request_reason, reversal_audit_reason, reversal_entry_description),
         running_balance: running,
         charges_total: charges,
         entry_source: e.source_type ?? (e.transaction_id ? 'transaction'
@@ -354,15 +394,7 @@ const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
        LEFT JOIN users creator ON creator.id = t.created_by
-       LEFT JOIN LATERAL (
-         SELECT r.id, r.transaction_number, r.amount, r.created_at, r.description
-         FROM transactions r
-         WHERE r.reference_number = 'REV-' || t.transaction_number::text
-           AND r.status = 'completed'
-           AND r.description LIKE 'Reversal:%'
-         ORDER BY r.created_at ASC
-         LIMIT 1
-       ) rev ON true
+       ${REVERSAL_TRAIL_JOINS}
        LEFT JOIN LATERAL (
          SELECT le2.entry_type, le2.amount, le2.balance_after
          FROM ledger_entries le2
@@ -370,22 +402,8 @@ const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
          ORDER BY le2.created_at ASC
          LIMIT 1
        ) le ON true
-       LEFT JOIN LATERAL (
-         SELECT p.status, p.reason, p.requested_by, p.approved_by, p.created_at, p.updated_at
-         FROM pending_reversals p
-         WHERE p.entity_type = 'transaction' AND p.entity_id = t.id
-         ORDER BY (p.status = 'approved') DESC, p.created_at DESC
-         LIMIT 1
-       ) pr ON true
        LEFT JOIN users requester ON requester.id = pr.requested_by
        LEFT JOIN users approver ON approver.id = pr.approved_by
-       LEFT JOIN LATERAL (
-         SELECT al.user_id, al.new_data->>'reason' AS reason
-         FROM audit_logs al
-         WHERE al.entity_id = t.id::text AND al.action = 'transaction.reversed'
-         ORDER BY al.created_at DESC
-         LIMIT 1
-       ) audit ON true
        LEFT JOIN users actor ON actor.id::text = audit.user_id::text
        ${reversalWhere}
        ORDER BY t.transaction_date DESC, t.transaction_number DESC`,
