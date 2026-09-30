@@ -3,6 +3,7 @@ import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
 import { Scale, Plus, Check, Eye, X, Filter, Upload, ArrowRight, RefreshCw, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
+import GapFixes from './GapFixes';
 
 interface Reconciliation {
   id: string; account_name: string; expected_balance: number; actual_balance: number;
@@ -31,7 +32,7 @@ interface MatchRecord {
 
 interface Account { id: string; name: string; current_balance: number; }
 
-type TabType = 'reconciliation' | 'bank-reconciliation';
+type TabType = 'reconciliation' | 'bank-reconciliation' | 'gap-fixes';
 
 export default function Reconciliation() {
   const [tab, setTab] = useState<TabType>('reconciliation');
@@ -206,6 +207,9 @@ export default function Reconciliation() {
         </button>
         <button onClick={() => setTab('bank-reconciliation')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === 'bank-reconciliation' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
           Bank Reconciliation
+        </button>
+        <button onClick={() => setTab('gap-fixes')} className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${tab === 'gap-fixes' ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}>
+          Gap Fixes
         </button>
       </div>
 
@@ -413,6 +417,8 @@ export default function Reconciliation() {
           )}
         </>
       )}
+
+      {tab === 'gap-fixes' && <GapFixes />}
 
       {showModal && (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
