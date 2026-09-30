@@ -11,6 +11,8 @@ import { simulateCorrection, appendPlannedRows } from '../services/correctionPre
 import { validateTierA, TIER_A_FIELDS } from '../services/correctionFields';
 import { planReEntry, RE_ENTERABLE } from '../services/reEntryPlan';
 import { planGapFix, isGapFixDirection, GAP_FIX_DIRECTIONS, GAP_FIX_LABELS } from '../services/gapFixPlan';
+import { planAmountCorrection, columnsChanged, AMOUNT_FIELDS, isAmountable } from '../services/amountFields';
+import type { AmountPlan } from '../services/amountFields';
 import { updateAccountBalance } from '../services/balance';
 import { createAuditLog } from '../services/audit';
 import { mintTransferReference, MintedTransfer } from '../services/transferReference';
@@ -305,7 +307,7 @@ router.post('/gap-fixes/:fixId/reject', authorize('transactions.correct'), async
 
 router.post('/preview', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { sourceType, sourceId, amounts } = req.body || {};
+    const { sourceType, sourceId, amounts, fields } = req.body || {};
     if (!sourceType || !sourceId) throw createError(400, 'sourceType and sourceId are required');
 
     const table = requireSource(sourceType, sourceId);
@@ -320,15 +322,35 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
     const { accounts, entries } = await loadAccountsAndEntries(observed.accountIds);
     const before = auditLedger(accounts, entries);
 
+    const wantsAmounts = amounts !== undefined && amounts !== null;
+    const wantsFields = fields !== undefined && fields !== null;
+
     let simulation: Simulation | null = null;
-    if (amounts !== undefined && amounts !== null) {
+    let plan: AmountPlan | null = null;
+    let record: Record<string, unknown> | null = null;
+
+    if (wantsAmounts || wantsFields) {
       if (!shape.ok) throw createError(409, `Cannot preview: ${shape.problems.join('; ')}`);
-      simulation = simulateCorrection(accounts, entries, rows, amounts);
+      let proposed = amounts;
+      if (wantsFields) {
+        record = await queryOne(`SELECT * FROM ${table} WHERE id = $1`, [sourceId]);
+        if (!record) throw createError(404, `No ${sourceType} found with that id`);
+        plan = planAmountCorrection(sourceType, record, rows, fields);
+        proposed = plan.amounts;
+      }
+      simulation = simulateCorrection(accounts, entries, rows, proposed);
     }
+
+    // Selling price and company charges never reach the ledger, so a proposal
+    // can be entirely legitimate while leaving no money to move at all.
+    const recordChanged = plan !== null && record !== null && columnsChanged(record, plan.columns);
+    const nothingToDo =
+      simulation !== null && simulation.corrections.length === 0 && !recordChanged;
 
     const safeToCorrect =
       shape.ok &&
       simulation !== null &&
+      !nothingToDo &&
       simulation.problems.length === 0 &&
       simulation.affectedAccountsAfter.every((a) => a.reconciled);
 
@@ -342,6 +364,10 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
         before: before.accounts,
         simulation,
         safeToCorrect,
+        record,
+        columns: plan ? plan.columns : null,
+        recordChanged,
+        amountFields: isAmountable(sourceType) ? AMOUNT_FIELDS[sourceType] : [],
       },
     });
   } catch (error) { next(error); }
@@ -398,8 +424,12 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
   try {
     const table = requireSource(sourceType, sourceId);
     const reason = requireReason(req.body?.reason);
-    const amounts = req.body?.amounts;
-    if (amounts === undefined || amounts === null) throw createError(400, 'amounts is required');
+    const fields = req.body?.fields;
+    const rawAmounts = req.body?.amounts;
+    const wantsFields = fields !== undefined && fields !== null;
+    if (!wantsFields && (rawAmounts === undefined || rawAmounts === null)) {
+      throw createError(400, 'fields or amounts is required');
+    }
 
     const exists = await queryOne(`SELECT 1 AS present FROM ${table} WHERE id = $1`, [sourceId]);
     if (!exists) throw createError(404, `No ${sourceType} found with that id`);
@@ -425,13 +455,31 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     await client.query('SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE', [accountIds]);
 
     const { accounts, entries } = await loadAccountsAndEntries(accountIds, client);
+
+    // The record is read inside the transaction, after the accounts are locked,
+    // so the figures it is corrected from are the ones the ledger will be
+    // reconciled against rather than a snapshot taken before other work landed.
+    let amounts = rawAmounts;
+    let columns: Record<string, number> | null = null;
+    let recordBefore: Record<string, unknown> | null = null;
+    if (wantsFields) {
+      const loaded = await client.query(`SELECT * FROM ${table} WHERE id = $1`, [sourceId]);
+      recordBefore = loaded.rows[0] ?? null;
+      if (!recordBefore) throw createError(404, `No ${sourceType} found with that id`);
+      const plan = planAmountCorrection(sourceType, recordBefore, rows, fields);
+      columns = plan.columns;
+      amounts = plan.amounts;
+    }
+
     const simulation = simulateCorrection(accounts, entries, rows, amounts);
+    const recordChanged = columns !== null && recordBefore !== null && columnsChanged(recordBefore, columns);
+    const changedColumns = recordChanged && columns !== null ? columns : null;
 
     if (simulation.problems.length > 0) {
       throw createError(409, `Refusing to correct: ${simulation.problems.join('; ')}`);
     }
-    if (simulation.corrections.length === 0) {
-      throw createError(400, 'Those amounts do not change anything');
+    if (simulation.corrections.length === 0 && !recordChanged) {
+      throw createError(400, 'Those values do not change anything');
     }
     if (!simulation.affectedAccountsAfter.every((a) => a.reconciled)) {
       const bad = simulation.affectedAccountsAfter.filter((a) => !a.reconciled).map((a) => a.name);
@@ -442,11 +490,12 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
       const newBalance = await updateAccountBalance(
         correction.accountId, correction.amount, correction.entryType, client
       );
-      await client.query(
+      const inserted = await client.query(
         `INSERT INTO ledger_entries
            (account_id, transaction_id, transfer_id, source_type, source_id,
             entry_type, amount, balance_after, reference_number, description, entry_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW())`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW())
+         RETURNING id`,
         [
           correction.accountId,
           sourceType === 'transaction' ? sourceId : null,
@@ -459,6 +508,41 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
           `Correction: ${reason}`,
         ]
       );
+
+      // A transfer carries a per-side statement beside the ledger, and its
+      // detail view reads only that. Writing the ledger correction without its
+      // counterpart would leave that page reporting the figures the correction
+      // has just replaced.
+      if (sourceType === 'transfer') {
+        await client.query(
+          `INSERT INTO transfer_entries
+             (transfer_id, account_id, entry_type, entry_category, amount, balance_after, ledger_entry_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            sourceId,
+            correction.accountId,
+            correction.entryType,
+            correction.entryType === 'debit' ? 'transfer_out' : 'transfer_in',
+            correction.amount,
+            newBalance,
+            inserted.rows[0].id,
+          ]
+        );
+      }
+    }
+
+    // The record is written in the same transaction as the rows above and
+    // before the gate that re-audits them, so a correction the gate refuses
+    // rolls back both halves together — the record never ends up describing
+    // ledger rows that were not committed.
+    if (changedColumns) {
+      const keys = Object.keys(changedColumns);
+      const assignments = keys.map((column, i) => `${column} = $${i + 1}`);
+      if (TABLES_WITH_UPDATED_AT.has(table)) assignments.push('updated_at = NOW()');
+      await client.query(
+        `UPDATE ${table} SET ${assignments.join(', ')} WHERE id = $${keys.length + 1}`,
+        [...keys.map((key) => changedColumns[key]), sourceId]
+      );
     }
 
     const verdict = await auditInside(client, accountIds);
@@ -470,6 +554,9 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     await client.query('COMMIT');
     started = false;
 
+    const recordFields =
+      recordBefore && changedColumns ? pick(recordBefore, Object.keys(changedColumns)) : null;
+
     await createAuditLog({
       userId: req.user!.userId,
       action: `${sourceType}.amount_corrected`,
@@ -477,8 +564,14 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
       entityId: sourceId,
       ipAddress: req.ip,
       reason,
-      oldData: { amounts: simulation.changes.map((c) => ({ ledgerId: c.ledgerId, amount: c.fromAmount })) },
-      newData: { amounts: simulation.changes.map((c) => ({ ledgerId: c.ledgerId, amount: c.toAmount })) },
+      oldData: {
+        ...(recordFields ? { fields: recordFields } : {}),
+        amounts: simulation.changes.map((c) => ({ ledgerId: c.ledgerId, amount: c.fromAmount })),
+      },
+      newData: {
+        ...(changedColumns ? { fields: changedColumns } : {}),
+        amounts: simulation.changes.map((c) => ({ ledgerId: c.ledgerId, amount: c.toAmount })),
+      },
     });
 
     res.json({
@@ -488,6 +581,7 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
         applied: simulation.corrections,
         balances: simulation.balances,
         after: verdict.accounts,
+        changed: changedColumns,
       },
     });
   } catch (error) {

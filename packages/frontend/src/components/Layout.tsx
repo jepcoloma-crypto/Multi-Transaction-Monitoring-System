@@ -22,6 +22,7 @@ import {
   DollarSign,
   UserCircle,
   Database,
+  Pencil,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { api, unwrapRows } from '../lib/api';
@@ -39,13 +40,14 @@ const navigation = [
   { name: 'Alerts', href: '/alerts', icon: Bell },
 ];
 
-type MenuItem = { name: string; href: string; icon: typeof Settings; approverOnly?: boolean };
+type MenuItem = { name: string; href: string; icon: typeof Settings; approverOnly?: boolean; adminOnly?: boolean };
 
 const adminSection: MenuItem[] = [
   { name: 'Providers', href: '/providers', icon: Settings },
   { name: 'Transaction Fees', href: '/transaction-fees', icon: DollarSign },
   { name: 'Additional Charges', href: '/additional-charges', icon: DollarSign },
   { name: 'Provider Charges', href: '/provider-charges', icon: DollarSign },
+  { name: 'Amount Corrections', href: '/amount-corrections', icon: Pencil, adminOnly: true },
   { name: 'Approvals', href: '/transfer-approvals', icon: CheckSquare, approverOnly: true },
   { name: 'Import', href: '/import', icon: Upload },
   { name: 'Settings', href: '/settings', icon: Settings },
@@ -144,7 +146,9 @@ export default function Layout() {
 
           <div className="border-t border-gray-800 my-3"></div>
           <p className="px-3 py-1 text-xs font-semibold text-gray-500 uppercase">Administration</p>
-          {adminSection.filter((item) => !item.approverOnly || isApprover).map((item) => {
+          {adminSection
+            .filter((item) => (item.adminOnly ? Boolean(isAdmin) : !item.approverOnly || isApprover))
+            .map((item) => {
             const isActive = location.pathname === item.href;
             return (
               <Link

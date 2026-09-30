@@ -23,6 +23,13 @@ export interface PlannedChange {
   entryType: string;
   fromAmount: number;
   toAmount: number;
+  /**
+   * What this row alone would move if it were the account's only row. It is a
+   * description of the row, not of the correction: when an account holds an
+   * original and a correction, the account moves once, by the difference
+   * between their combined effect and the target — which is what the planner
+   * below works out. Summing this field across rows double-counts.
+   */
   balanceDelta: number;
 }
 
@@ -96,10 +103,39 @@ export function simulateCorrection(
   const ownedRowIds = new Set(rows.map((r) => r.id));
   const sourceId = entries.find((e) => ownedRowIds.has(e.id))?.source_id ?? null;
 
+  // An account moves once, by the gap between where its rows leave it now and
+  // where the record should leave it. Summing each row's own gap against the
+  // target instead counts the target once per row, so a record corrected
+  // before — an original row plus the delta appended after it — swings by far
+  // more than asked: taking 100 to 150 and then to 200 would append 250 rather
+  // than 50. Every row on an account is given the same target, so the first
+  // one written decides the direction the target is measured in; later rows
+  // carry the opposite sign whenever a previous correction reduced the figure.
+  const targetByAccount = new Map<string, number>();
+  for (const change of changes) {
+    if (!targetByAccount.has(change.accountId)) {
+      targetByAccount.set(change.accountId, toCents(change.toAmount));
+    }
+  }
+
+  const signOf = (entryType: string) => (entryType === 'credit' ? 1 : -1);
+  const rowsByAccount = new Map<string, LedgerRowRef[]>();
+  for (const row of rows) {
+    const bucket = rowsByAccount.get(row.account_id);
+    if (bucket) bucket.push(row);
+    else rowsByAccount.set(row.account_id, [row]);
+  }
+
   const deltaByAccount = new Map<string, number>();
   for (const account of accounts) deltaByAccount.set(account.id, 0);
-  for (const change of changes) {
-    deltaByAccount.set(change.accountId, (deltaByAccount.get(change.accountId) ?? 0) + change.balanceDelta);
+  for (const [accountId, accountRows] of rowsByAccount) {
+    const target = targetByAccount.get(accountId);
+    if (target === undefined || accountRows.length === 0) continue;
+    const current = accountRows.reduce(
+      (sum, row) => sum + signOf(row.entry_type) * toCents(parseFloat(row.amount)),
+      0
+    );
+    deltaByAccount.set(accountId, signOf(accountRows[0].entry_type) * target - current);
   }
 
   const planned: PlannedRow[] = [];

@@ -23,6 +23,7 @@ import Profile from './pages/Profile';
 import ImportData from './pages/ImportData';
 import Customers from './pages/Customers';
 import Backup from './pages/Backup';
+import AmountCorrections from './pages/AmountCorrections';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -78,6 +79,7 @@ function AppRoutes() {
         <Route path="import" element={<ImportData />} />
         <Route path="customers" element={<Customers />} />
         <Route path="backup" element={<Backup />} />
+        <Route path="amount-corrections" element={<AmountCorrections />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

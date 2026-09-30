@@ -210,6 +210,65 @@ test('a no-op correction appends nothing and leaves the account as it was', () =
   assert.equal(sim.affectedAccountsAfter[0].reconciled, true);
 });
 
+test('a record corrected before moves by the gap to its target, not by each row', () => {
+  // 100 -> 80 was written as an original credit and a debit of 20, so the
+  // record leaves this account 80. Raising it to 120 is 40 of new money: the
+  // target has to be measured against the rows' combined effect once, not
+  // once per row, which would append 40 in one direction and 100 in the other.
+  const accounts = [account('a1', 1000, 1080)];
+  const entries = [
+    entry('e1', 'a1', { amount: '100.00', balance_after: '1100.00', created_at: at(0) }),
+    entry('e2', 'a1', { entry_type: 'debit', amount: '20.00', balance_after: '1080.00', created_at: at(1) }),
+  ];
+  const rows = [row('e1', 'a1', 'credit', '100.00'), row('e2', 'a1', 'debit', '20.00')];
+
+  const sim = simulateCorrection(accounts, entries, rows, { a1: 120 });
+
+  assert.deepEqual(sim.corrections, [
+    { accountId: 'a1', entryType: 'credit', amount: 40, balanceAfter: 1120 },
+  ]);
+  assert.deepEqual(sim.balances, [{ accountId: 'a1', before: 1080, after: 1120 }]);
+  assert.deepEqual(sim.problems, []);
+
+  const acc = sim.affectedAccountsAfter[0];
+  assert.equal(acc.gap, 0);
+  assert.equal(acc.chainBreaks, 0);
+  assert.equal(acc.reconciled, true);
+});
+
+test('a second raise on an already corrected record appends only the remainder', () => {
+  const accounts = [account('a1', 1000, 1150)];
+  const entries = [
+    entry('e1', 'a1', { amount: '100.00', balance_after: '1100.00', created_at: at(0) }),
+    entry('e2', 'a1', { amount: '50.00', balance_after: '1150.00', created_at: at(1) }),
+  ];
+  const rows = [row('e1', 'a1', 'credit', '100.00'), row('e2', 'a1', 'credit', '50.00')];
+
+  const sim = simulateCorrection(accounts, entries, rows, { a1: 200 });
+
+  // 100 + 50 is 150, and 200 is 50 further on. Counting the target once per
+  // row would have asked for 250 and left the account at 400.
+  assert.deepEqual(sim.corrections, [
+    { accountId: 'a1', entryType: 'credit', amount: 50, balanceAfter: 1200 },
+  ]);
+  assert.ok(sim.affectedAccountsAfter.every((a) => a.reconciled && a.gap === 0));
+});
+
+test('restoring a corrected record to what it already holds appends nothing', () => {
+  const accounts = [account('a1', 1000, 1080)];
+  const entries = [
+    entry('e1', 'a1', { amount: '100.00', balance_after: '1100.00', created_at: at(0) }),
+    entry('e2', 'a1', { entry_type: 'debit', amount: '20.00', balance_after: '1080.00', created_at: at(1) }),
+  ];
+  const rows = [row('e1', 'a1', 'credit', '100.00'), row('e2', 'a1', 'debit', '20.00')];
+
+  const sim = simulateCorrection(accounts, entries, rows, { a1: 80 });
+
+  assert.deepEqual(sim.corrections, []);
+  assert.deepEqual(sim.balances, [{ accountId: 'a1', before: 1080, after: 1080 }]);
+  assert.equal(sim.affectedAccountsAfter[0].reconciled, true);
+});
+
 test('a re-entry writes a reversal and a replacement onto the same account', () => {
   const accounts = [account('a1', 1000, 1321), account('a2', 5000, 5000)];
   const entries = [entry('e1', 'a1', { amount: '321.00', balance_after: '1321.00' })];
