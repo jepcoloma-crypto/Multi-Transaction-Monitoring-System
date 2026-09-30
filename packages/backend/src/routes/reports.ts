@@ -4,6 +4,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
+import { statementReversal } from '../services/statementReversal';
 import { loadScopedLedger } from '../services/ledgerQuery';
 
 const router = Router();
@@ -19,7 +20,7 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // costs a boolean test rather than three index probes.
 const REVERSAL_TRAIL_JOINS = `
   LEFT JOIN LATERAL (
-    SELECT r.id, r.transaction_number, r.amount, r.created_at, r.description
+    SELECT r.id, r.reference_number, r.transaction_number, r.amount, r.created_at, r.description
     FROM transactions r
     WHERE t.status = 'reversed'
       AND r.reference_number = 'REV-' || t.transaction_number::text
@@ -73,13 +74,20 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
               tr.purpose AS transfer_purpose, tr.transfer_amount, tr.transfer_fee,
               sa.name AS source_account_name, da.name AS destination_account_name,
               pr.reason AS reversal_request_reason, audit.reason AS reversal_audit_reason,
-              rev.description AS reversal_entry_description
+              rev.description AS reversal_entry_description,
+              rev.reference_number AS reversal_reference,
+              reverses_of.id AS reverses_id,
+              reverses_of.transaction_number AS reverses_number,
+              reverses_type.name AS reverses_type_name
        FROM ledger_entries le
        LEFT JOIN transactions t ON le.transaction_id = t.id
        LEFT JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN transfers tr ON le.transfer_id = tr.id
        LEFT JOIN accounts sa ON tr.source_account_id = sa.id
        LEFT JOIN accounts da ON tr.destination_account_id = da.id
+       LEFT JOIN transactions reverses_of
+         ON reverses_of.transaction_number = substring(le.reference_number from '^REV-([0-9]+)$')::int
+       LEFT JOIN transaction_types reverses_type ON reverses_type.id = reverses_of.transaction_type_id
        ${REVERSAL_TRAIL_JOINS}
        ${wc} ORDER BY le.created_at ASC, le.id ASC`, params
     );
@@ -92,25 +100,50 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
       : parseFloat(account.opening_balance || '0');
     const openingBalance = running;
     const statement = entries.map((e: any) => {
-      const { reversal_request_reason, reversal_audit_reason, reversal_entry_description, ...entry } = e;
+      const {
+        reversal_request_reason, reversal_audit_reason, reversal_entry_description,
+        reverses_id, reverses_number, reverses_type_name, ...entry
+      } = e;
       running = parseFloat(e.balance_after);
       const charges = Array.isArray(e.additional_charges)
         ? e.additional_charges.reduce((s: number, c: any) => s + (parseFloat(c?.amount) || 0), 0)
         : 0;
+      const rev = statementReversal({
+        reference_number: e.reference_number,
+        description: e.description,
+        transaction_id: e.transaction_id,
+        transaction_number: e.transaction_number,
+        transaction_status: e.transaction_status,
+        transfer_status: e.transfer_status,
+        type_name: e.type_name,
+        reversal_request_reason,
+        reversal_audit_reason,
+        reversal_entry_description,
+        reverses_id,
+        reverses_number,
+        reverses_type_name,
+      });
+      const entrySource = e.source_type ?? (e.transaction_id ? 'transaction'
+        : e.transfer_id ? 'transfer'
+        : /^loading\b/i.test(e.description || '') ? 'loading'
+        : 'adjustment');
       return {
         ...entry,
-        reversal_reason: reversalReason(reversal_request_reason, reversal_audit_reason, reversal_entry_description),
+        reversal_reason: rev.reason,
+        is_compensating: rev.isCompensating,
+        reversal_resolves_to: rev.resolvesTo,
+        reversal_of_number: rev.ofNumber,
+        statement_status: rev.status,
         running_balance: running,
         charges_total: charges,
-        entry_source: e.source_type ?? (e.transaction_id ? 'transaction'
-          : e.transfer_id ? 'transfer'
-          : /^loading\b/i.test(e.description || '') ? 'loading'
-          : 'adjustment'),
-        display_name: e.transaction_number
+        entry_source: entrySource,
+        display_name: rev.label ?? (e.transaction_number
           ? `${e.type_name || 'Transaction'} #${e.transaction_number}`
           : e.transfer_id
             ? `Transfer ${e.transfer_number ? `#${e.transfer_number} ` : ''}${e.source_account_name || '?'} → ${e.destination_account_name || '?'}`
-            : e.description || 'Adjustment',
+            : e.description || 'Adjustment'),
+        type_display: rev.typeDisplay ?? (entrySource ? entrySource.charAt(0).toUpperCase() + entrySource.slice(1) : e.entry_type),
+        reversal_reference: rev.reference ?? e.reversal_reference ?? null,
       };
     });
 

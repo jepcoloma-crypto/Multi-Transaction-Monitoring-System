@@ -18,6 +18,19 @@ const sideLabel = (side: string | null): string =>
 const sideClass = (side: string | null): string =>
   side === 'credit' ? 'text-finance-green' : side === 'debit' ? 'text-finance-red' : 'text-gray-500';
 
+// A compensating entry is a completed transaction wearing an adjustment type,
+// so the stored status undersells it. The badge names the role instead, and the
+// statement then reads original/reversal/original/reversal rather than
+// original/reversal/completed.
+const statusBadgeClass = (status: string | null): string =>
+  status === 'reversed' ? 'bg-amber-100 text-amber-700'
+    : status === 'reversal' ? 'bg-green-100 text-green-700'
+    : status === 'completed' ? 'bg-green-100 text-green-700'
+    : status ? 'bg-gray-100 text-gray-600' : 'bg-gray-50 text-gray-400';
+
+const statementStatusLabel = (status: string | null, entrySource: string | null): string =>
+  status || (entrySource === 'transaction' ? '—' : 'ledger');
+
 export default function Reports() {
   const [activeReport, setActiveReport] = useState<ReportType>('consolidated');
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -258,7 +271,7 @@ export default function Reports() {
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
-                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reversal Reason</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reason</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Credit</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Debit</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee</th>
@@ -267,26 +280,47 @@ export default function Reports() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
-                      {reportData.entries.map((e: any) => (
-                        <tr key={e.id} className="hover:bg-gray-50">
+                      {reportData.entries.map((e: any) => {
+                        const isReversed = e.statement_status === 'reversed';
+                        const isCompensating = Boolean(e.is_compensating);
+                        return (
+                        <tr key={e.id} id={e.transaction_id ? `entry-${e.transaction_id}` : undefined} className={isReversed ? 'bg-amber-50 hover:bg-amber-100' : isCompensating ? 'bg-green-50 hover:bg-green-100' : 'hover:bg-gray-50'}>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{new Date(e.entry_date).toLocaleDateString()}</td>
-                          <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">{e.transaction_number ? `#${e.transaction_number}` : (e.transfer_number ? `#${e.transfer_number}` : (e.transaction_reference || e.transfer_reference || e.reference_number || '—'))}</td>
+                          <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">
+                            {isCompensating
+                              ? <span className="text-amber-700">{e.reversal_reference}</span>
+                              : <a
+                                  href={isReversed && e.reversal_resolves_to ? `#entry-${e.reversal_resolves_to}` : undefined}
+                                  onClick={isReversed && e.reversal_resolves_to ? () => document.getElementById(`entry-${e.reversal_resolves_to}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) : undefined}
+                                  className={isReversed && e.reversal_resolves_to ? 'text-gray-900 underline decoration-dotted hover:text-amber-700 cursor-pointer' : ''}
+                                >
+                                  {e.transaction_number ? `#${e.transaction_number}` : (e.transfer_number ? `#${e.transfer_number}` : (e.transaction_reference || e.transfer_reference || e.reference_number || '—'))}
+                                </a>}
+                          </td>
                           <td className="px-4 py-3.5 whitespace-nowrap">
-                            <span className={`text-xs font-medium ${e.entry_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}>
-                              {e.type_name || (e.entry_source ? e.entry_source.charAt(0).toUpperCase() + e.entry_source.slice(1) : e.entry_type)}
+                            <span
+                              title={isCompensating ? `${e.type_name || 'Adjustment'} #${e.transaction_number}` : undefined}
+                              className={`text-xs font-medium ${e.entry_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}
+                            >
+                              {e.type_display || e.type_name || e.entry_type}
                             </span>
                           </td>
-                          <td className="px-4 py-3.5 text-sm">{e.description || e.transaction_description || e.display_name || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm">
+                            {isCompensating
+                              ? <>Reversal of <span className="font-medium">{e.reverses_type_name || 'Transaction'} #{e.reverses_number}</span></>
+                              : (e.description || e.transaction_description || e.display_name || '—')}
+                            {isReversed && !isCompensating && e.reversal_reference && (
+                              <div className="text-xs text-amber-600 mt-0.5">Reversed by {e.reversal_reference}</div>
+                            )}
+                          </td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{e.customer_name || '—'}</td>
                           <td className="px-4 py-3.5 whitespace-nowrap">
-                            <span className={`text-xs px-1.5 py-0.5 rounded ${(e.transaction_status || e.transfer_status) === 'reversed' ? 'bg-amber-100 text-amber-700' : (e.transaction_status || e.transfer_status) === 'completed' ? 'bg-green-100 text-green-700' : (e.transaction_status || e.transfer_status) ? 'bg-gray-100 text-gray-600' : 'bg-gray-50 text-gray-400'}`}>
-                              {e.transaction_status || e.transfer_status || (e.entry_source === 'transaction' ? '—' : 'ledger')}
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${statusBadgeClass(e.statement_status)}`}>
+                              {statementStatusLabel(e.statement_status, e.entry_source)}
                             </span>
                           </td>
                           <td className="px-4 py-3.5 text-sm text-gray-700">
-                            {e.transaction_status === 'reversed' && e.reversal_reason
-                              ? e.reversal_reason
-                              : <span className="text-gray-400">—</span>}
+                            {e.reversal_reason ? e.reversal_reason : <span className="text-gray-400">—</span>}
                           </td>
                           <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap text-green-600">{e.entry_type === 'credit' ? formatCurrency(e.amount) : ''}</td>
                           <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap text-red-600">{e.entry_type === 'debit' ? formatCurrency(e.amount) : ''}</td>
@@ -294,7 +328,8 @@ export default function Reports() {
                           <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{e.charges_total > 0 ? formatCurrency(e.charges_total) : ''}</td>
                           <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(e.balance_after)}</td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                     <tfoot className="bg-gray-100 border-t-2 border-gray-300">
                       <tr className="font-bold">
