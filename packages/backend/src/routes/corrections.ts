@@ -13,6 +13,7 @@ import { planReEntry, RE_ENTERABLE } from '../services/reEntryPlan';
 import { planGapFix, isGapFixDirection, GAP_FIX_DIRECTIONS, GAP_FIX_LABELS } from '../services/gapFixPlan';
 import { updateAccountBalance } from '../services/balance';
 import { createAuditLog } from '../services/audit';
+import { mintTransferReference, MintedTransfer } from '../services/transferReference';
 import type { Simulation, CorrectionEntry } from '../services/correctionPreview';
 import type { AccountAudit } from '../services/ledgerAudit';
 import type { ReEntryAccounts, ReEntryMove, OriginalAccounts } from '../services/reEntryPlan';
@@ -548,15 +549,19 @@ const CLONE_SQL: Record<string, { sql: string; numberColumn: string }> = {
   },
   transfer: {
     numberColumn: 'transfer_number',
+    // external_reference is copied because it names the counterparty's record
+    // of the same real-world event; transfer_reference is not, because a
+    // re-entry is a new transfer and needs its own identity ($6/$7, minted by
+    // the caller from the sequence value it also supplies).
     sql: `INSERT INTO transfers (
             id, transfer_number, source_account_id, destination_account_id,
             transfer_amount, transfer_fee, total_source_deduction, destination_amount,
             transfer_reference, external_reference, purpose, status, transfer_date,
             created_by, completed_at, notes, attachment_path, fee_deducted_from_amount
           )
-          SELECT $1, nextval('transfers_transfer_number_seq'), $2, $3,
+          SELECT $1, $6, $2, $3,
             t.transfer_amount, t.transfer_fee, t.total_source_deduction, t.destination_amount,
-            t.transfer_reference, t.external_reference, t.purpose, 'completed', t.transfer_date,
+            $7, t.external_reference, t.purpose, 'completed', t.transfer_date,
             $4, NOW(), t.notes, t.attachment_path, t.fee_deducted_from_amount
           FROM transfers t
           WHERE t.id = $5
@@ -564,16 +569,23 @@ const CLONE_SQL: Record<string, { sql: string; numberColumn: string }> = {
   },
 };
 
-function cloneParams(sourceType: string, newRecordId: string, moves: ReEntryMove[], userId: string, sourceId: string): unknown[] {
+function cloneParams(sourceType: string, newRecordId: string, moves: ReEntryMove[], userId: string, sourceId: string, minted?: MintedTransfer): unknown[] {
   if (sourceType === 'transfer') {
     const source = moves.find((m) => m.role === 'source');
     const destination = moves.find((m) => m.role === 'destination');
     if (!source || !destination) throw createError(409, 'the re-entry plan is missing an account');
-    return [newRecordId, source.to, destination.to, userId, sourceId];
+    if (!minted) throw createError(500, 'transfer re-entry is missing a minted reference');
+    return [newRecordId, source.to, destination.to, userId, sourceId, minted.number, minted.reference];
   }
   const single = moves.find((m) => m.role === 'account');
   if (!single) throw createError(409, 'the re-entry plan is missing an account');
   return [newRecordId, single.to, userId, sourceId];
+}
+
+async function mintNextTransfer(client: any): Promise<MintedTransfer> {
+  const row = (await client.query("SELECT nextval('transfers_transfer_number_seq') AS value")).rows[0];
+  const number = Number(row.value);
+  return { number, reference: mintTransferReference(number) };
 }
 
 // The planner reasons about accounts by role; the row it is handed comes
@@ -699,8 +711,10 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
       throw createError(409, `Refusing to re-enter — ${bad.join(', ')} would not reconcile`);
     }
 
+    const minted = sourceType === 'transfer' ? await mintNextTransfer(client) : undefined;
+
     const cloneRow = (
-      await client.query(clone.sql, cloneParams(sourceType, newRecordId, plan.moves, req.user!.userId, sourceId))
+      await client.query(clone.sql, cloneParams(sourceType, newRecordId, plan.moves, req.user!.userId, sourceId, minted))
     ).rows[0];
     if (!cloneRow) throw createError(404, `No ${sourceType} found with that id`);
 

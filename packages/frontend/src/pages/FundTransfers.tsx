@@ -7,7 +7,7 @@ import Pagination from '../components/Pagination';
 import AccountSelect from '../components/AccountSelect';
 
 interface Transfer {
-  id: string; transfer_number: number; source_name: string; destination_name: string;
+  id: string; transfer_number: number; transfer_reference: string; source_name: string; destination_name: string;
   source_masked: string; dest_masked: string; transfer_amount: number; transfer_fee: number;
   total_source_deduction: number; destination_amount: number; status: string; transfer_date: string; purpose: string;
   created_by_email: string; approved_by_email: string; completed_at: string; notes: string; failure_reason: string;
@@ -93,13 +93,13 @@ export default function FundTransfers() {
       setChargeRule(null);
       loadData(1);
       if (created?.status === 'pending') {
-        alert(`Transfer #${created.transfer_number} submitted for approval. Funds will move once it is approved.`);
+        alert(`Transfer ${created.transfer_reference} submitted for approval. Funds will move once it is approved.`);
       }
     } catch (err: any) { alert(err.message || 'Transfer failed'); } finally { setSubmitting(false); }
   };
 
   const handleApprove = async (t: Transfer) => {
-    if (!confirm(`Approve transfer #${t.transfer_number}? ${formatCurrency(t.total_source_deduction)} will be deducted from ${t.source_name} now.`)) return;
+    if (!confirm(`Approve transfer ${t.transfer_reference}? ${formatCurrency(t.total_source_deduction)} will be deducted from ${t.source_name} now.`)) return;
     try { await api.post(`/transfers/${t.id}/approve`); loadData(pagination.page); } catch (err: any) { alert(err.message || 'Failed to approve transfer'); }
   };
 
@@ -173,7 +173,7 @@ export default function FundTransfers() {
             <table className="w-full min-w-[1000px]">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Reference</th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Source</th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Destination</th>
                   <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
@@ -187,7 +187,10 @@ export default function FundTransfers() {
               <tbody className="divide-y divide-gray-200">
                 {filtered.map(t => (
                   <tr key={t.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-3.5 font-mono text-sm whitespace-nowrap">{t.transfer_number}</td>
+                    <td className="px-6 py-3.5 font-mono text-sm whitespace-nowrap">
+                      <p className="text-sm font-medium">{t.transfer_reference}</p>
+                      <p className="text-xs text-gray-500">#{t.transfer_number}</p>
+                    </td>
                     <td className="px-6 py-3.5 whitespace-nowrap"><p className="text-sm font-medium">{t.source_name}</p><p className="text-xs text-gray-500">{t.source_masked}</p></td>
                     <td className="px-6 py-3.5 whitespace-nowrap"><p className="text-sm font-medium">{t.destination_name}</p><p className="text-xs text-gray-500">{t.dest_masked}</p></td>
                     <td className="px-6 py-3.5 font-medium text-right whitespace-nowrap">{formatCurrency(t.transfer_amount)}</td>
@@ -308,7 +311,7 @@ export default function FundTransfers() {
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl w-full max-w-lg p-6 max-h-[90vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold">Transfer #{showDetail.transfer_number}</h3>
+              <h3 className="text-lg font-semibold">Transfer {showDetail.transfer_reference}</h3>
               <button onClick={() => setShowDetail(null)} className="p-1 hover:bg-gray-100 rounded"><X className="w-5 h-5" /></button>
             </div>
             <div className="space-y-3 text-sm">

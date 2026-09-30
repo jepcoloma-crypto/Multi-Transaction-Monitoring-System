@@ -5,6 +5,7 @@ import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { lookupProviderCharge } from '../services/providerCharge';
+import { mintTransferReference } from '../services/transferReference';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -174,12 +175,14 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
 
     // Create transfer record
     const txNum = await client.query("SELECT nextval('transfers_transfer_number_seq') as nextval");
+    const transferNumber = Number(txNum.rows[0].nextval);
+    const transferReference = mintTransferReference(transferNumber);
     const isAdminCreator = (req.user!.roles || []).includes('administrator');
     const transfer = (await client.query(
-      `INSERT INTO transfers (transfer_number, source_account_id, destination_account_id, transfer_amount, transfer_fee,
+      `INSERT INTO transfers (transfer_number, transfer_reference, source_account_id, destination_account_id, transfer_amount, transfer_fee,
        total_source_deduction, destination_amount, purpose, status, transfer_date, created_by, notes, completed_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) RETURNING *`,
-      [txNum.rows[0].nextval, sourceAccountId, destinationAccountId, srcAmount, charge, totalDeduction, destinationAmount, purpose || null,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
+      [transferNumber, transferReference, sourceAccountId, destinationAccountId, srcAmount, charge, totalDeduction, destinationAmount, purpose || null,
        isAdminCreator ? 'completed' : 'pending', transferDate || new Date(), req.user!.userId, notes || null, isAdminCreator ? new Date() : null]
     )).rows[0];
 

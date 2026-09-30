@@ -5,7 +5,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { Check, X, Clock, Inbox, ShieldAlert, AlertCircle } from 'lucide-react';
 
 interface Transfer {
-  id: string; transfer_number: number; source_name: string; destination_name: string;
+  id: string; transfer_number: number; transfer_reference: string; source_name: string; destination_name: string;
   source_masked: string; dest_masked: string; transfer_amount: number; transfer_fee: number;
   total_source_deduction: number; destination_amount: number; status: string;
   transfer_date: string; purpose: string; notes: string;
@@ -99,7 +99,7 @@ export default function TransferApprovals() {
   }
 
   const approveTransfer = async (t: Transfer) => {
-    if (!window.confirm(`Approve transfer #${t.transfer_number} — ${formatCurrency(t.total_source_deduction)} will be deducted from ${t.source_name} now?`)) return;
+    if (!window.confirm(`Approve transfer ${t.transfer_reference} — ${formatCurrency(t.total_source_deduction)} will be deducted from ${t.source_name} now?`)) return;
     setBusy(true);
     try {
       await api.post(`/transfers/${t.id}/approve`);
@@ -187,7 +187,7 @@ export default function TransferApprovals() {
 
   const rejectingLabel = rejecting
     ? rejecting.kind === 'transfers'
-      ? `Reject transfer #${(rejecting.record as Transfer).transfer_number}`
+      ? `Reject transfer ${(rejecting.record as Transfer).transfer_reference}`
       : rejecting.kind === 'reversals'
         ? `Reject reversal request #${(rejecting.record as Reversal).transaction_number}`
         : `Reject ${(rejecting.record as OwnerFund).type_name} #${(rejecting.record as OwnerFund).transaction_number}`
@@ -410,7 +410,7 @@ function TransferPendingTable({ rows, busy, onApprove, onReject }: {
         <tbody className="divide-y divide-gray-100">
           {rows.map((t) => (
             <tr key={t.id} className="hover:bg-gray-50">
-              <td className="px-4 py-3 font-medium text-gray-900">#{t.transfer_number}</td>
+              <td className="px-4 py-3 font-medium text-gray-900 font-mono">{t.transfer_reference}</td>
               <td className="px-4 py-3">
                 <span className="text-gray-900">{t.source_name}</span>
                 <span className="text-gray-400 mx-1">→</span>
@@ -450,7 +450,7 @@ function TransferRejectedTable({ rows }: { rows: Transfer[] }) {
         <tbody className="divide-y divide-gray-100">
           {rows.map((t) => (
             <tr key={t.id} className="hover:bg-gray-50">
-              <td className="px-4 py-3 font-medium text-gray-900">#{t.transfer_number}</td>
+              <td className="px-4 py-3 font-medium text-gray-900 font-mono">{t.transfer_reference}</td>
               <td className="px-4 py-3">
                 <span className="text-gray-900">{t.source_name}</span>
                 <span className="text-gray-400 mx-1">→</span>
