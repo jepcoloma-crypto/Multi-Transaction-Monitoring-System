@@ -113,8 +113,12 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
         description: e.description,
         transaction_id: e.transaction_id,
         transaction_number: e.transaction_number,
+        transaction_reference: e.transaction_reference,
         transaction_status: e.transaction_status,
+        transfer_id: e.transfer_id,
         transfer_status: e.transfer_status,
+        transfer_number: e.transfer_number,
+        transfer_reference: e.transfer_reference,
         type_name: e.type_name,
         reversal_request_reason,
         reversal_audit_reason,
@@ -143,7 +147,8 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
             ? `Transfer ${e.transfer_number ? `#${e.transfer_number} ` : ''}${e.source_account_name || '?'} → ${e.destination_account_name || '?'}`
             : e.description || 'Adjustment'),
         type_display: rev.typeDisplay ?? (entrySource ? entrySource.charAt(0).toUpperCase() + entrySource.slice(1) : e.entry_type),
-        reversal_reference: rev.reference ?? e.reversal_reference ?? null,
+        reference_display: rev.referenceDisplay,
+        number_display: rev.numberDisplay,
       };
     });
 

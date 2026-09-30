@@ -7,8 +7,12 @@ const row = (overrides: Partial<StatementReversalRow> = {}): StatementReversalRo
   description: null,
   transaction_id: 'tx-b',
   transaction_number: 83,
+  transaction_reference: '5045409564089',
   transaction_status: 'completed',
+  transfer_id: null,
   transfer_status: null,
+  transfer_number: null,
+  transfer_reference: null,
   type_name: 'Cash-Out',
   reversal_request_reason: null,
   reversal_audit_reason: null,
@@ -28,7 +32,7 @@ test('an ordinary movement is neither side of a reversal and keeps its own statu
   assert.equal(view.resolvesTo, null);
   assert.equal(view.ofNumber, null);
   assert.equal(view.reason, null);
-  assert.equal(view.reference, null);
+  assert.equal(view.reference, '5045409564089');
   assert.equal(view.label, null);
   assert.equal(view.typeDisplay, 'Cash-Out');
 });
@@ -89,7 +93,9 @@ test('a REV reference that resolves to nothing is not treated as a reversal', ()
   assert.equal(view.status, 'completed');
   assert.equal(view.resolvesTo, null);
   assert.equal(view.label, null);
-  assert.equal(view.reference, null);
+  // It is not a reversal, so it must show the transaction's own reference rather
+  // than the REV- shaped one that failed to resolve.
+  assert.equal(view.reference, '5045409564089');
 });
 
 test('a reference merely shaped like a reversal does not become one', () => {
@@ -109,6 +115,75 @@ test('the compensating entry takes its reason from its own description, not the 
   }));
 
   assert.equal(view.reason, 'wrong charge');
+});
+
+test('a cash row shows the transaction reference, not the ledger entry that may not have one', () => {
+  const view = statementReversal(row());
+
+  assert.equal(view.referenceDisplay, '5045409564089');
+  assert.equal(view.numberDisplay, '#83');
+});
+
+test('a cash row with no reference of its own shows none rather than falling through to another table', () => {
+  const view = statementReversal(row({ transaction_reference: null, reference_number: '5045409564089' }));
+
+  assert.equal(view.referenceDisplay, null);
+  // The ledger's own reference is blank on 14 cash rows, so it must not be
+  // used as a substitute for the transaction's.
+  assert.equal(view.referenceDisplay === '5045409564089', false);
+});
+
+test('a transfer shows its own generated reference and number', () => {
+  const view = statementReversal(row({
+    transaction_id: null,
+    transaction_number: null,
+    transaction_reference: null,
+    transfer_id: 'tr-22',
+    transfer_number: 22,
+    transfer_reference: 'TRF-2026-000022',
+    type_name: null,
+  }));
+
+  assert.equal(view.referenceDisplay, 'TRF-2026-000022');
+  assert.equal(view.numberDisplay, '#22');
+  assert.equal(view.status, 'completed');
+});
+
+test('the reversal keeps REV-<n> so it stays distinct from the reference it undid', () => {
+  const original = statementReversal(row({ transaction_status: 'reversed' }));
+  const reversal = statementReversal(row({
+    reference_number: 'REV-83',
+    transaction_reference: 'REV-83',
+    description: 'Reversal: DUPLICATE',
+    transaction_id: 'tx-rev',
+    transaction_number: 178,
+    reverses_id: 'tx-b',
+    reverses_number: 83,
+    reverses_type_name: 'Cash-Out',
+  }));
+
+  assert.equal(original.referenceDisplay, '5045409564089');
+  assert.equal(reversal.referenceDisplay, 'REV-83');
+  // #83, #84 and #183 all carry 5045409564089, so only the REV- reference tells
+  // the reversal apart from the three cash-outs sharing that number.
+  assert.notEqual(reversal.referenceDisplay, original.referenceDisplay);
+  assert.equal(reversal.numberDisplay, '#178');
+});
+
+test('a loading row has neither a transaction nor a reference', () => {
+  const view = statementReversal(row({
+    reference_number: null,
+    transaction_id: null,
+    transaction_number: null,
+    transaction_reference: null,
+    transaction_status: null,
+    type_name: null,
+  }));
+
+  assert.equal(view.referenceDisplay, null);
+  assert.equal(view.numberDisplay, null);
+  assert.equal(view.isCompensating, false);
+  assert.equal(view.isReversed, false);
 });
 
 test('identifiers survive as numbers whatever pg hands them over', () => {

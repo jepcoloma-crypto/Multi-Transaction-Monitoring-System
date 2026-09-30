@@ -11,8 +11,12 @@ export interface StatementReversalRow {
   description?: string | null;
   transaction_id?: string | null;
   transaction_number?: number | string | null;
+  transaction_reference?: string | null;
   transaction_status?: string | null;
+  transfer_id?: string | null;
   transfer_status?: string | null;
+  transfer_number?: number | string | null;
+  transfer_reference?: string | null;
   type_name?: string | null;
   reversal_request_reason?: unknown;
   reversal_audit_reason?: unknown;
@@ -32,6 +36,8 @@ export interface StatementReversalView {
   typeDisplay: string | null;
   reference: string | null;
   label: string | null;
+  numberDisplay: string | null;
+  referenceDisplay: string | null;
 }
 
 const asNumber = (value: unknown): number | null => {
@@ -39,6 +45,12 @@ const asNumber = (value: unknown): number | null => {
   if (typeof value !== 'string' || value.trim() === '') return null;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const asRef = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
 };
 
 export const statementReversal = (row: StatementReversalRow): StatementReversalView => {
@@ -59,6 +71,17 @@ export const statementReversal = (row: StatementReversalRow): StatementReversalV
     ? reversalReason(null, null, row.description)
     : reversalReason(row.reversal_request_reason, row.reversal_audit_reason, row.reversal_entry_description);
 
+  const transactionNumber = asNumber(row.transaction_number);
+  const transferNumber = asNumber(row.transfer_number);
+  // The ledger entry's own reference is blank on 14 cash rows and all 14
+  // transfer rows, so the source has to be the transaction, which always carries
+  // one, and the transfer's generated TRF- reference elsewhere.
+  const reference = isCompensating
+    ? asRef(row.reference_number)
+    : row.transaction_id
+      ? asRef(row.transaction_reference)
+      : row.transfer_id ? asRef(row.transfer_reference) : null;
+
   return {
     isReversed,
     isCompensating,
@@ -72,7 +95,9 @@ export const statementReversal = (row: StatementReversalRow): StatementReversalV
     // reversal shows the adjustment type it is stored under. The ledger side
     // still comes from entry_type, never from this type's direction.
     typeDisplay: row.type_name ?? null,
-    reference: isCompensating ? row.reference_number ?? null : null,
+    reference,
     label: isCompensating ? `Reversal of ${row.reverses_type_name || 'Transaction'} #${asNumber(row.reverses_number)}` : null,
+    numberDisplay: transactionNumber !== null ? `#${transactionNumber}` : transferNumber !== null ? `#${transferNumber}` : null,
+    referenceDisplay: reference,
   };
 };

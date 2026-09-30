@@ -262,10 +262,11 @@ export default function Reports() {
               </div>
               <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1350px]">
+                  <table className="w-full min-w-[1450px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Txn #</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reference</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
@@ -287,16 +288,15 @@ export default function Reports() {
                         <tr key={e.id} id={e.transaction_id ? `entry-${e.transaction_id}` : undefined} className={isReversed ? 'bg-amber-50 hover:bg-amber-100' : isCompensating ? 'bg-green-50 hover:bg-green-100' : 'hover:bg-gray-50'}>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{new Date(e.entry_date).toLocaleDateString()}</td>
                           <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">
-                            {isCompensating
-                              ? <span className="text-amber-700">{e.reversal_reference}</span>
-                              : <a
-                                  href={isReversed && e.reversal_resolves_to ? `#entry-${e.reversal_resolves_to}` : undefined}
-                                  onClick={isReversed && e.reversal_resolves_to ? () => document.getElementById(`entry-${e.reversal_resolves_to}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) : undefined}
-                                  className={isReversed && e.reversal_resolves_to ? 'text-gray-900 underline decoration-dotted hover:text-amber-700 cursor-pointer' : ''}
-                                >
-                                  {e.transaction_number ? `#${e.transaction_number}` : (e.transfer_number ? `#${e.transfer_number}` : (e.transaction_reference || e.transfer_reference || e.reference_number || '—'))}
-                                </a>}
+                            <a
+                              href={isReversed && e.reversal_resolves_to ? `#entry-${e.reversal_resolves_to}` : undefined}
+                              onClick={isReversed && e.reversal_resolves_to ? () => document.getElementById(`entry-${e.reversal_resolves_to}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) : undefined}
+                              className={isReversed && e.reversal_resolves_to ? 'text-gray-900 underline decoration-dotted hover:text-amber-700 cursor-pointer' : ''}
+                            >
+                              {e.number_display || '—'}
+                            </a>
                           </td>
+                          <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">{e.reference_display || '—'}</td>
                           <td className="px-4 py-3.5 whitespace-nowrap">
                             <span
                               title={isCompensating ? `${e.type_name || 'Adjustment'} #${e.transaction_number}` : undefined}
@@ -333,7 +333,7 @@ export default function Reports() {
                     </tbody>
                     <tfoot className="bg-gray-100 border-t-2 border-gray-300">
                       <tr className="font-bold">
-                        <td className="px-4 py-3.5 text-sm" colSpan={7}>Total ({reportData.entries.length} entries)</td>
+                        <td className="px-4 py-3.5 text-sm" colSpan={8}>Total ({reportData.entries.length} entries)</td>
                         <td className="px-4 py-3.5 text-sm text-right text-green-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
                         <td className="px-4 py-3.5 text-sm text-right text-red-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
                         <td className="px-4 py-3.5 text-sm text-right">{formatCurrency(reportData.entries.reduce((sum: number, e: any) => sum + (parseFloat(e.fee) || 0), 0))}</td>
