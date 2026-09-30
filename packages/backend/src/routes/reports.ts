@@ -3,6 +3,7 @@ import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
+import { buildReversalReport } from '../services/reversalReport';
 import { loadScopedLedger } from '../services/ledgerQuery';
 
 const router = Router();
@@ -303,6 +304,123 @@ router.get('/balance-trends', authorize('reports.read'), async (req: Request, re
   } catch (error) { next(error); }
 });
 
+type ReversalFilters = { startDate?: unknown; endDate?: unknown; accountId?: unknown };
+
+const reversalScope = (req: Request, { startDate, endDate, accountId }: ReversalFilters) => {
+  const reversals: string[] = [`t.status = 'reversed'`];
+  const reversalParams: any[] = [];
+  let ri = 1;
+  if (startDate) { reversals.push(`rev.created_at >= $${ri++}`); reversalParams.push(startDate); }
+  if (endDate) { reversals.push(`rev.created_at < ($${ri++}::date + INTERVAL '1 day')`); reversalParams.push(endDate); }
+  if (accountId) { reversals.push(`t.account_id = $${ri++}`); reversalParams.push(accountId); }
+  const reversalScopeClause = ownerClause(req, 't', 'transactions.read_all', ri);
+  if (reversalScopeClause.clause) { reversals.push(reversalScopeClause.clause); reversalParams.push(...reversalScopeClause.params); }
+
+  const requests: string[] = [`pr.entity_type = 'transaction'`];
+  const requestParams: any[] = [];
+  let qi = 1;
+  if (startDate) { requests.push(`pr.created_at >= $${qi++}`); requestParams.push(startDate); }
+  if (endDate) { requests.push(`pr.created_at < ($${qi++}::date + INTERVAL '1 day')`); requestParams.push(endDate); }
+  if (accountId) { requests.push(`t.account_id = $${qi++}`); requestParams.push(accountId); }
+  const requestScopeClause = ownerClause(req, 't', 'transactions.read_all', qi);
+  if (requestScopeClause.clause) { requests.push(requestScopeClause.clause); requestParams.push(...requestScopeClause.params); }
+
+  return {
+    reversalWhere: `WHERE ${reversals.join(' AND ')}`,
+    reversalParams,
+    requestWhere: `WHERE ${requests.join(' AND ')}`,
+    requestParams,
+  };
+};
+
+const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
+  const { reversalWhere, reversalParams, requestWhere, requestParams } = reversalScope(req, filters);
+
+  const reversalRows = await query(
+    `SELECT t.id, t.transaction_number, t.amount, t.net_amount, t.additional_charges,
+              t.reference_number, t.description, t.transaction_date,
+              tt.name AS type_name, tt.direction, a.name AS account_name,
+              creator.username AS created_by,
+              rev.id AS reversal_id, rev.transaction_number AS reversal_number,
+              rev.amount AS reversal_amount, rev.created_at AS reversed_at,
+              rev.description AS reversal_description,
+              le.entry_type AS ledger_entry_type, le.amount AS ledger_amount,
+              le.balance_after AS ledger_balance_after,
+              pr.status AS request_status, pr.reason AS reason,
+              requester.username AS requested_by, approver.username AS approved_by,
+              actor.username AS audit_actor, audit.reason AS audit_reason,
+              pr.created_at AS requested_at, pr.updated_at AS decided_at
+       FROM transactions t
+       JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       JOIN accounts a ON t.account_id = a.id
+       LEFT JOIN users creator ON creator.id = t.created_by
+       LEFT JOIN LATERAL (
+         SELECT r.id, r.transaction_number, r.amount, r.created_at, r.description
+         FROM transactions r
+         WHERE r.reference_number = 'REV-' || t.transaction_number::text
+           AND r.status = 'completed'
+           AND r.description LIKE 'Reversal:%'
+         ORDER BY r.created_at ASC
+         LIMIT 1
+       ) rev ON true
+       LEFT JOIN LATERAL (
+         SELECT le2.entry_type, le2.amount, le2.balance_after
+         FROM ledger_entries le2
+         WHERE le2.reference_number = 'REV-' || t.transaction_number::text
+         ORDER BY le2.created_at ASC
+         LIMIT 1
+       ) le ON true
+       LEFT JOIN LATERAL (
+         SELECT p.status, p.reason, p.requested_by, p.approved_by, p.created_at, p.updated_at
+         FROM pending_reversals p
+         WHERE p.entity_type = 'transaction' AND p.entity_id = t.id
+         ORDER BY (p.status = 'approved') DESC, p.created_at DESC
+         LIMIT 1
+       ) pr ON true
+       LEFT JOIN users requester ON requester.id = pr.requested_by
+       LEFT JOIN users approver ON approver.id = pr.approved_by
+       LEFT JOIN LATERAL (
+         SELECT al.user_id, al.new_data->>'reason' AS reason
+         FROM audit_logs al
+         WHERE al.entity_id = t.id::text AND al.action = 'transaction.reversed'
+         ORDER BY al.created_at DESC
+         LIMIT 1
+       ) audit ON true
+       LEFT JOIN users actor ON actor.id::text = audit.user_id::text
+       ${reversalWhere}
+       ORDER BY t.transaction_date DESC, t.transaction_number DESC`,
+    reversalParams
+  );
+
+  const requestRows = await query(
+    `SELECT pr.id, pr.entity_type, pr.entity_id, t.transaction_number,
+              a.name AS account_name, pr.status, pr.reversal_amount, pr.reason,
+              requester.username AS requested_by, approver.username AS approved_by,
+              pr.created_at, pr.updated_at
+       FROM pending_reversals pr
+       JOIN transactions t ON t.id = pr.entity_id
+       JOIN accounts a ON a.id = pr.account_id
+       LEFT JOIN users requester ON requester.id = pr.requested_by
+       LEFT JOIN users approver ON approver.id = pr.approved_by
+       ${requestWhere}
+       ORDER BY pr.created_at DESC, pr.id DESC`,
+    requestParams
+  );
+
+  return buildReversalReport(reversalRows, requestRows);
+};
+
+router.get('/reversal-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const report = await loadReversalReport(req, {
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      accountId: req.query.accountId,
+    });
+    res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
 type ExportColumn = { header: string; key: string };
 
 const csvCell = (value: unknown): string => {
@@ -318,8 +436,50 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
 
     let data: any[] = [];
     let columns: ExportColumn[] = [];
+    let csvTotals: Record<string, unknown> | null = null;
 
-    if (type === 'transaction' || type === 'transactions') {
+    if (type === 'reversal' || type === 'reversals') {
+      const report = await loadReversalReport(req, { startDate, endDate, accountId });
+      data = report.reversals.map((r) => ({
+        transaction_number: r.transactionNumber,
+        type_name: r.typeName,
+        direction: r.direction,
+        account_name: r.accountName,
+        original_amount: r.originalTotal.toFixed(2),
+        charges_amount: r.chargesAmount.toFixed(2),
+        reversed_amount: r.reversedAmount === null ? '' : r.reversedAmount.toFixed(2),
+        reason: r.reason,
+        requested_by: r.requestedBy,
+        approved_by: r.approvedBy,
+        reversed_by: r.reversedBy,
+        reversal_number: r.reversalNumber,
+        reversed_at: r.reversedAt,
+        request_status: r.requestStatus ?? 'direct',
+      }));
+      columns = [
+        { header: 'Number', key: 'transaction_number' },
+        { header: 'Type', key: 'type_name' },
+        { header: 'Direction', key: 'direction' },
+        { header: 'Account', key: 'account_name' },
+        { header: 'Original Amount', key: 'original_amount' },
+        { header: 'Charges', key: 'charges_amount' },
+        { header: 'Reversed Amount', key: 'reversed_amount' },
+        { header: 'Reason', key: 'reason' },
+        { header: 'Requested By', key: 'requested_by' },
+        { header: 'Approved By', key: 'approved_by' },
+        { header: 'Reversed By', key: 'reversed_by' },
+        { header: 'Reversal #', key: 'reversal_number' },
+        { header: 'Reversed On', key: 'reversed_at' },
+        { header: 'Request Status', key: 'request_status' },
+      ];
+      if (data.length > 0) {
+        csvTotals = {
+          transaction_number: 'TOTAL',
+          original_amount: report.summary.originalTotal.toFixed(2),
+          reversed_amount: report.summary.reversedTotal.toFixed(2),
+        };
+      }
+    } else if (type === 'transaction' || type === 'transactions') {
       const conds: string[] = [`t.status NOT IN ($1, 'pending', 'rejected')`];
       const params: any[] = ['reversed'];
       let pi = 2;
@@ -442,7 +602,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Date', key: 'entry_date' },
       ];
     } else {
-      return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger' } });
+      return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger, reversals' } });
     }
 
     if (fmt === 'csv') {
@@ -459,6 +619,10 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
           balance_after: lastBalance,
         };
         csvRows.push(columns.map(c => csvCell(totals[c.key] ?? '')).join(','));
+      }
+      if (csvTotals) {
+        const reversalTotals = csvTotals;
+        csvRows.push(columns.map(c => csvCell(reversalTotals[c.key] ?? '')).join(','));
       }
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${type}_export.csv"`);

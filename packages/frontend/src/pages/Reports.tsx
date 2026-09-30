@@ -1,13 +1,19 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report';
 
 interface Account { id: string; name: string; masked_account_number: string; }
+
+const directionSign = (direction: string | null): string =>
+  direction === 'in' ? '+' : direction === 'out' ? '−' : '';
+
+const reverseSign = (direction: string | null): string =>
+  direction === 'in' ? '−' : direction === 'out' ? '+' : '';
 
 export default function Reports() {
   const [activeReport, setActiveReport] = useState<ReportType>('consolidated');
@@ -47,6 +53,7 @@ export default function Reports() {
       case 'transaction-report': return 'transactions';
       case 'transfer-report': return 'transfers';
       case 'loading-report': return 'loading';
+      case 'reversal-report': return 'reversals';
       default: return null;
     }
   };
@@ -93,12 +100,17 @@ export default function Reports() {
     }
   };
 
+  const reversalDrift = activeReport === 'reversal-report' && reportData?.summary
+    ? (reportData.summary.reversedTotal || 0) - (reportData.summary.originalTotal || 0)
+    : 0;
+
   const reports = [
     { id: 'consolidated' as ReportType, name: 'Consolidated Overview', icon: BarChart3, desc: 'All accounts, transactions, transfers, and loading summary' },
     { id: 'account-statement' as ReportType, name: 'Account Statement', icon: FileText, desc: 'Detailed ledger entries for a specific account' },
     { id: 'transaction-report' as ReportType, name: 'Transaction Report', icon: FileText, desc: 'Transaction history with filters' },
     { id: 'transfer-report' as ReportType, name: 'Transfer Report', icon: ArrowLeftRight, desc: 'Fund transfer history' },
     { id: 'loading-report' as ReportType, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
+    { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
   ];
 
@@ -149,7 +161,7 @@ export default function Reports() {
                 <label className="text-xs text-gray-500">To</label>
                 <input type="date" value={filters.endDate} onChange={e => setFilters({ ...filters, endDate: e.target.value })} className="input-field text-sm" />
               </div>
-              {(activeReport === 'account-statement' || activeReport === 'transaction-report') && (
+              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report') && (
                 <div>
                   <label className="text-xs text-gray-500">Account</label>
                   <select value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })} className="input-field text-sm">
@@ -464,6 +476,135 @@ export default function Reports() {
                               ? <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">OK</span>
                               : <span className="text-xs text-finance-red">{a.issues.join('; ')}</span>}
                           </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'reversal-report' && reportData.reversals ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+                <div className="card">
+                  <p className="text-gray-500">Reversed Transactions</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.reversedCount || 0}</p>
+                  <p className="text-sm text-gray-500">Original movement: {formatCurrency(reportData.summary?.originalTotal || 0)}</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Compensating Amount</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-red">{formatCurrency(reportData.summary?.reversedTotal || 0)}</p>
+                  {Math.abs(reversalDrift) > 0.004
+                    ? <p className="text-sm text-amber-600">Off original by {formatCurrency(reversalDrift)}</p>
+                    : <p className="text-sm text-gray-500">Matches original movement</p>}
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Reversal Requests</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.requestCount || 0}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.approvedRequests || 0} approved · {reportData.summary?.rejectedRequests || 0} rejected</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Awaiting Approval</p>
+                  <p className={`text-2xl font-bold mt-1 ${reportData.summary?.pendingRequests ? 'text-amber-600' : ''}`}>{reportData.summary?.pendingRequests || 0}</p>
+                  <p className="text-sm text-gray-500">{formatCurrency(reportData.summary?.pendingRequestAmount || 0)}</p>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Reversed Transactions</h4>
+                  <p className="text-xs text-gray-500">The original movement against the compensating entry that replaced it</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1100px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Original</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reversed</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reason</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Requested By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Approved By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reversal</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reversed On</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.reversals.length === 0 ? (
+                        <tr><td colSpan={10} className="px-4 py-8 text-center text-sm text-gray-500">No reversed transactions for these filters.</td></tr>
+                      ) : reportData.reversals.map((r: any) => (
+                        <tr key={r.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 font-mono text-sm whitespace-nowrap">{r.transactionNumber}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.accountName}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">
+                            {r.typeName}
+                            <span className={`ml-2 text-xs ${r.direction === 'in' ? 'text-finance-green' : 'text-finance-red'}`}>{directionSign(r.direction)}</span>
+                          </td>
+                          <td className={`px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap ${r.direction === 'in' ? 'text-finance-green' : 'text-finance-red'}`}>
+                            {directionSign(r.direction)}{formatCurrency(r.originalTotal)}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap">
+                            {r.reversedAmount === null
+                              ? <span className="text-xs font-medium text-finance-red">No entry</span>
+                              : <span className={r.direction === 'in' ? 'text-finance-red' : 'text-finance-green'}>{reverseSign(r.direction)}{formatCurrency(r.reversedAmount)}</span>}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm text-gray-700">{r.reason || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.requestedBy || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.approvedBy || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">
+                            <div className="font-mono text-xs">{r.reversalNumber ? `REV-${r.reversalNumber}` : '—'}</div>
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${r.requestStatus === 'approved' ? 'bg-green-100 text-green-700' : r.requestStatus === 'pending' ? 'bg-amber-100 text-amber-700' : r.requestStatus === 'rejected' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
+                              {r.requestStatus || 'direct'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.reversedAt ? new Date(r.reversedAt).toLocaleDateString() : <span className="text-gray-400">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Reversal Requests</h4>
+                  <p className="text-xs text-gray-500">Every reversal requested for these transactions, approved or not</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1000px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reason</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Requested By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Decided By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Requested On</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Decided On</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.requests.length === 0 ? (
+                        <tr><td colSpan={9} className="px-4 py-8 text-center text-sm text-gray-500">No reversal requests for these filters.</td></tr>
+                      ) : reportData.requests.map((q: any) => (
+                        <tr key={q.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 font-mono text-sm whitespace-nowrap">{q.transactionNumber ?? '—'}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.accountName || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(q.amount)}</td>
+                          <td className="px-4 py-3.5 text-center">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${q.status === 'approved' ? 'bg-green-100 text-green-700' : q.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+                              {q.status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm text-gray-700">{q.reason || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.requestedBy || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.approvedBy || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.requestedAt ? new Date(q.requestedAt).toLocaleDateString() : '—'}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.decidedAt && q.status !== 'pending' ? new Date(q.decidedAt).toLocaleDateString() : '—'}</td>
                         </tr>
                       ))}
                     </tbody>
