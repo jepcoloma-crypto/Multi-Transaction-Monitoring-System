@@ -21,7 +21,8 @@ const reversedTransaction = (overrides: Partial<ReversalSourceRow> = {}): Revers
   reversal_amount: '2726.00',
   reversed_at: new Date('2026-09-26T14:19:03.548Z'),
   reversal_description: 'Reversal: Error In Fee',
-  ledger_entry_type: 'credit',
+  original_entry_type: 'debit',
+  reversal_entry_type: 'credit',
   ledger_amount: '2726.00',
   ledger_balance_after: '17552.00',
   request_status: null,
@@ -119,7 +120,8 @@ test('a reversed transaction with no compensating entry is reported but not coun
       reversal_number: null,
       reversal_amount: null,
       reversed_at: null,
-      ledger_entry_type: null,
+      original_entry_type: 'credit',
+      reversal_entry_type: null,
       ledger_amount: null,
       ledger_balance_after: null,
     }),
@@ -130,6 +132,20 @@ test('a reversed transaction with no compensating entry is reported but not coun
   assert.equal(reversals[0].reversalNumber, null);
   assert.equal(summary.originalTotal, 2726);
   assert.equal(summary.reversedTotal, 0);
+});
+
+test('each side reports the ledger row that recorded it rather than a guess from direction', () => {
+  const cashOut = buildReversalReport([reversedTransaction()], []);
+  assert.equal(cashOut.reversals[0].originalEntryType, 'debit');
+  assert.equal(cashOut.reversals[0].reversalEntryType, 'credit');
+
+  const disagrees = buildReversalReport([reversedTransaction({ direction: 'in', original_entry_type: 'credit', reversal_entry_type: 'debit' })], []);
+  assert.equal(disagrees.reversals[0].originalEntryType, 'credit');
+  assert.equal(disagrees.reversals[0].reversalEntryType, 'debit');
+
+  const missing = buildReversalReport([reversedTransaction({ original_entry_type: null, reversal_entry_type: null })], []);
+  assert.equal(missing.reversals[0].originalEntryType, null);
+  assert.equal(missing.reversals[0].reversalEntryType, null);
 });
 
 test('integer identifiers survive as numbers whatever pg hands them over', () => {

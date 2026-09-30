@@ -9,11 +9,14 @@ type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report'
 
 interface Account { id: string; name: string; masked_account_number: string; }
 
-const directionSign = (direction: string | null): string =>
-  direction === 'in' ? '+' : direction === 'out' ? '−' : '';
+// Both sides are read from the ledger rows the reversal wrote rather than
+// derived from the transaction's direction: an operator asking whether a figure
+// was debited or credited wants what the books actually say, not an inference.
+const sideLabel = (side: string | null): string =>
+  side === 'credit' ? 'Credit' : side === 'debit' ? 'Debit' : '—';
 
-const reverseSign = (direction: string | null): string =>
-  direction === 'in' ? '−' : direction === 'out' ? '+' : '';
+const sideClass = (side: string | null): string =>
+  side === 'credit' ? 'text-finance-green' : side === 'debit' ? 'text-finance-red' : 'text-gray-500';
 
 export default function Reports() {
   const [activeReport, setActiveReport] = useState<ReportType>('consolidated');
@@ -544,17 +547,18 @@ export default function Reports() {
                         <tr key={r.id} className="hover:bg-gray-50">
                           <td className="px-4 py-3.5 font-mono text-sm whitespace-nowrap">{r.transactionNumber}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.accountName}</td>
-                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">
-                            {r.typeName}
-                            <span className={`ml-2 text-xs ${r.direction === 'in' ? 'text-finance-green' : 'text-finance-red'}`}>{directionSign(r.direction)}</span>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.typeName}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">
+                            <span className="text-xs font-medium uppercase tracking-wide text-gray-500 mr-1.5">{sideLabel(r.originalEntryType)}</span>
+                            <span className={`font-medium ${sideClass(r.originalEntryType)}`}>{formatCurrency(r.originalTotal)}</span>
                           </td>
-                          <td className={`px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap ${r.direction === 'in' ? 'text-finance-green' : 'text-finance-red'}`}>
-                            {directionSign(r.direction)}{formatCurrency(r.originalTotal)}
-                          </td>
-                          <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap">
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">
                             {r.reversedAmount === null
                               ? <span className="text-xs font-medium text-finance-red">No entry</span>
-                              : <span className={r.direction === 'in' ? 'text-finance-red' : 'text-finance-green'}>{reverseSign(r.direction)}{formatCurrency(r.reversedAmount)}</span>}
+                              : <>
+                                  <span className="text-xs font-medium uppercase tracking-wide text-gray-500 mr-1.5">{sideLabel(r.reversalEntryType)}</span>
+                                  <span className={`font-medium ${sideClass(r.reversalEntryType)}`}>{formatCurrency(r.reversedAmount)}</span>
+                                </>}
                           </td>
                           <td className="px-4 py-3.5 text-sm text-gray-700">{r.reason || <span className="text-gray-400">—</span>}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.requestedBy || <span className="text-gray-400">—</span>}</td>

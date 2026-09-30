@@ -384,8 +384,9 @@ const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
               rev.id AS reversal_id, rev.transaction_number AS reversal_number,
               rev.amount AS reversal_amount, rev.created_at AS reversed_at,
               rev.description AS reversal_description,
-              le.entry_type AS ledger_entry_type, le.amount AS ledger_amount,
+              le.entry_type AS reversal_entry_type, le.amount AS ledger_amount,
               le.balance_after AS ledger_balance_after,
+              orig_le.entry_type AS original_entry_type,
               pr.status AS request_status, pr.reason AS reason,
               requester.username AS requested_by, approver.username AS approved_by,
               actor.username AS audit_actor, audit.reason AS audit_reason,
@@ -402,6 +403,13 @@ const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
          ORDER BY le2.created_at ASC
          LIMIT 1
        ) le ON true
+       LEFT JOIN LATERAL (
+         SELECT o.entry_type
+         FROM ledger_entries o
+         WHERE t.status = 'reversed' AND o.transaction_id = t.id
+         ORDER BY o.created_at ASC, o.id ASC
+         LIMIT 1
+       ) orig_le ON true
        LEFT JOIN users requester ON requester.id = pr.requested_by
        LEFT JOIN users approver ON approver.id = pr.approved_by
        LEFT JOIN users actor ON actor.id::text = audit.user_id::text
@@ -463,8 +471,10 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         type_name: r.typeName,
         direction: r.direction,
         account_name: r.accountName,
+        original_entry_type: r.originalEntryType,
         original_amount: r.originalTotal.toFixed(2),
         charges_amount: r.chargesAmount.toFixed(2),
+        reversal_entry_type: r.reversalEntryType,
         reversed_amount: r.reversedAmount === null ? '' : r.reversedAmount.toFixed(2),
         reason: r.reason,
         requested_by: r.requestedBy,
@@ -479,8 +489,10 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Type', key: 'type_name' },
         { header: 'Direction', key: 'direction' },
         { header: 'Account', key: 'account_name' },
+        { header: 'Original Side', key: 'original_entry_type' },
         { header: 'Original Amount', key: 'original_amount' },
         { header: 'Charges', key: 'charges_amount' },
+        { header: 'Reversal Side', key: 'reversal_entry_type' },
         { header: 'Reversed Amount', key: 'reversed_amount' },
         { header: 'Reason', key: 'reason' },
         { header: 'Requested By', key: 'requested_by' },

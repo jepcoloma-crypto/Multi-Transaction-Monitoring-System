@@ -84,7 +84,8 @@ export interface ReversalSourceRow {
   reversal_amount?: number | string | null;
   reversed_at?: unknown;
   reversal_description?: string | null;
-  ledger_entry_type?: string | null;
+  original_entry_type?: string | null;
+  reversal_entry_type?: string | null;
   ledger_amount?: number | string | null;
   ledger_balance_after?: number | string | null;
   request_status?: string | null;
@@ -124,7 +125,8 @@ export interface ReversalReportRow {
   reversedAmount: number | null;
   reversalNumber: number | null;
   reversedAt: string | null;
-  ledgerEntryType: string | null;
+  originalEntryType: string | null;
+  reversalEntryType: string | null;
   ledgerAmount: number | null;
   ledgerBalanceAfter: number | null;
   reason: string | null;
@@ -204,7 +206,8 @@ export function buildReversalReport(
       reversedAmount: hasEntry ? money(rowReversedCents) : null,
       reversalNumber: asCountOrNull(row.reversal_number),
       reversedAt: asDate(row.reversed_at),
-      ledgerEntryType: asText(row.ledger_entry_type),
+      originalEntryType: asText(row.original_entry_type),
+      reversalEntryType: asText(row.reversal_entry_type),
       ledgerAmount: row.ledger_amount === null || row.ledger_amount === undefined ? null : money(toCents(row.ledger_amount)),
       ledgerBalanceAfter: row.ledger_balance_after === null || row.ledger_balance_after === undefined ? null : money(toCents(row.ledger_balance_after)),
       reason: reversalReason(row.reason, row.audit_reason, row.reversal_description),
