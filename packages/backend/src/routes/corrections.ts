@@ -10,6 +10,7 @@ import { randomUUID } from 'crypto';
 import { simulateCorrection, appendPlannedRows } from '../services/correctionPreview';
 import { validateTierA, TIER_A_FIELDS } from '../services/correctionFields';
 import { planReEntry, RE_ENTERABLE } from '../services/reEntryPlan';
+import { planGapFix, isGapFixDirection, GAP_FIX_DIRECTIONS, GAP_FIX_LABELS } from '../services/gapFixPlan';
 import { updateAccountBalance } from '../services/balance';
 import { createAuditLog } from '../services/audit';
 import type { Simulation, CorrectionEntry } from '../services/correctionPreview';
@@ -36,6 +37,15 @@ const ACCOUNT_COLUMNS = 'a.id, a.name, a.status, a.opening_balance, a.current_ba
 function requireReason(reason: unknown): string {
   if (typeof reason !== 'string' || !reason.trim()) throw createError(400, 'reason is required');
   return reason.trim();
+}
+
+// Postgres rejects a non-uuid literal with 22P02, which the error middleware
+// surfaces as a 500 — bad input from a caller should never reach it as a fault.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function requireUuid(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !UUID_RE.test(value)) throw createError(400, `${field} must be a UUID`);
+  return value;
 }
 
 function requireSource(sourceType: string, sourceId: string): string {
@@ -78,6 +88,217 @@ router.get('/audit', authorize('reports.read'), async (req: Request, res: Respon
     const scope = ownerClause(req, 'a', 'accounts.read_all', 1);
     const { accounts, entries } = await loadScopedLedger(scope);
     res.json({ success: true, data: auditLedger(accounts, entries) });
+  } catch (error) { next(error); }
+});
+
+// ------------------------------------------------------------ gap fixes -----
+// detect -> propose -> human approve -> guarded apply. Nothing in this block
+// writes money on its own: the plan is recomputed from the ledger under FOR
+// UPDATE at approval time, and the transaction commits only if the account
+// reconciles afterwards.
+
+const GAP_FIX_STATUS = new Set(['pending', 'approved', 'rejected']);
+
+const GAP_FIX_LIST_SQL = `
+  SELECT gf.id, gf.account_id, gf.direction, gf.observed_gap, gf.reason, gf.status,
+         gf.proposed_by, gf.decided_by, gf.decision_reason, gf.applied_at,
+         gf.created_at, gf.updated_at,
+         a.name AS account_name, u.username AS proposed_by_username,
+         d.username AS decided_by_username
+  FROM gap_fixes gf
+  JOIN accounts a ON a.id = gf.account_id
+  JOIN users u ON u.id = gf.proposed_by
+  LEFT JOIN users d ON d.id = gf.decided_by
+  WHERE ($1::text IS NULL OR gf.status = $1)
+  ORDER BY gf.created_at ASC`;
+
+router.get('/gap-fixes', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const requested = req.query.status;
+    if (requested !== undefined && (typeof requested !== 'string' || !GAP_FIX_STATUS.has(requested))) {
+      throw createError(400, `status must be one of ${[...GAP_FIX_STATUS].join(', ')}`);
+    }
+    const status = typeof requested === 'string' ? requested : null;
+    const rows = await query(GAP_FIX_LIST_SQL, [status]);
+
+    // An approver must read drift, not just what was written down: the proposal
+    // only stands while the gap is still the amount it was recorded as.
+    const accountIds = [...new Set(rows.map((r: any) => r.account_id))];
+    const live = new Map<string, number>();
+    if (accountIds.length > 0) {
+      const { accounts, entries } = await loadAccountsAndEntries(accountIds);
+      for (const account of auditLedger(accounts, entries).accounts) live.set(account.id, account.gap);
+    }
+
+    res.json({
+      success: true,
+      data: { data: rows.map((r: any) => ({ ...r, liveGap: live.get(r.account_id) ?? null })) },
+    });
+  } catch (error) { next(error); }
+});
+
+router.post('/gap-fixes', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const direction = req.body?.direction;
+    const reason = requireReason(req.body?.reason);
+    if (!req.body?.accountId) throw createError(400, 'accountId is required');
+    const accountId = requireUuid(req.body.accountId, 'accountId');
+    if (!isGapFixDirection(direction)) {
+      throw createError(400, `direction must be one of ${GAP_FIX_DIRECTIONS.join(', ')}`);
+    }
+
+    const { accounts, entries } = await loadAccountsAndEntries([accountId]);
+    if (accounts.length === 0) throw createError(404, 'Account not found');
+
+    const audit = auditLedger(accounts, entries).accounts[0];
+    const plan = planGapFix(audit, direction);
+    if (plan.problems.length > 0) throw createError(409, `Cannot propose a gap fix: ${plan.problems.join('; ')}`);
+
+    const fix = await queryOne(
+      `INSERT INTO gap_fixes (account_id, direction, observed_gap, reason, proposed_by)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [accountId, direction, plan.gap, reason, req.user!.userId]
+    );
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'gap_fix.proposed',
+      entity: 'gap_fix',
+      entityId: fix!.id,
+      ipAddress: req.ip,
+      reason,
+      newData: { accountName: audit.name, direction, observedGap: plan.gap, amount: plan.amount },
+    });
+
+    res.status(201).json({
+      success: true,
+      data: { fix, plan, belief: GAP_FIX_LABELS[direction], account: { id: audit.id, name: audit.name, audit } },
+    });
+  } catch (error) { next(error); }
+});
+
+router.post('/gap-fixes/:fixId/approve', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
+  if (!(req.user!.roles || []).includes('administrator')) {
+    return next(createError(403, 'Only administrators can approve a gap fix'));
+  }
+
+  let started = false;
+  const client = await getClient();
+  try {
+    const fixId = requireUuid(req.params.fixId, 'fixId');
+    await client.query('BEGIN');
+    started = true;
+
+    const fix = (await client.query('SELECT * FROM gap_fixes WHERE id = $1 FOR UPDATE', [fixId])).rows[0];
+    if (!fix) throw createError(404, 'Gap fix not found');
+    if (fix.status !== 'pending') throw createError(409, `This gap fix was already ${fix.status}`);
+    if (fix.proposed_by === req.user!.userId) {
+      throw createError(403, 'You cannot approve your own gap fix proposal');
+    }
+
+    await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [fix.account_id]);
+
+    const { accounts, entries } = await loadAccountsAndEntries([fix.account_id], client);
+    const audit = auditLedger(accounts, entries).accounts[0];
+    const plan = planGapFix(audit, fix.direction);
+    if (plan.problems.length > 0) throw createError(409, `Cannot apply: ${plan.problems.join('; ')}`);
+
+    const proposed = parseFloat(fix.observed_gap);
+    if (plan.gap !== proposed) {
+      throw createError(
+        409,
+        `The gap moved from ${proposed.toFixed(2)} to ${plan.gap.toFixed(2)} after this was proposed — ` +
+          'reject it and propose again'
+      );
+    }
+
+    if (fix.direction === 'record_entry') {
+      // The balance already holds the money; only the ledger is behind, so
+      // current_balance is left alone and the row lands on it.
+      await client.query(
+        `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
+         VALUES ($1, 'gap_fix', $2, $3, $4, $5, $6, NOW())`,
+        [fix.account_id, fix.id, plan.entryType!, plan.amount, plan.balanceAfter!, `Gap fix: ${fix.reason}`]
+      );
+    } else {
+      await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [
+        plan.newBalance!,
+        fix.account_id,
+      ]);
+    }
+
+    const verdict = await auditInside(client, [fix.account_id]);
+    const after = verdict.accounts[0];
+    if (!after.reconciled) {
+      throw createError(409, `Refusing to commit — ${after.name} does not reconcile after the fix (${after.issues.join('; ')})`);
+    }
+
+    const updated = (
+      await client.query(
+        `UPDATE gap_fixes SET status = 'approved', decided_by = $1, applied_at = NOW(), updated_at = NOW()
+         WHERE id = $2 AND status = 'pending' RETURNING *`,
+        [req.user!.userId, fix.id]
+      )
+    ).rows[0];
+    if (!updated) throw createError(409, 'This gap fix was already processed');
+
+    await client.query('COMMIT');
+    started = false;
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'gap_fix.applied',
+      entity: 'gap_fix',
+      entityId: fix.id,
+      ipAddress: req.ip,
+      reason: fix.reason,
+      oldData: { direction: fix.direction, gap: plan.gap, currentBalance: audit.currentBalance },
+      newData: { gap: after.gap, currentBalance: after.currentBalance, expectedBalance: after.expectedBalance },
+    });
+
+    res.json({ success: true, data: { fix: updated, plan, before: audit, after } });
+  } catch (error) {
+    if (started) await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+router.post('/gap-fixes/:fixId/reject', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
+  if (!(req.user!.roles || []).includes('administrator')) {
+    return next(createError(403, 'Only administrators can reject a gap fix'));
+  }
+
+  try {
+    const reason = requireReason(req.body?.reason);
+    const fixId = requireUuid(req.params.fixId, 'fixId');
+    const fix = await queryOne('SELECT * FROM gap_fixes WHERE id = $1', [fixId]);
+    if (!fix) throw createError(404, 'Gap fix not found');
+    if (fix.status !== 'pending') throw createError(409, `This gap fix was already ${fix.status}`);
+    if (fix.proposed_by === req.user!.userId) {
+      throw createError(403, 'You cannot reject your own gap fix proposal');
+    }
+
+    const updated = await queryOne(
+      `UPDATE gap_fixes SET status = 'rejected', decided_by = $1, decision_reason = $2, updated_at = NOW()
+       WHERE id = $3 AND status = 'pending' RETURNING *`,
+      [req.user!.userId, reason, fix.id]
+    );
+    if (!updated) throw createError(409, 'This gap fix was already processed');
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'gap_fix.rejected',
+      entity: 'gap_fix',
+      entityId: fix.id,
+      ipAddress: req.ip,
+      reason,
+      oldData: { direction: fix.direction, observedGap: fix.observed_gap, proposedBy: fix.proposed_by },
+      newData: { decisionReason: reason },
+    });
+
+    res.json({ success: true, data: updated });
   } catch (error) { next(error); }
 });
 
