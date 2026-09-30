@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { simulateCorrection } from '../services/correctionPreview';
+import { simulateCorrection, appendPlannedRows } from '../services/correctionPreview';
+import { auditLedger } from '../services/ledgerAudit';
 import type { LedgerAuditAccount, LedgerAuditEntry } from '../services/ledgerAudit';
 import type { LedgerRowRef } from '../services/ledgerQuery';
 
@@ -207,4 +208,108 @@ test('a no-op correction appends nothing and leaves the account as it was', () =
   assert.equal(sim.affectedAccountsAfter[0].gap, 0);
   assert.equal(sim.affectedAccountsAfter[0].chainBreaks, 0);
   assert.equal(sim.affectedAccountsAfter[0].reconciled, true);
+});
+
+test('a re-entry writes a reversal and a replacement onto the same account', () => {
+  const accounts = [account('a1', 1000, 1321), account('a2', 5000, 5000)];
+  const entries = [entry('e1', 'a1', { amount: '321.00', balance_after: '1321.00' })];
+
+  const applied = appendPlannedRows(accounts, entries, [
+    { accountId: 'a1', entryType: 'debit', amount: 321, sourceId: SOURCE },
+    { accountId: 'a2', entryType: 'credit', amount: 321, sourceId: 'new-record' },
+  ]);
+
+  assert.equal(applied.problems.length, 0);
+  assert.deepEqual(
+    applied.corrections.map((c) => [c.accountId, c.entryType, c.amount, c.balanceAfter]),
+    [
+      ['a1', 'debit', 321, 1000],
+      ['a2', 'credit', 321, 5321],
+    ]
+  );
+  assert.equal(applied.simulatedAccounts.find((a) => a.id === 'a1')!.current_balance, 1000);
+  assert.equal(applied.simulatedAccounts.find((a) => a.id === 'a2')!.current_balance, 5321);
+
+  const appended = applied.simulatedEntries.filter((e) => e.id.startsWith('planned-'));
+  assert.equal(appended.length, 2);
+  assert.deepEqual(appended.map((e) => e.source_id), [SOURCE, 'new-record']);
+});
+
+test('two rows that net to nothing on one account are both written and reconciled', () => {
+  const accounts = [account('a1', 1000, 1321)];
+  const entries = [entry('e1', 'a1', { amount: '321.00', balance_after: '1321.00' })];
+
+  const applied = appendPlannedRows(accounts, entries, [
+    { accountId: 'a1', entryType: 'credit', amount: 321, sourceId: SOURCE },
+    { accountId: 'a1', entryType: 'debit', amount: 321, sourceId: 'new-record' },
+  ]);
+
+  assert.equal(applied.corrections.length, 2);
+  assert.equal(applied.simulatedAccounts[0].current_balance, 1321);
+  assert.equal(applied.problems.length, 0);
+
+  const after = appendPlannedRows(accounts, entries, applied.applied);
+  const audit = auditLedger(after.simulatedAccounts, after.simulatedEntries);
+  assert.equal(audit.accounts[0].gap, 0);
+  assert.equal(audit.accounts[0].chainBreaks, 0);
+  assert.equal(audit.accounts[0].reconciled, true);
+  assert.equal(audit.accounts[0].entryCount, 3);
+});
+
+test('a replacement is written before the reversal when reversing first would dip negative', () => {
+  // This account is the destination of a transfer whose source is being fixed:
+  // it keeps the money, so it gets a reversal (debit) and a replacement (credit)
+  // that net to nothing. It has already spent most of what it received, so
+  // reversing first would invent a -50 row the operator never asked for.
+  const accounts = [account('a1', 0, 50)];
+  const entries = [
+    entry('e1', 'a1', { amount: '100.00', balance_after: '100.00', created_at: at(0) }),
+    entry('e2', 'a1', { entry_type: 'debit', amount: '50.00', balance_after: '50.00', created_at: at(1) }),
+  ];
+
+  const applied = appendPlannedRows(accounts, entries, [
+    { accountId: 'a1', entryType: 'debit', amount: 100, sourceId: SOURCE },
+    { accountId: 'a1', entryType: 'credit', amount: 100, sourceId: 'new-record' },
+  ]);
+
+  assert.equal(applied.problems.length, 0);
+  assert.deepEqual(
+    applied.corrections.map((c) => [c.entryType, c.balanceAfter]),
+    [
+      ['credit', 150],
+      ['debit', 50],
+    ]
+  );
+  assert.equal(applied.simulatedAccounts[0].current_balance, 50);
+  assert.deepEqual(applied.applied.map((r) => r.sourceId), ['new-record', SOURCE]);
+});
+
+test('a balance that genuinely ends up negative is still reported', () => {
+  const accounts = [account('a1', 100, 50)];
+  const entries = [entry('e1', 'a1', { entry_type: 'debit', amount: '50.00', balance_after: '50.00' })];
+
+  const applied = appendPlannedRows(accounts, entries, [
+    { accountId: 'a1', entryType: 'debit', amount: 100, sourceId: SOURCE },
+  ]);
+
+  assert.equal(applied.problems.length, 1);
+  assert.match(applied.problems[0], /account account-a1 would fall to -50\.00/);
+});
+
+test('applied is returned in the exact order the rows were written', () => {
+  const accounts = [account('a1', 1000, 1321), account('a2', 5000, 5000)];
+  const entries = [entry('e1', 'a1', { amount: '321.00', balance_after: '1321.00' })];
+
+  const planned = [
+    { accountId: 'a1', entryType: 'debit' as const, amount: 321, sourceId: SOURCE },
+    { accountId: 'a2', entryType: 'credit' as const, amount: 321, sourceId: 'new-record' },
+  ];
+  const applied = appendPlannedRows(accounts, entries, planned);
+
+  assert.deepEqual(applied.applied, planned);
+  assert.equal(applied.applied.length, applied.corrections.length);
+  assert.deepEqual(
+    applied.applied.map((r) => applied.corrections.find((c) => c.accountId === r.accountId && c.amount === r.amount)!.balanceAfter),
+    [1000, 5321]
+  );
 });
