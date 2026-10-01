@@ -4,6 +4,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
+import { buildIncomeReport, type IncomeReport } from '../services/incomeReport';
 import { statementReversal } from '../services/statementReversal';
 import { loadScopedLedger } from '../services/ledgerQuery';
 
@@ -488,6 +489,114 @@ router.get('/reversal-report', authorize('reports.read'), async (req: Request, r
   } catch (error) { next(error); }
 });
 
+type IncomeFilters = { startDate?: unknown; endDate?: unknown; accountId?: unknown };
+
+// Three income sources on three tables, each with its own date column and its
+// own read scope, so each is aggregated inside the join it belongs to. Accounts
+// drive the rows: an account with no activity in the period still appears, with
+// zeros, because a per-account report that silently drops accounts reads as
+// data loss. Every subquery scopes on its own permission, so this can never
+// reveal more than the individual reports already would.
+const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<IncomeReport> => {
+  const { startDate, endDate, accountId } = filters;
+  const params: any[] = [];
+  let pi = 1;
+
+  const txnConds: string[] = [`t.status IN ('completed', 'reversed')`];
+  if (startDate) { txnConds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
+  if (endDate) { txnConds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+  const txnScope = ownerClause(req, 't', 'transactions.read_all', pi);
+  if (txnScope.clause) { txnConds.push(txnScope.clause); params.push(...txnScope.params); pi = txnScope.paramIndex; }
+
+  const trfConds: string[] = [`tr.status = 'completed'`];
+  if (startDate) { trfConds.push(`tr.transfer_date >= $${pi++}`); params.push(startDate); }
+  if (endDate) { trfConds.push(`tr.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+  const trfScope = ownerClause(req, 'tr', 'transfers.read_all', pi);
+  if (trfScope.clause) { trfConds.push(trfScope.clause); params.push(...trfScope.params); pi = trfScope.paramIndex; }
+
+  const ldConds: string[] = [`lt.status = 'completed'`];
+  if (startDate) { ldConds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
+  if (endDate) { ldConds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+  const ldScope = ownerClause(req, 'lt', 'loading.read_all', pi);
+  if (ldScope.clause) { ldConds.push(ldScope.clause); params.push(...ldScope.params); pi = ldScope.paramIndex; }
+
+  const accountConds: string[] = [];
+  if (accountId) { accountConds.push(`a.id = $${pi++}`); params.push(accountId); }
+  const accountScope = ownerClause(req, 'a', 'accounts.read_all', pi);
+  if (accountScope.clause) { accountConds.push(accountScope.clause); params.push(...accountScope.params); pi = accountScope.paramIndex; }
+  const accountWhere = accountConds.length > 0 ? `WHERE ${accountConds.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT a.id AS account_id,
+            a.name AS account_name,
+            p.name AS provider_name,
+            typ.name AS account_type,
+            txn.cnt AS txn_count,
+            txn.fees AS txn_fees,
+            txn.charges AS additional_charges,
+            txn.excluded AS reversed_excluded,
+            trf.cnt AS transfer_count,
+            trf.fees AS transfer_fees,
+            ld.cnt AS load_count,
+            ld.revenue AS load_revenue,
+            ld.cost AS load_cost,
+            ld.margin AS load_margin
+     FROM accounts a
+     LEFT JOIN providers p ON p.id = a.provider_id
+     LEFT JOIN account_types typ ON typ.id = a.account_type_id
+     LEFT JOIN (
+       SELECT t.account_id,
+              COUNT(*) FILTER (WHERE t.status = 'completed') AS cnt,
+              COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed'), 0) AS fees,
+              COALESCE(SUM(chg.total) FILTER (WHERE t.status = 'completed'), 0) AS charges,
+              COALESCE(SUM(COALESCE(t.fee, 0) + chg.total) FILTER (WHERE t.status = 'reversed'), 0) AS excluded
+       FROM transactions t
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
+       WHERE ${txnConds.join(' AND ')}
+       GROUP BY t.account_id
+     ) txn ON txn.account_id = a.id
+     LEFT JOIN (
+       SELECT tr.source_account_id AS account_id,
+              COUNT(*) AS cnt,
+              COALESCE(SUM(tr.transfer_fee), 0) AS fees
+       FROM transfers tr
+       WHERE ${trfConds.join(' AND ')}
+       GROUP BY tr.source_account_id
+     ) trf ON trf.account_id = a.id
+     LEFT JOIN (
+       SELECT lt.account_id,
+              COUNT(*) AS cnt,
+              COALESCE(SUM(lt.total_revenue), 0) AS revenue,
+              COALESCE(SUM(lt.total_cost), 0) AS cost,
+              COALESCE(SUM(lt.profit), 0) AS margin
+       FROM loading_transactions lt
+       WHERE ${ldConds.join(' AND ')}
+       GROUP BY lt.account_id
+     ) ld ON ld.account_id = a.id
+     ${accountWhere}
+     ORDER BY a.name`,
+    params
+  );
+
+  return buildIncomeReport(rows);
+};
+
+router.get('/income-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const report = await loadIncomeReport(req, {
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      accountId: req.query.accountId,
+    });
+    res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
 type ExportColumn = { header: string; key: string };
 
 const csvCell = (value: unknown): string => {
@@ -642,6 +751,56 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Status', key: 'status' },
         { header: 'Date', key: 'created_at' },
       ];
+    } else if (type === 'income') {
+      const report = await loadIncomeReport(req, { startDate, endDate, accountId });
+      data = report.rows.map((r) => ({
+        account_name: r.accountName,
+        provider_name: r.providerName ?? '',
+        account_type: r.accountType ?? '',
+        transaction_count: r.txnCount,
+        transaction_fees: r.txnFees.toFixed(2),
+        additional_charges: r.additionalCharges.toFixed(2),
+        transfer_count: r.transferCount,
+        transfer_fees: r.transferFees.toFixed(2),
+        fee_income: r.feeIncome.toFixed(2),
+        loading_count: r.loadCount,
+        loading_revenue: r.loadRevenue.toFixed(2),
+        loading_cost: r.loadCost.toFixed(2),
+        loading_margin: r.loadMargin.toFixed(2),
+        total_income: r.totalIncome.toFixed(2),
+        reversed_excluded: r.reversedExcluded.toFixed(2),
+      }));
+      columns = [
+        { header: 'Account', key: 'account_name' },
+        { header: 'Provider', key: 'provider_name' },
+        { header: 'Type', key: 'account_type' },
+        { header: 'Transactions', key: 'transaction_count' },
+        { header: 'Transaction Fees', key: 'transaction_fees' },
+        { header: 'Additional Charges', key: 'additional_charges' },
+        { header: 'Transfers', key: 'transfer_count' },
+        { header: 'Transfer Fees', key: 'transfer_fees' },
+        { header: 'Fee Income', key: 'fee_income' },
+        { header: 'Loadings', key: 'loading_count' },
+        { header: 'Loading Revenue', key: 'loading_revenue' },
+        { header: 'Loading Cost', key: 'loading_cost' },
+        { header: 'Loading Margin', key: 'loading_margin' },
+        { header: 'Total Income', key: 'total_income' },
+        { header: 'Reversed (Excluded)', key: 'reversed_excluded' },
+      ];
+      if (data.length > 0) {
+        csvTotals = {
+          account_name: 'TOTAL',
+          transaction_fees: report.summary.txnFees.toFixed(2),
+          additional_charges: report.summary.additionalCharges.toFixed(2),
+          transfer_fees: report.summary.transferFees.toFixed(2),
+          fee_income: report.summary.feeIncome.toFixed(2),
+          loading_revenue: report.summary.loadRevenue.toFixed(2),
+          loading_cost: report.summary.loadCost.toFixed(2),
+          loading_margin: report.summary.loadMargin.toFixed(2),
+          total_income: report.summary.totalIncome.toFixed(2),
+          reversed_excluded: report.summary.reversedExcluded.toFixed(2),
+        };
+      }
     } else if (type === 'ledger') {
       if (!accountId) {
         return res.status(400).json({ success: false, error: { message: 'Select an account to export the account statement.' } });
