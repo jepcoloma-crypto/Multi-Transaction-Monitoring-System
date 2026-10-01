@@ -64,3 +64,73 @@
     display: none;
   }
 }
+
+/* Reports run 10-13 columns wide, so paper is landscape and the horizontal
+   scroll containers that exist to fit a screen are dropped. Colors are forced
+   on because the reversed-row tint and the green/amber figures carry meaning
+   that a grayscale print would quietly erase. */
+@media print {
+  @page {
+    size: landscape;
+    margin: 10mm;
+  }
+
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  .overflow-x-auto,
+  .overflow-hidden {
+    overflow: visible !important;
+  }
+
+  table {
+    min-width: 0 !important;
+    width: 100% !important;
+    border-collapse: collapse;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tr,
+  td,
+  th {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Headers may wrap to two lines to stay on the page; the figures in the cells
+     stay on one. */
+  table th {
+    white-space: normal !important;
+  }
+
+  table th,
+  table td {
+    padding-top: 3px !important;
+    padding-bottom: 3px !important;
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+    font-size: 9.5px !important;
+  }
+
+  /* The expanded drill-down is far taller than one page, so it must be the one
+     thing allowed to flow across the break. */
+  tr.detail-row,
+  tr.detail-row > td {
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+
+  .card {
+    box-shadow: none !important;
+  }
+}

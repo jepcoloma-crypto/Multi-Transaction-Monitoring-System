@@ -278,7 +278,7 @@ const TransfersTable = ({ rows, summary, parent }: { rows: TransferRow[]; summar
 export function IncomeDetailPanel({ detail, tab, onTab, parent }: Props) {
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-1 border-b border-gray-200">
+      <div className="flex flex-wrap items-center gap-1 border-b border-gray-200 print:hidden">
         {TABS.map((t) => {
           const active = tab === t.id;
           return (
@@ -295,10 +295,21 @@ export function IncomeDetailPanel({ detail, tab, onTab, parent }: Props) {
         })}
       </div>
 
+      {/* A printed statement has no tabs to switch, so all three tables are kept
+          in the DOM and only the chosen one is shown on screen. */}
       <div className="pt-3">
-        {tab === 'cash' && (detail.cash.length === 0 ? <EmptyTab tab="cash" /> : <CashTable rows={detail.cash} summary={detail.summary} parent={parent} />)}
-        {tab === 'loading' && (detail.loading.length === 0 ? <EmptyTab tab="loading" /> : <LoadingTable rows={detail.loading} summary={detail.summary} parent={parent} />)}
-        {tab === 'transfers' && (detail.transfers.length === 0 ? <EmptyTab tab="transfers" /> : <TransfersTable rows={detail.transfers} summary={detail.summary} parent={parent} />)}
+        <div className={tab === 'cash' ? '' : 'hidden print:block'}>
+          <h5 className="hidden print:block font-semibold text-sm text-gray-800 mb-1">Cash Transactions</h5>
+          {detail.cash.length === 0 ? <EmptyTab tab="cash" /> : <CashTable rows={detail.cash} summary={detail.summary} parent={parent} />}
+        </div>
+        <div className={tab === 'loading' ? '' : 'hidden print:block'}>
+          <h5 className="hidden print:block font-semibold text-sm text-gray-800 mb-1 mt-5">Loading</h5>
+          {detail.loading.length === 0 ? <EmptyTab tab="loading" /> : <LoadingTable rows={detail.loading} summary={detail.summary} parent={parent} />}
+        </div>
+        <div className={tab === 'transfers' ? '' : 'hidden print:block'}>
+          <h5 className="hidden print:block font-semibold text-sm text-gray-800 mb-1 mt-5">Transfers</h5>
+          {detail.transfers.length === 0 ? <EmptyTab tab="transfers" /> : <TransfersTable rows={detail.transfers} summary={detail.summary} parent={parent} />}
+        </div>
       </div>
     </div>
   );

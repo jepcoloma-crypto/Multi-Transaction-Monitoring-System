@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, TrendingUp, ChevronRight } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, TrendingUp, ChevronRight, Printer } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
@@ -177,13 +177,24 @@ export default function Reports() {
 
   return (
     <div className="space-y-6">
-      <div>
+      <div className="print:hidden">
         <h2 className="text-lg font-semibold text-gray-900">Reports & Analytics</h2>
         <p className="text-sm text-gray-600">Financial reports and data export</p>
       </div>
 
+      <div className="hidden print:block border-b border-gray-300 pb-3 mb-4">
+        <h2 className="text-lg font-bold text-gray-900">{reports.find(r => r.id === activeReport)?.name}</h2>
+        <p className="text-sm text-gray-700">
+          Account: {accounts.find(a => a.id === filters.accountId)?.name || 'All accounts'} · Period:{' '}
+          {filters.startDate || filters.endDate
+            ? `${filters.startDate || 'start'} to ${filters.endDate || 'today'}`
+            : 'all dates'}
+        </p>
+        <p className="text-xs text-gray-500">Generated {new Date().toLocaleString()}</p>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-1 space-y-2">
+        <div className="lg:col-span-1 space-y-2 print:hidden">
           {reports.map(r => (
             <button key={r.id} onClick={() => { if (r.id !== activeReport) { setActiveReport(r.id); setReportData(null); } setExportError(''); }}
               className={`w-full text-left p-3 rounded-lg transition-colors ${activeReport === r.id ? 'bg-primary-100 text-primary-700 border border-primary-200' : 'text-gray-700 hover:bg-gray-100'}`}>
@@ -199,16 +210,24 @@ export default function Reports() {
         </div>
 
         <div className="lg:col-span-3 space-y-4">
-          <div className="card">
+          <div className="card print:hidden">
             <div className="flex items-start justify-between gap-4 mb-4">
               <h3 className="font-semibold">{reports.find(r => r.id === activeReport)?.name}</h3>
               <div className="text-right shrink-0">
-                {exportType(activeReport) && (
-                  <button onClick={exportCSV} disabled={exporting}
-                    className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
-                    <Download className="w-4 h-4" /> {exporting ? 'Exporting...' : 'Export CSV'}
-                  </button>
-                )}
+                <div className="flex items-center justify-end gap-2">
+                  {activeReport === 'income-report' && (
+                    <button onClick={() => window.print()}
+                      className="btn-secondary flex items-center gap-2 text-sm">
+                      <Printer className="w-4 h-4" /> Print / PDF
+                    </button>
+                  )}
+                  {exportType(activeReport) && (
+                    <button onClick={exportCSV} disabled={exporting}
+                      className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                      <Download className="w-4 h-4" /> {exporting ? 'Exporting...' : 'Export CSV'}
+                    </button>
+                  )}
+                </div>
                 {exportError && <p className="text-xs text-red-600 mt-1 max-w-[22rem]">{exportError}</p>}
               </div>
             </div>
@@ -574,7 +593,7 @@ export default function Reports() {
             </div>
           ) : activeReport === 'income-report' && reportData.rows ? (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm print:grid-cols-4">
                 <div className="card">
                   <p className="text-gray-500">Total Income</p>
                   <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.summary?.totalIncome || 0)}</p>
@@ -657,7 +676,7 @@ export default function Reports() {
                               <td className="px-4 py-3.5 text-sm text-right font-mono text-amber-600">{r.reversedExcluded > 0 ? formatCurrency(r.reversedExcluded) : '—'}</td>
                             </tr>
                             {isOpen && (
-                              <tr className="bg-gray-50">
+                              <tr className="bg-gray-50 detail-row">
                                 <td colSpan={13} className="border-t border-gray-200 px-4 pb-5 pt-1">
                                   {detailLoading[r.accountId] ? (
                                     <p className="py-4 text-center text-sm text-gray-500">Loading transactions…</p>
