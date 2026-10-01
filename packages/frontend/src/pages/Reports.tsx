@@ -209,7 +209,7 @@ export default function Reports() {
           ))}
         </div>
 
-        <div className="lg:col-span-3 space-y-4">
+        <div className="lg:col-span-3 space-y-4 print-full-width">
           <div className="card print:hidden">
             <div className="flex items-start justify-between gap-4 mb-4">
               <h3 className="font-semibold">{reports.find(r => r.id === activeReport)?.name}</h3>

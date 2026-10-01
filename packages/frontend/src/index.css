@@ -133,4 +133,16 @@
   .card {
     box-shadow: none !important;
   }
+
+  /* Hiding the report picker leaves its column track behind, which would pin the
+     report to 3 of the grid's 4 columns and clip the last two money columns. */
+  .print-full-width {
+    grid-column: 1 / -1 !important;
+  }
+
+  /* Keep a section heading off the foot of a page with its table below it. */
+  tr.detail-row h5 {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
 }
