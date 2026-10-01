@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIncomeReport, type IncomeSourceRow } from '../services/incomeReport';
+import { buildIncomeReport, buildIncomeDetail, type IncomeSourceRow } from '../services/incomeReport';
 
 const row = (overrides: Partial<IncomeSourceRow> = {}): IncomeSourceRow => ({
   account_id: 'acc-1',
@@ -132,4 +132,138 @@ test('an account with no name falls back to its identifier rather than a blank c
   const { rows } = buildIncomeReport([{ account_id: 'acc-9', account_name: '   ' }]);
 
   assert.equal(rows[0].accountName, 'acc-9');
+});
+
+// The tree behind an account row.
+
+test('the cash tab totals exactly what the account row prints beside it', () => {
+  const detail = buildIncomeDetail({
+    cash: [
+      { id: 'c1', status: 'completed', fee: '1800.00', charges: '30.00' },
+      { id: 'c2', status: 'completed', fee: '0.00', charges: '0.00' },
+      { id: 'c3', status: 'reversed', fee: '175.00', charges: '15.00' },
+    ],
+  });
+  const parent = buildIncomeReport([
+    { account_id: 'a', account_name: 'Jed', txn_fees: '1800.00', additional_charges: '30.00', reversed_excluded: '190.00' },
+  ]);
+
+  // The whole point of the drill-down is that two independently summed figures
+  // agree. If they were both copied from one source they could not disagree.
+  assert.equal(detail.summary.earned, parent.rows[0].txnFees + parent.rows[0].additionalCharges);
+  assert.equal(detail.summary.refunded, parent.rows[0].reversedExcluded);
+  assert.equal(detail.summary.cashCount, 3);
+  assert.equal(detail.summary.cashCompletedCount, 2);
+  assert.equal(detail.summary.cashReversedCount, 1);
+});
+
+test('a reversed fee is totalled as refunded and never reaches earned', () => {
+  const { cash, summary } = buildIncomeDetail({
+    cash: [
+      { id: 'c1', status: 'completed', fee: '10.00', charges: '5.00' },
+      { id: 'c2', status: 'reversed', fee: '25.00', charges: '15.00' },
+    ],
+  });
+
+  assert.equal(summary.earnedFee, 10);
+  assert.equal(summary.earnedCharges, 5);
+  assert.equal(summary.earned, 15);
+  assert.equal(summary.refundedFee, 25);
+  assert.equal(summary.refundedCharges, 15);
+  assert.equal(summary.refunded, 40);
+  assert.equal(cash[0].isReversed, false);
+  assert.equal(cash[1].isReversed, true);
+  assert.equal(cash[1].feeCharges, 40);
+});
+
+test('a row with no fee or charge still appears, contributing nothing', () => {
+  const { cash, summary } = buildIncomeDetail({
+    cash: [{ id: 'c1', status: 'completed', fee: '0.00', charges: null }],
+  });
+
+  assert.equal(cash.length, 1);
+  assert.equal(cash[0].feeCharges, 0);
+  assert.equal(summary.earned, 0);
+  assert.equal(summary.cashCompletedCount, 1);
+});
+
+test('the loading tab totals revenue, cost and margin from its own rows', () => {
+  const { loading, summary } = buildIncomeDetail({
+    loading: [
+      { id: 'l1', total_revenue: '10.10', total_cost: '10.05', profit: '0.05' },
+      { id: 'l2', total_revenue: '20.00', total_cost: '19.00', profit: '1.00' },
+    ],
+  });
+
+  assert.equal(loading[0].revenue, 10.1);
+  assert.equal(loading[0].cost, 10.05);
+  assert.equal(summary.loadRevenue, 30.1);
+  assert.equal(summary.loadCost, 29.05);
+  // 0.05 + 1.00 summed as floats is 1.0500000000000003.
+  assert.equal(summary.loadMargin, 1.05);
+  assert.equal(summary.loadingCount, 2);
+});
+
+test('a fractional quantity survives rather than being rounded down', () => {
+  const { loading } = buildIncomeDetail({ loading: [{ id: 'l1', quantity: '1.5' }] });
+
+  assert.equal(loading[0].quantity, 1.5);
+});
+
+test('the transfers tab totals its fee from source-side rows only', () => {
+  const { transfers, summary } = buildIncomeDetail({
+    transfers: [
+      { id: 't1', transfer_amount: '5000.00', transfer_fee: '10.00', transfer_reference: 'TRF-2026-000021' },
+      { id: 't2', transfer_amount: '1200.00', transfer_fee: '0.00' },
+    ],
+  });
+
+  assert.equal(transfers[0].transferReference, 'TRF-2026-000021');
+  assert.equal(summary.transferAmount, 6200);
+  assert.equal(summary.transferFees, 10);
+  assert.equal(summary.transferCount, 2);
+});
+
+test('an account with no activity in the period yields three empty tabs, not an error', () => {
+  const detail = buildIncomeDetail({});
+
+  assert.deepEqual(detail.cash, []);
+  assert.deepEqual(detail.loading, []);
+  assert.deepEqual(detail.transfers, []);
+  assert.equal(detail.summary.cashCount, 0);
+  assert.equal(detail.summary.earned, 0);
+  assert.equal(detail.summary.refunded, 0);
+  assert.equal(detail.summary.loadMargin, 0);
+  assert.equal(detail.summary.transferFees, 0);
+  assert.equal(detail.summary.earned + detail.summary.refunded, 0);
+});
+
+test('a timestamp becomes an ISO string the frontend can parse', () => {
+  const { cash, loading, transfers } = buildIncomeDetail({
+    cash: [{ id: 'c1', transaction_date: new Date('2026-09-25T14:06:00.000Z') }],
+    loading: [{ id: 'l1', created_at: '2026-09-26T02:00:00Z' }],
+    transfers: [{ id: 't1', transfer_date: null }],
+  });
+
+  assert.equal(cash[0].transactionDate, '2026-09-25T14:06:00.000Z');
+  assert.equal(loading[0].createdAt, '2026-09-26T02:00:00.000Z');
+  assert.equal(transfers[0].transferDate, null);
+});
+
+test('an absent transaction number reads as null so the cell can show a dash', () => {
+  const { cash, loading, transfers } = buildIncomeDetail({
+    cash: [{ id: 'c1', transaction_number: null }],
+    loading: [{ id: 'l1' }],
+    transfers: [{ id: 't1', transfer_number: '21' }],
+  });
+
+  assert.equal(cash[0].transactionNumber, null);
+  assert.equal(loading[0].transactionNumber, null);
+  assert.equal(transfers[0].transferNumber, 21);
+});
+
+test('rows stay in the order the query handed them; the service does not re-sort', () => {
+  const { transfers } = buildIncomeDetail({ transfers: [{ id: 't1' }, { id: 't2' }, { id: 't3' }] });
+
+  assert.deepEqual(transfers.map((t) => t.id), ['t1', 't2', 't3']);
 });

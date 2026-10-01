@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, TrendingUp } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, TrendingUp, ChevronRight } from 'lucide-react';
+import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -39,13 +40,30 @@ export default function Reports() {
   const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '' });
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState('');
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [details, setDetails] = useState<Record<string, any>>({});
+  const [detailLoading, setDetailLoading] = useState<Record<string, boolean>>({});
+  const [detailTabs, setDetailTabs] = useState<Record<string, IncomeDetailTab>>({});
+  const requestedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     api.get<{ data: Account[] }>('/accounts').then(res => setAccounts(res.data)).catch(() => {});
   }, []);
 
+  // Cached detail rows are only meaningful under the filters they were fetched
+  // with, so they are dropped alongside the report they explain rather than
+  // surviving a date change and contradicting the new totals.
+  const clearDetail = useCallback(() => {
+    setExpanded({});
+    setDetails({});
+    setDetailLoading({});
+    setDetailTabs({});
+    requestedRef.current.clear();
+  }, []);
+
   const fetchReport = useCallback(async () => {
     setLoading(true);
+    clearDetail();
     try {
       const params = new URLSearchParams();
       if (filters.startDate) params.append('startDate', filters.startDate);
@@ -59,7 +77,32 @@ export default function Reports() {
       const data = await api.get(url);
       setReportData(data);
     } catch (err) { console.error('Reports load error:', err); } finally { setLoading(false); }
-  }, [activeReport, filters]);
+  }, [activeReport, clearDetail, filters]);
+
+  const fetchDetail = useCallback(async (accountId: string) => {
+    if (requestedRef.current.has(accountId)) return;
+    requestedRef.current.add(accountId);
+    setDetailLoading(prev => ({ ...prev, [accountId]: true }));
+    try {
+      const params = new URLSearchParams();
+      params.append('accountId', accountId);
+      if (filters.startDate) params.append('startDate', filters.startDate);
+      if (filters.endDate) params.append('endDate', filters.endDate);
+      const detail = await api.get(`/reports/income-detail?${params.toString()}`);
+      setDetails(prev => ({ ...prev, [accountId]: detail }));
+    } catch (err) {
+      console.error('Income detail load error:', err);
+      requestedRef.current.delete(accountId);
+    } finally {
+      setDetailLoading(prev => ({ ...prev, [accountId]: false }));
+    }
+  }, [filters.startDate, filters.endDate]);
+
+  const toggleDetail = useCallback((accountId: string) => {
+    const opening = !expanded[accountId];
+    setExpanded(prev => ({ ...prev, [accountId]: opening }));
+    if (opening) void fetchDetail(accountId);
+  }, [expanded, fetchDetail]);
 
   useEffect(() => { fetchReport(); }, [fetchReport]);
 
@@ -558,7 +601,7 @@ export default function Reports() {
                 <div className="px-4 pt-4 pb-1">
                   <h4 className="font-medium">Income by Account</h4>
                   <p className="text-xs text-gray-500">
-                    {reportData.summary?.accounts || 0} accounts · {reportData.summary?.earningAccounts || 0} with income · {reportData.summary?.txnCount || 0} transactions, {reportData.summary?.transferCount || 0} transfers, {reportData.summary?.loadCount || 0} loadings · largest first
+                    {reportData.summary?.accounts || 0} accounts · {reportData.summary?.earningAccounts || 0} with income · {reportData.summary?.txnCount || 0} transactions, {reportData.summary?.transferCount || 0} transfers, {reportData.summary?.loadCount || 0} loadings · largest first · click an account to see the transactions behind its figures
                   </p>
                 </div>
                 <div className="overflow-x-auto">
@@ -583,23 +626,59 @@ export default function Reports() {
                     <tbody className="divide-y divide-gray-200">
                       {reportData.rows.length === 0 ? (
                         <tr><td colSpan={13} className="px-4 py-8 text-center text-sm text-gray-500">No accounts for these filters.</td></tr>
-                      ) : reportData.rows.map((r: any) => (
-                        <tr key={r.accountId} className="hover:bg-gray-50">
-                          <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">{r.accountName}</td>
-                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.providerName || '—'}</td>
-                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.accountType || '—'}</td>
-                          <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.txnCount}</td>
-                          <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.transferCount}</td>
-                          <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.loadCount}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.txnFees)}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.additionalCharges)}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.transferFees)}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.feeIncome)}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.loadMargin)}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-finance-green">{formatCurrency(r.totalIncome)}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono text-amber-600">{r.reversedExcluded > 0 ? formatCurrency(r.reversedExcluded) : '—'}</td>
-                        </tr>
-                      ))}
+                      ) : reportData.rows.map((r: any) => {
+                        const isOpen = !!expanded[r.accountId];
+                        return (
+                          <Fragment key={r.accountId}>
+                            <tr className="hover:bg-gray-50">
+                              <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleDetail(r.accountId)}
+                                  aria-expanded={isOpen}
+                                  title={isOpen ? 'Hide transactions' : 'Show transactions'}
+                                  className="inline-flex items-center gap-1.5 -ml-1 rounded px-1 py-0.5 text-left hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                >
+                                  <ChevronRight className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                                  <span>{r.accountName}</span>
+                                </button>
+                              </td>
+                              <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.providerName || '—'}</td>
+                              <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.accountType || '—'}</td>
+                              <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.txnCount}</td>
+                              <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.transferCount}</td>
+                              <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.loadCount}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.txnFees)}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.additionalCharges)}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.transferFees)}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.feeIncome)}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.loadMargin)}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-finance-green">{formatCurrency(r.totalIncome)}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono text-amber-600">{r.reversedExcluded > 0 ? formatCurrency(r.reversedExcluded) : '—'}</td>
+                            </tr>
+                            {isOpen && (
+                              <tr className="bg-gray-50">
+                                <td colSpan={13} className="border-t border-gray-200 px-4 pb-5 pt-1">
+                                  {detailLoading[r.accountId] ? (
+                                    <p className="py-4 text-center text-sm text-gray-500">Loading transactions…</p>
+                                  ) : details[r.accountId] ? (
+                                    <IncomeDetailPanel
+                                      detail={details[r.accountId]}
+                                      tab={detailTabs[r.accountId] || 'cash'}
+                                      onTab={tab => setDetailTabs(prev => ({ ...prev, [r.accountId]: tab }))}
+                                      parent={r}
+                                    />
+                                  ) : (
+                                    <p className="py-4 text-center text-sm text-amber-600">
+                                      Transactions could not be loaded. Collapse and expand this row to retry.
+                                    </p>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
                     </tbody>
                     {reportData.rows.length > 0 && (
                       <tfoot className="bg-gray-50 border-t border-gray-200">

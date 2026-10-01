@@ -4,7 +4,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
-import { buildIncomeReport, type IncomeReport } from '../services/incomeReport';
+import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../services/incomeReport';
 import { statementReversal } from '../services/statementReversal';
 import { loadScopedLedger } from '../services/ledgerQuery';
 
@@ -594,6 +594,89 @@ router.get('/income-report', authorize('reports.read'), async (req: Request, res
       accountId: req.query.accountId,
     });
     res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
+// The drill-down behind one account row runs against the same three tables,
+// the same three date columns and the same three read scopes as the aggregate
+// above it. A tab assembled from different conditions would disagree with the
+// figure it exists to explain, so the conditions are built the same way here
+// rather than reinterpreted.
+const detailScope = (
+  req: Request,
+  alias: string,
+  permission: string,
+  dateColumn: string,
+  filters: IncomeFilters,
+  firstParam: number,
+): { conds: string[]; params: any[] } => {
+  const conds: string[] = [];
+  const params: any[] = [];
+  let pi = firstParam;
+  if (filters.startDate) { conds.push(`${dateColumn} >= $${pi++}`); params.push(filters.startDate); }
+  if (filters.endDate) { conds.push(`${dateColumn} < ($${pi++}::date + INTERVAL '1 day')`); params.push(filters.endDate); }
+  const scope = ownerClause(req, alias, permission, pi);
+  if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
+  return { conds, params };
+};
+
+router.get('/income-detail', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, startDate, endDate } = req.query;
+    if (!accountId) return res.status(400).json({ success: false, error: { message: 'accountId is required' } });
+
+    const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
+    assertOwner(req, account, 'accounts.read_all', 'Account not found');
+
+    const filters = { startDate, endDate };
+
+    const cashScope = detailScope(req, 't', 'transactions.read_all', 't.transaction_date', filters, 2);
+    const cashConds = ['t.account_id = $1', `t.status IN ('completed', 'reversed')`, ...cashScope.conds];
+    const cash = await query(
+      `SELECT t.id, t.transaction_number, t.reference_number, t.transaction_date,
+              tt.name AS type_name, tt.direction, t.description, t.status,
+              t.amount, t.fee, chg.total AS charges
+       FROM transactions t
+       JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       LEFT JOIN LATERAL (
+         SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
+         ) c
+       ) chg ON true
+       WHERE ${cashConds.join(' AND ')}
+       ORDER BY t.transaction_date DESC`,
+      [accountId, ...cashScope.params]
+    );
+
+    // Only source-side transfers appear: the parent row charges the transfer
+    // fee to the funding account, so listing the receiving side as well would
+    // put rows in the tab that contributed nothing to the figure it totals.
+    const trfScope = detailScope(req, 'tr', 'transfers.read_all', 'tr.transfer_date', filters, 2);
+    const trfConds = ['tr.source_account_id = $1', `tr.status = 'completed'`, ...trfScope.conds];
+    const transfers = await query(
+      `SELECT tr.id, tr.transfer_number, tr.transfer_reference, tr.transfer_date,
+              da.name AS destination_name, tr.transfer_amount, tr.transfer_fee
+       FROM transfers tr
+       JOIN accounts da ON da.id = tr.destination_account_id
+       WHERE ${trfConds.join(' AND ')}
+       ORDER BY tr.transfer_date DESC`,
+      [accountId, ...trfScope.params]
+    );
+
+    const ldScope = detailScope(req, 'lt', 'loading.read_all', 'lt.created_at', filters, 2);
+    const ldConds = ['lt.account_id = $1', `lt.status = 'completed'`, ...ldScope.conds];
+    const loading = await query(
+      `SELECT lt.id, lt.transaction_number, lt.created_at, lp.name AS product_name,
+              lt.customer_number, lt.quantity, lt.total_revenue, lt.total_cost, lt.profit
+       FROM loading_transactions lt
+       JOIN loading_products lp ON lp.id = lt.product_id
+       WHERE ${ldConds.join(' AND ')}
+       ORDER BY lt.created_at DESC`,
+      [accountId, ...ldScope.params]
+    );
+
+    res.json({ success: true, data: buildIncomeDetail({ cash, loading, transfers }) });
   } catch (error) { next(error); }
 });
 
