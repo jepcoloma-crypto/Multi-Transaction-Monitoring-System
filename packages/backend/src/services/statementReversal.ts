@@ -15,8 +15,8 @@ export interface StatementReversalRow {
   transaction_status?: string | null;
   transfer_id?: string | null;
   transfer_status?: string | null;
-  transfer_number?: number | string | null;
   transfer_reference?: string | null;
+  loading_number?: number | string | null;
   type_name?: string | null;
   reversal_request_reason?: unknown;
   reversal_audit_reason?: unknown;
@@ -72,7 +72,7 @@ export const statementReversal = (row: StatementReversalRow): StatementReversalV
     : reversalReason(row.reversal_request_reason, row.reversal_audit_reason, row.reversal_entry_description);
 
   const transactionNumber = asNumber(row.transaction_number);
-  const transferNumber = asNumber(row.transfer_number);
+  const loadingNumber = asNumber(row.loading_number);
   // The ledger entry's own reference is blank on 14 cash rows and all 14
   // transfer rows, so the source has to be the transaction, which always carries
   // one, and the transfer's generated TRF- reference elsewhere.
@@ -97,7 +97,15 @@ export const statementReversal = (row: StatementReversalRow): StatementReversalV
     typeDisplay: row.type_name ?? null,
     reference,
     label: isCompensating ? `Reversal of ${row.reverses_type_name || 'Transaction'} #${asNumber(row.reverses_number)}` : null,
-    numberDisplay: transactionNumber !== null ? `#${transactionNumber}` : transferNumber !== null ? `#${transferNumber}` : null,
+    // Three independent sequences run through this one column: cash numbers
+    // start at 21, transfers at 21 and loadings at 6, so a bare number lets cash
+    // #21 and transfer #21 read as the same row - which they do on Ma. Jessica's
+    // statement today. Cash keeps the `#` it carries everywhere else, a loading
+    // names itself, and a transfer shows nothing here because the reference in
+    // the next column already contains the number.
+    numberDisplay: transactionNumber !== null
+      ? `#${transactionNumber}`
+      : loadingNumber !== null ? `LDG-${loadingNumber}` : null,
     referenceDisplay: reference,
   };
 };

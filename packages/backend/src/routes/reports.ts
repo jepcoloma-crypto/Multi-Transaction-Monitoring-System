@@ -72,6 +72,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
               tt.name AS type_name, tt.code AS type_code, tt.direction,
               tr.status AS transfer_status, tr.transfer_number, tr.transfer_reference,
               tr.purpose AS transfer_purpose, tr.transfer_amount, tr.transfer_fee,
+              ltx.transaction_number AS loading_number,
               sa.name AS source_account_name, da.name AS destination_account_name,
               pr.reason AS reversal_request_reason, audit.reason AS reversal_audit_reason,
               rev.description AS reversal_entry_description,
@@ -85,6 +86,8 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
        LEFT JOIN transfers tr ON le.transfer_id = tr.id
        LEFT JOIN accounts sa ON tr.source_account_id = sa.id
        LEFT JOIN accounts da ON tr.destination_account_id = da.id
+       LEFT JOIN loading_transactions ltx
+         ON ltx.id = le.source_id AND le.source_type = 'loading'
        LEFT JOIN transactions reverses_of
          ON reverses_of.transaction_number = substring(le.reference_number from '^REV-([0-9]+)$')::int
        LEFT JOIN transaction_types reverses_type ON reverses_type.id = reverses_of.transaction_type_id
@@ -117,8 +120,8 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
         transaction_status: e.transaction_status,
         transfer_id: e.transfer_id,
         transfer_status: e.transfer_status,
-        transfer_number: e.transfer_number,
         transfer_reference: e.transfer_reference,
+        loading_number: e.loading_number,
         type_name: e.type_name,
         reversal_request_reason,
         reversal_audit_reason,

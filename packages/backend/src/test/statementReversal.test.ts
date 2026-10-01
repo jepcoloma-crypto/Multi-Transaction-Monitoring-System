@@ -11,8 +11,8 @@ const row = (overrides: Partial<StatementReversalRow> = {}): StatementReversalRo
   transaction_status: 'completed',
   transfer_id: null,
   transfer_status: null,
-  transfer_number: null,
   transfer_reference: null,
+  loading_number: null,
   type_name: 'Cash-Out',
   reversal_request_reason: null,
   reversal_audit_reason: null,
@@ -133,19 +133,20 @@ test('a cash row with no reference of its own shows none rather than falling thr
   assert.equal(view.referenceDisplay === '5045409564089', false);
 });
 
-test('a transfer shows its own generated reference and number', () => {
+test('a transfer keeps its reference and drops the number that collides with cash', () => {
   const view = statementReversal(row({
     transaction_id: null,
     transaction_number: null,
     transaction_reference: null,
     transfer_id: 'tr-22',
-    transfer_number: 22,
     transfer_reference: 'TRF-2026-000022',
     type_name: null,
   }));
 
   assert.equal(view.referenceDisplay, 'TRF-2026-000022');
-  assert.equal(view.numberDisplay, '#22');
+  // The reference already carries 22, so repeating it as a bare #22 is what put
+  // one number on two different records on Ma. Jessica's statement.
+  assert.equal(view.numberDisplay, null);
   assert.equal(view.status, 'completed');
 });
 
@@ -170,7 +171,27 @@ test('the reversal keeps REV-<n> so it stays distinct from the reference it undi
   assert.equal(reversal.numberDisplay, '#178');
 });
 
-test('a loading row has neither a transaction nor a reference', () => {
+test('a loading row is tagged so its number cannot be read as a cash transaction', () => {
+  const view = statementReversal(row({
+    reference_number: null,
+    transaction_id: null,
+    transaction_number: null,
+    transaction_reference: null,
+    transaction_status: null,
+    type_name: null,
+    loading_number: 13,
+  }));
+
+  // loading_transactions runs its own sequence from 6 to 22, overlapping both
+  // cash and transfers, so a bare 13 would sit next to cash #13.
+  assert.equal(view.numberDisplay, 'LDG-13');
+  // reference_number is blank on all 17 loading rows, so there is none to show.
+  assert.equal(view.referenceDisplay, null);
+  assert.equal(view.isCompensating, false);
+  assert.equal(view.isReversed, false);
+});
+
+test('a row with nothing behind it shows neither a number nor a reference', () => {
   const view = statementReversal(row({
     reference_number: null,
     transaction_id: null,
