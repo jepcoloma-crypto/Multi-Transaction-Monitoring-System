@@ -117,8 +117,8 @@
   table td {
     padding-top: 3px !important;
     padding-bottom: 3px !important;
-    padding-left: 6px !important;
-    padding-right: 6px !important;
+    padding-left: 4px !important;
+    padding-right: 4px !important;
     font-size: 9.5px !important;
   }
 
@@ -130,8 +130,10 @@
     break-inside: auto;
   }
 
+  /* p-6 costs 50px of a landscape page before a single cell is printed. */
   .card {
     box-shadow: none !important;
+    padding: 12px !important;
   }
 
   /* Hiding the report picker leaves its column track behind, which would pin the

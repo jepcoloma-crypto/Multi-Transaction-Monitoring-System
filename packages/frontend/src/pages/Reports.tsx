@@ -215,12 +215,10 @@ export default function Reports() {
               <h3 className="font-semibold">{reports.find(r => r.id === activeReport)?.name}</h3>
               <div className="text-right shrink-0">
                 <div className="flex items-center justify-end gap-2">
-                  {activeReport === 'income-report' && (
-                    <button onClick={() => window.print()}
-                      className="btn-secondary flex items-center gap-2 text-sm">
-                      <Printer className="w-4 h-4" /> Print / PDF
-                    </button>
-                  )}
+                  <button onClick={() => window.print()} disabled={!reportData}
+                    className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
+                    <Printer className="w-4 h-4" /> Print / PDF
+                  </button>
                   {exportType(activeReport) && (
                     <button onClick={exportCSV} disabled={exporting}
                       className="btn-secondary flex items-center gap-2 text-sm disabled:opacity-50 disabled:cursor-not-allowed">
