@@ -185,7 +185,7 @@ export default function Reports() {
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
         <div className="lg:col-span-1 space-y-2">
           {reports.map(r => (
-            <button key={r.id} onClick={() => { setActiveReport(r.id); setReportData(null); setExportError(''); }}
+            <button key={r.id} onClick={() => { if (r.id !== activeReport) { setActiveReport(r.id); setReportData(null); } setExportError(''); }}
               className={`w-full text-left p-3 rounded-lg transition-colors ${activeReport === r.id ? 'bg-primary-100 text-primary-700 border border-primary-200' : 'text-gray-700 hover:bg-gray-100'}`}>
               <div className="flex items-center gap-3">
                 <r.icon className="w-5 h-5" />
