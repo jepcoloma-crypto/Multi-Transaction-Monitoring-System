@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, TrendingUp, ChevronRight, Printer } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, TrendingUp, TrendingDown, ChevronRight, Printer } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-report';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-report' | 'expense-report';
 
 interface Account { id: string; name: string; masked_account_number: string; }
 
@@ -114,6 +114,7 @@ export default function Reports() {
       case 'loading-report': return 'loading';
       case 'reversal-report': return 'reversals';
       case 'income-report': return 'income';
+      case 'expense-report': return 'expense';
       default: return null;
     }
   };
@@ -172,6 +173,7 @@ export default function Reports() {
     { id: 'loading-report' as ReportType, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
     { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
     { id: 'income-report' as ReportType, name: 'Income Report', icon: TrendingUp, desc: 'Fee income and loading margin earned per account' },
+    { id: 'expense-report' as ReportType, name: 'Expense Report', icon: TrendingDown, desc: 'Service charges paid to providers on fund transfers' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
   ];
 
@@ -239,7 +241,7 @@ export default function Reports() {
                 <label className="text-xs text-gray-500">To</label>
                 <input type="date" value={filters.endDate} onChange={e => setFilters({ ...filters, endDate: e.target.value })} className="input-field text-sm" />
               </div>
-              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || activeReport === 'income-report') && (
+              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || activeReport === 'income-report' || activeReport === 'expense-report') && (
                 <div>
                   <label className="text-xs text-gray-500">Account</label>
                   <select value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })} className="input-field text-sm">
@@ -601,7 +603,7 @@ export default function Reports() {
                 <div className="card">
                   <p className="text-gray-500">Fee Income</p>
                   <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.feeIncome || 0)}</p>
-                  <p className="text-sm text-gray-500">Fees {formatCurrency(reportData.summary?.txnFees || 0)} · Charges {formatCurrency(reportData.summary?.additionalCharges || 0)} · Transfers {formatCurrency(reportData.summary?.transferFees || 0)}</p>
+                  <p className="text-sm text-gray-500">Fees {formatCurrency(reportData.summary?.txnFees || 0)} · Charges {formatCurrency(reportData.summary?.additionalCharges || 0)}</p>
                 </div>
                 <div className="card">
                   <p className="text-gray-500">Loading Margin</p>
@@ -634,11 +636,11 @@ export default function Reports() {
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Loadings</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Txn Fees</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Charges</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transfer Fees</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee Income</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Loading Margin</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total Income</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reversed (Excl.)</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transfer Fees (Expense)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
@@ -668,11 +670,11 @@ export default function Reports() {
                               <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.loadCount}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.txnFees)}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.additionalCharges)}</td>
-                              <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.transferFees)}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.feeIncome)}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.loadMargin)}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-finance-green">{formatCurrency(r.totalIncome)}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono text-amber-600">{r.reversedExcluded > 0 ? formatCurrency(r.reversedExcluded) : '—'}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono text-red-600" title="Paid to the provider on fund transfers — counted on the Expense Report, not in the totals to its left">{r.transferFees > 0 ? formatCurrency(r.transferFees) : '—'}</td>
                             </tr>
                             {isOpen && (
                               <tr className="bg-gray-50 detail-row">
@@ -704,11 +706,83 @@ export default function Reports() {
                           <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap" colSpan={6}>Total ({reportData.summary?.accounts || 0} accounts)</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.txnFees || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.additionalCharges || 0)}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.transferFees || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.feeIncome || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.loadMargin || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-finance-green">{formatCurrency(reportData.summary?.totalIncome || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-amber-600">{formatCurrency(reportData.summary?.reversedExcluded || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-red-600">{formatCurrency(reportData.summary?.transferFees || 0)}</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'expense-report' && reportData.rows ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm print:grid-cols-4">
+                <div className="card">
+                  <p className="text-gray-500">Total Expense</p>
+                  <p className="text-2xl font-bold mt-1 text-red-600">{formatCurrency(reportData.summary?.totalExpense || 0)}</p>
+                  <p className="text-sm text-gray-500">Service charges paid to the provider on fund transfers</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Service Fees</p>
+                  <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.serviceFees || 0)}</p>
+                  <p className="text-sm text-gray-500">Deducted from the sender, credited to no account</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Transfers</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.transferCount || 0}</p>
+                  <p className="text-sm text-gray-500">Completed transfers sent in this period</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Accounts Charged</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.payingAccounts || 0}<span className="text-base font-normal text-gray-500"> of {reportData.summary?.accounts || 0}</span></p>
+                  <p className="text-sm text-gray-500">Accounts charged at least once</p>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Expense by Account</h4>
+                  <p className="text-xs text-gray-500">
+                    {reportData.summary?.accounts || 0} accounts · {reportData.summary?.payingAccounts || 0} charged · {reportData.summary?.transferCount || 0} transfers · largest first · the same figure sits outside the Income Report totals so each peso is counted once
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[760px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Provider</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transfers</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Service Fees</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total Expense</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.rows.length === 0 ? (
+                        <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500">No accounts for these filters.</td></tr>
+                      ) : reportData.rows.map((r: any) => (
+                        <tr key={r.accountId} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">{r.accountName}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.providerName || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.accountType || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.transferCount}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono">{r.serviceFees > 0 ? formatCurrency(r.serviceFees) : <span className="text-gray-400">—</span>}</td>
+                          <td className={`px-4 py-3.5 text-sm text-right font-mono font-semibold ${r.totalExpense > 0 ? 'text-red-600' : 'text-gray-400'}`}>{formatCurrency(r.totalExpense)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {reportData.rows.length > 0 && (
+                      <tfoot className="bg-gray-50 border-t border-gray-200">
+                        <tr>
+                          <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap" colSpan={3}>Total ({reportData.summary?.accounts || 0} accounts)</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{reportData.summary?.transferCount || 0}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.serviceFees || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-red-600">{formatCurrency(reportData.summary?.totalExpense || 0)}</td>
                         </tr>
                       </tfoot>
                     )}

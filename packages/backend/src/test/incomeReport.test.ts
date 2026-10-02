@@ -25,14 +25,29 @@ test('every total is the sum of the components printed beside it', () => {
     row({ txn_fees: '1800.00', additional_charges: '30.00', transfer_fees: '10.00', load_margin: '46.00' }),
   ]);
 
-  assert.equal(rows[0].feeIncome, 1840);
-  assert.equal(rows[0].totalIncome, 1886);
-  assert.equal(summary.feeIncome, 1840);
-  assert.equal(summary.totalIncome, 1886);
+  assert.equal(rows[0].feeIncome, 1830);
+  assert.equal(rows[0].totalIncome, 1876);
+  assert.equal(summary.feeIncome, 1830);
+  assert.equal(summary.totalIncome, 1876);
   // An operator has to be able to walk left across the row and reach the last
   // column without trusting a figure they cannot reconstruct.
-  assert.equal(rows[0].txnFees + rows[0].additionalCharges + rows[0].transferFees, rows[0].feeIncome);
+  assert.equal(rows[0].txnFees + rows[0].additionalCharges, rows[0].feeIncome);
   assert.equal(rows[0].feeIncome + rows[0].loadMargin, rows[0].totalIncome);
+});
+
+test('a transfer service charge is carried on the row but never totalled as income', () => {
+  const { rows, summary } = buildIncomeReport([
+    row({ txn_fees: '1800.00', additional_charges: '30.00', transfer_fees: '10.00', load_margin: '46.00' }),
+  ]);
+
+  // The sender is debited the amount plus this charge and the receiver is
+  // credited only the amount, so it is money out and belongs to the expense
+  // report. Leaving it here would put the same peso on two reports.
+  assert.equal(rows[0].transferFees, 10);
+  assert.equal(summary.transferFees, 10);
+  assert.equal(rows[0].feeIncome, 1830);
+  assert.equal(summary.totalIncome, 1876);
+  assert.equal(rows[0].txnFees + rows[0].additionalCharges + rows[0].transferFees, rows[0].feeIncome + rows[0].transferFees);
 });
 
 test('pg hands money over as strings and the cents survive the trip', () => {

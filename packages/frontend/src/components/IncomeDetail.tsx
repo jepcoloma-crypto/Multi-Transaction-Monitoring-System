@@ -264,13 +264,13 @@ const TransfersTable = ({ rows, summary, parent }: { rows: TransferRow[]; summar
           <tr>
             <td className={`${td} font-semibold`} colSpan={3}>Total ({summary.transferCount} transfers)</td>
             <td className={tdRight}>{formatCurrency(summary.transferAmount)}</td>
-            <td className={`${tdRight} font-semibold text-finance-green`}>{formatCurrency(summary.transferFees)}</td>
+            <td className={`${tdRight} font-semibold text-red-600`}>{formatCurrency(summary.transferFees)}</td>
           </tr>
         </tfoot>
       </table>
     </div>
     <div className="mt-2 text-xs">
-      <Reconciles label="Transfer Fees" expected={parent.transferFees} actual={summary.transferFees} />
+      <Reconciles label="Transfer Fees (Expense)" expected={parent.transferFees} actual={summary.transferFees} />
     </div>
   </>
 );

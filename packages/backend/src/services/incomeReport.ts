@@ -5,6 +5,14 @@
 // Income is deliberately split into components rather than one number. A
 // component the operator can see is a component they can reconcile against the
 // source table; a single blended figure is a number they have to trust.
+//
+// The service charge on a fund transfer is not income and is not totalled here.
+// The sender is debited the amount plus the fee while the receiver is credited
+// only the amount, so the fee leaves the account pool and is paid to the
+// provider — it is an expense, reported by the expense report. transferFees is
+// still carried on every row so the figure remains visible beside the income it
+// used to inflate, but adding it back into feeIncome or totalIncome would count
+// the same peso twice.
 
 const NUMERIC = /^-?\d+(\.\d+)?$/;
 
@@ -105,7 +113,7 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
     const rowTxnFeesCents = toCents(row.txn_fees);
     const rowChargesCents = toCents(row.additional_charges);
     const rowTransferFeesCents = toCents(row.transfer_fees);
-    const rowFeeCents = rowTxnFeesCents + rowChargesCents + rowTransferFeesCents;
+    const rowFeeCents = rowTxnFeesCents + rowChargesCents;
     const rowLoadMarginCents = toCents(row.load_margin);
     const rowTotalCents = rowFeeCents + rowLoadMarginCents;
 
@@ -156,11 +164,11 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
       txnFees: money(txnFeesCents),
       additionalCharges: money(chargesCents),
       transferFees: money(transferFeesCents),
-      feeIncome: money(txnFeesCents + chargesCents + transferFeesCents),
+      feeIncome: money(txnFeesCents + chargesCents),
       loadRevenue: money(loadRevenueCents),
       loadCost: money(loadCostCents),
       loadMargin: money(loadMarginCents),
-      totalIncome: money(txnFeesCents + chargesCents + transferFeesCents + loadMarginCents),
+      totalIncome: money(txnFeesCents + chargesCents + loadMarginCents),
       reversedExcluded: money(reversedCents),
     },
   };

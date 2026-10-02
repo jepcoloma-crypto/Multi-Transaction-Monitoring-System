@@ -5,6 +5,7 @@ import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
 import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../services/incomeReport';
+import { buildExpenseReport, type ExpenseReport } from '../services/expenseReport';
 import { statementReversal } from '../services/statementReversal';
 import { loadScopedLedger } from '../services/ledgerQuery';
 
@@ -595,6 +596,66 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
   return buildIncomeReport(rows);
 };
 
+// The expense report reads the same transfers table, the same transfer_date
+// column and the same transfers.read_all scope as the transfer component of the
+// income report, so the service charge cannot come out as one figure here and
+// another there. Accounts still drive the rows: an account that sent no
+// transfer in the period appears with zeros rather than vanishing, because a
+// per-account report that silently drops accounts reads as data loss.
+const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<ExpenseReport> => {
+  const { startDate, endDate, accountId } = filters;
+  const params: any[] = [];
+  let pi = 1;
+
+  const trfConds: string[] = [`tr.status = 'completed'`];
+  if (startDate) { trfConds.push(`tr.transfer_date >= $${pi++}`); params.push(startDate); }
+  if (endDate) { trfConds.push(`tr.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+  const trfScope = ownerClause(req, 'tr', 'transfers.read_all', pi);
+  if (trfScope.clause) { trfConds.push(trfScope.clause); params.push(...trfScope.params); pi = trfScope.paramIndex; }
+
+  const accountConds: string[] = [];
+  if (accountId) { accountConds.push(`a.id = $${pi++}`); params.push(accountId); }
+  const accountScope = ownerClause(req, 'a', 'accounts.read_all', pi);
+  if (accountScope.clause) { accountConds.push(accountScope.clause); params.push(...accountScope.params); pi = accountScope.paramIndex; }
+  const accountWhere = accountConds.length > 0 ? `WHERE ${accountConds.join(' AND ')}` : '';
+
+  const rows = await query(
+    `SELECT a.id AS account_id,
+            a.name AS account_name,
+            p.name AS provider_name,
+            typ.name AS account_type,
+            trf.cnt AS transfer_count,
+            trf.fees AS transfer_service_fee
+     FROM accounts a
+     LEFT JOIN providers p ON p.id = a.provider_id
+     LEFT JOIN account_types typ ON typ.id = a.account_type_id
+     LEFT JOIN (
+       SELECT tr.source_account_id AS account_id,
+              COUNT(*) AS cnt,
+              COALESCE(SUM(tr.transfer_fee), 0) AS fees
+       FROM transfers tr
+       WHERE ${trfConds.join(' AND ')}
+       GROUP BY tr.source_account_id
+     ) trf ON trf.account_id = a.id
+     ${accountWhere}
+     ORDER BY a.name`,
+    params
+  );
+
+  return buildExpenseReport(rows);
+};
+
+router.get('/expense-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const report = await loadExpenseReport(req, {
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      accountId: req.query.accountId,
+    });
+    res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
 router.get('/income-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const report = await loadIncomeReport(req, {
@@ -843,6 +904,28 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Status', key: 'status' },
         { header: 'Date', key: 'created_at' },
       ];
+    } else if (type === 'expense') {
+      const report = await loadExpenseReport(req, { startDate, endDate, accountId });
+      data = report.rows.map((r) => ({
+        account_name: r.accountName,
+        provider_name: r.providerName ?? '',
+        account_type: r.accountType ?? '',
+        transfer_count: r.transferCount,
+        service_fees: r.serviceFees.toFixed(2),
+        total_expense: r.totalExpense.toFixed(2),
+      }));
+      columns = [
+        { header: 'Account', key: 'account_name' },
+        { header: 'Provider', key: 'provider_name' },
+        { header: 'Type', key: 'account_type' },
+        { header: 'Transfers', key: 'transfer_count' },
+        { header: 'Service Fees', key: 'service_fees' },
+        { header: 'Total Expense', key: 'total_expense' },
+      ];
+      csvTotals = { account_name: `TOTAL (${report.summary.accounts} accounts)` };
+      if (report.summary.transferCount) csvTotals.transfer_count = report.summary.transferCount;
+      if (report.summary.serviceFees) csvTotals.service_fees = report.summary.serviceFees.toFixed(2);
+      if (report.summary.totalExpense) csvTotals.total_expense = report.summary.totalExpense.toFixed(2);
     } else if (type === 'income') {
       const report = await loadIncomeReport(req, { startDate, endDate, accountId });
       data = report.rows.map((r) => ({
@@ -870,7 +953,6 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Transaction Fees', key: 'transaction_fees' },
         { header: 'Additional Charges', key: 'additional_charges' },
         { header: 'Transfers', key: 'transfer_count' },
-        { header: 'Transfer Fees', key: 'transfer_fees' },
         { header: 'Fee Income', key: 'fee_income' },
         { header: 'Loadings', key: 'loading_count' },
         { header: 'Loading Revenue', key: 'loading_revenue' },
@@ -878,6 +960,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Loading Margin', key: 'loading_margin' },
         { header: 'Total Income', key: 'total_income' },
         { header: 'Reversed (Excluded)', key: 'reversed_excluded' },
+        { header: 'Transfer Fees (Expense)', key: 'transfer_fees' },
       ];
       if (data.length > 0) {
         csvTotals = {
