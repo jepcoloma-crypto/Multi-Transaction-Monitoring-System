@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, localDateValue } from '../lib/format';
+import { formatCurrency, localDateValue, paymentMethodLabel, paymentMethodOptions } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign, Trash2, Undo2 } from 'lucide-react';
 
@@ -215,9 +215,12 @@ export default function Accounts() {
         setError(`Transaction type "${code}" not found`);
         return;
       }
-      const methodLabel = { cash: 'Cash', gcash: 'GCash', bank: 'Bank Transfer', maya: 'Maya' }[addFundsForm.method as 'cash' | 'gcash' | 'bank' | 'maya'] || addFundsForm.method;
+      const methodLabel = paymentMethodLabel(addFundsForm.method);
       const action = fundsMode === 'in' ? 'Owner funding' : 'Owner return';
-      const description = [`${action} via ${methodLabel}`, addFundsForm.description].filter(Boolean).join(' — ');
+      // Interest earned from a provider is not owner money, so the usual
+      // "Owner funding via" prefix would contradict the method beside it.
+      const headline = addFundsForm.method === 'provider_interest' ? methodLabel : `${action} via ${methodLabel}`;
+      const description = [headline, addFundsForm.description].filter(Boolean).join(' — ');
       const created = await api.post<{ status?: string }>('/transactions', {
         accountId: addFundsAccount.id,
         transactionTypeId: type.id,
@@ -586,10 +589,13 @@ export default function Accounts() {
                 <select value={addFundsForm.method}
                   onChange={(e) => setAddFundsForm({ ...addFundsForm, method: e.target.value })}
                   className="input">
-                  <option value="cash">Cash</option>
-                  <option value="gcash">GCash</option>
-                  <option value="bank">Bank Transfer</option>
-                  <option value="maya">Maya</option>
+                  {/* Provider interest is an inbound source, so it makes no sense
+                      on a Return Funds entry. */}
+                  {paymentMethodOptions
+                    .filter((o) => o.value !== 'provider_interest' || fundsMode === 'in')
+                    .map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
                 </select>
               </div>
               <div>

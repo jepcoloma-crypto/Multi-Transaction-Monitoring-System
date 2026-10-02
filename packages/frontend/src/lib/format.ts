@@ -21,3 +21,19 @@ export const localDateTimeValue = (d: Date = new Date()): string => {
   const pad = (n: number): string => String(n).padStart(2, '0');
   return `${localDateValue(d)}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
+
+// transactions.payment_method is unconstrained VARCHAR(50), so nothing stops a
+// new value reaching the detail view and every dropdown. One list here keeps
+// the stored code and the text an operator reads in step.
+export const paymentMethodOptions = [
+  { value: 'cash', label: 'Cash' },
+  { value: 'gcash', label: 'GCash' },
+  { value: 'bank', label: 'Bank Transfer' },
+  { value: 'maya', label: 'Maya' },
+  { value: 'provider_interest', label: 'Interest Income from Provider' },
+] as const;
+
+export const paymentMethodLabel = (code: string | null | undefined): string => {
+  if (!code) return '';
+  return paymentMethodOptions.find((o) => o.value === code)?.label || code;
+};

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, localDateTimeValue } from '../lib/format';
+import { formatCurrency, localDateTimeValue, paymentMethodLabel, paymentMethodOptions } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
@@ -616,7 +616,7 @@ export default function Transactions() {
                 <div><p className="text-xs text-gray-500">Status</p><p className="font-medium">{showDetail.status}</p></div>
                 <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{new Date(showDetail.transaction_date).toLocaleString()}</p></div>
                 <div><p className="text-xs text-gray-500">Reference</p><p className="font-medium">{showDetail.reference_number || '-'}</p></div>
-                {showDetail.payment_method && <div><p className="text-xs text-gray-500">Method</p><p className="font-medium capitalize">{showDetail.payment_method}</p></div>}
+                {showDetail.payment_method && <div><p className="text-xs text-gray-500">Method</p><p className="font-medium">{paymentMethodLabel(showDetail.payment_method)}</p></div>}
                 {showDetail.customer_name && <div><p className="text-xs text-gray-500">Customer</p><p className="font-medium">{showDetail.customer_name}</p></div>}
               </div>
               {showDetail.description && <div><p className="text-xs text-gray-500">Description</p><p className="text-sm">{showDetail.description}</p></div>}
@@ -1030,10 +1030,9 @@ export default function Transactions() {
                   <select value={editForm.paymentMethod}
                     onChange={(e) => setEditForm({ ...editForm, paymentMethod: e.target.value })} className="input text-sm">
                     <option value="">-- None --</option>
-                    <option value="cash">Cash</option>
-                    <option value="gcash">GCash</option>
-                    <option value="bank">Bank Transfer</option>
-                    <option value="maya">Maya</option>
+                    {paymentMethodOptions.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
                   </select>
                 </div>
                 <div>
