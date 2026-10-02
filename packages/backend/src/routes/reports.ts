@@ -135,8 +135,16 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
         : e.transfer_id ? 'transfer'
         : /^loading\b/i.test(e.description || '') ? 'loading'
         : 'adjustment');
+      // An amount correction appends a delta row but deliberately keeps the
+      // source record's type and id on it, so without this the row reads as an
+      // ordinary transfer, transaction or loading entry — the same numbers and
+      // badge as the row it corrects. The prefix is the only durable marker:
+      // ledger_entries has no correction column and its reference_number is
+      // left NULL, and this is the string corrections.ts writes on every row.
+      const isCorrection = /^Correction:/.test(e.description || '');
       return {
         ...entry,
+        is_correction: isCorrection,
         reversal_reason: rev.reason,
         is_compensating: rev.isCompensating,
         reversal_resolves_to: rev.resolvesTo,
@@ -150,7 +158,8 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
           : e.transfer_id
             ? `Transfer ${e.transfer_number ? `#${e.transfer_number} ` : ''}${e.source_account_name || '?'} → ${e.destination_account_name || '?'}`
             : e.description || 'Adjustment'),
-        type_display: rev.typeDisplay ?? (entrySource ? entrySource.charAt(0).toUpperCase() + entrySource.slice(1) : e.entry_type),
+        type_display: isCorrection ? 'Correction'
+          : rev.typeDisplay ?? (entrySource ? entrySource.charAt(0).toUpperCase() + entrySource.slice(1) : e.entry_type),
         reference_display: rev.referenceDisplay,
         number_display: rev.numberDisplay,
       };

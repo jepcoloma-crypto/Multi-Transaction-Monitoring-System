@@ -346,8 +346,9 @@ export default function Reports() {
                       {reportData.entries.map((e: any) => {
                         const isReversed = e.statement_status === 'reversed';
                         const isCompensating = Boolean(e.is_compensating);
+                        const isCorrection = Boolean(e.is_correction);
                         return (
-                        <tr key={e.id} id={e.transaction_id ? `entry-${e.transaction_id}` : undefined} className={isReversed ? 'bg-amber-50 hover:bg-amber-100' : isCompensating ? 'bg-green-50 hover:bg-green-100' : 'hover:bg-gray-50'}>
+                        <tr key={e.id} id={e.transaction_id ? `entry-${e.transaction_id}` : undefined} className={isCorrection ? 'bg-blue-50 hover:bg-blue-100' : isReversed ? 'bg-amber-50 hover:bg-amber-100' : isCompensating ? 'bg-green-50 hover:bg-green-100' : 'hover:bg-gray-50'}>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{new Date(e.entry_date).toLocaleDateString()}</td>
                           <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">
                             <a
@@ -377,8 +378,8 @@ export default function Reports() {
                           </td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{e.customer_name || '—'}</td>
                           <td className="px-4 py-3.5 whitespace-nowrap">
-                            <span className={`text-xs px-1.5 py-0.5 rounded ${statusBadgeClass(e.statement_status)}`}>
-                              {statementStatusLabel(e.statement_status, e.entry_source)}
+                            <span className={`text-xs px-1.5 py-0.5 rounded ${isCorrection ? 'bg-blue-100 text-blue-700' : statusBadgeClass(e.statement_status)}`}>
+                              {isCorrection ? 'Correction' : statementStatusLabel(e.statement_status, e.entry_source)}
                             </span>
                           </td>
                           <td className="px-4 py-3.5 text-sm text-gray-700">
