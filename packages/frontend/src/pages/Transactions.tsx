@@ -98,6 +98,7 @@ export default function Transactions() {
     accountId: '', feeRuleId: '', amount: '',
     fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(),
     feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select' as 'select' | 'manual', customerPhone: '',
+    providerCharge: '',
   });
   const [error, setError] = useState('');
   const [customerHistory, setCustomerHistory] = useState<CustomerHistory | null>(null);
@@ -244,10 +245,16 @@ export default function Transactions() {
   const inputAmount = parseFloat(formData.amount) || 0;
   const feeAmount = parseFloat(formData.fee) || 0;
   const chargesTotal = createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0);
-  const totalOutflow = formData.feeAddedToBalance
-    ? inputAmount + chargesTotal
-    : inputAmount - feeAmount + chargesTotal;
   const selectedDirection = selectedRule?.direction;
+  // The provider's charge is only recordable on a real cash movement, so it
+  // counts towards what leaves the balance only when it would actually be
+  // posted. A value left behind by an earlier type selection does not — and is
+  // dropped from the payload rather than sent and rejected.
+  const chargeApplies = selectedDirection === 'in' || selectedDirection === 'out';
+  const providerChargeAmount = chargeApplies ? (parseFloat(formData.providerCharge) || 0) : 0;
+  const totalOutflow = (formData.feeAddedToBalance
+    ? inputAmount + chargesTotal
+    : inputAmount - feeAmount + chargesTotal) + providerChargeAmount;
   const hasInsufficientBalance = selectedDirection === 'out' && selectedAccount != null && totalOutflow > 0 && totalOutflow > selectedAccount.current_balance;
   const movementLabel = selectedDirection === 'out'
     ? `Total: ${formatCurrency(totalOutflow)}`
@@ -330,6 +337,7 @@ export default function Transactions() {
       accountId: accounts.find(a => a.status === 'active')?.id || '', feeRuleId: '',
       amount: '', fee: '0', referenceNumber: '', description: '', customerName: '',
       transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
+      providerCharge: '',
     });
     setCreateCharges([]);
     setFeeMode('auto');
@@ -358,11 +366,12 @@ export default function Transactions() {
         transactionDate: formData.transactionDate || undefined,
         feeAddedToBalance: formData.feeAddedToBalance,
         additionalCharges: validCharges.length > 0 ? validCharges : [],
+        providerCharge: chargeApplies ? formData.providerCharge || undefined : undefined,
         notes: formData.notes || undefined,
         customerId: formData.customerMode === 'select' ? formData.customerId || undefined : undefined,
       });
       setShowModal(false);
-      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '' });
+      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '' });
       fetchTransactions(pagination.page);
       fetchSummary();
     } catch (err: any) { setError(err.message); }
@@ -964,6 +973,28 @@ export default function Transactions() {
                   </div>
                 )}
               </div>
+
+              {chargeApplies && (
+                <div className="border-t pt-3">
+                  <label htmlFor="providerCharge" className="text-sm font-medium text-gray-700">Provider Charge</label>
+                  <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
+                    Only when the provider deducted a fee from the account balance for this movement and did not
+                    bill the customer for it. It is written as a separate linked <strong>Expense</strong> row: the
+                    balance drops by this much with nothing credited in return, it shows in Cash Transactions, and it
+                    totals on the Expense Report.
+                  </p>
+                  <input
+                    id="providerCharge"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={formData.providerCharge}
+                    onChange={(e) => setFormData({ ...formData, providerCharge: e.target.value })}
+                    className="input text-sm w-40"
+                    placeholder="0.00"
+                  />
+                </div>
+              )}
 
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>

@@ -512,7 +512,12 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
   const params: any[] = [];
   let pi = 1;
 
-  const txnConds: string[] = [`t.status IN ('completed', 'reversed')`];
+  // Provider charges are the company's own cost, not a customer transaction,
+  // so they must stay out of the TXNS column. Filtering on direction would be
+  // wrong here: an ordinary Cash-Out is direction 'out' and is exactly the
+  // customer activity this count exists to report. The type code is the only
+  // thing that separates the two — see migration 032.
+  const txnConds: string[] = [`t.status IN ('completed', 'reversed')`, `tt.code <> 'expense'`];
   if (startDate) { txnConds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
   if (endDate) { txnConds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
   const txnScope = ownerClause(req, 't', 'transactions.read_all', pi);
@@ -561,6 +566,7 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
               COALESCE(SUM(chg.total) FILTER (WHERE t.status = 'completed'), 0) AS charges,
               COALESCE(SUM(COALESCE(t.fee, 0) + chg.total) FILTER (WHERE t.status = 'reversed'), 0) AS excluded
        FROM transactions t
+       JOIN transaction_types tt ON tt.id = t.transaction_type_id
        LEFT JOIN LATERAL (
          SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
          FROM jsonb_array_elements(
@@ -613,6 +619,16 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
   const trfScope = ownerClause(req, 'tr', 'transfers.read_all', pi);
   if (trfScope.clause) { trfConds.push(trfScope.clause); params.push(...trfScope.params); pi = trfScope.paramIndex; }
 
+  // Provider charges are ordinary transactions typed `expense` (migration 032),
+  // so they carry their own scope and their own date window. Built after the
+  // transfers and before the account filter purely so the $n placeholders line
+  // up with the order the subqueries appear in the SQL below.
+  const pchgConds: string[] = [`tt.code = 'expense'`, `t.status = 'completed'`];
+  if (startDate) { pchgConds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
+  if (endDate) { pchgConds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+  const pchgScope = ownerClause(req, 't', 'transactions.read_all', pi);
+  if (pchgScope.clause) { pchgConds.push(pchgScope.clause); params.push(...pchgScope.params); pi = pchgScope.paramIndex; }
+
   const accountConds: string[] = [];
   if (accountId) { accountConds.push(`a.id = $${pi++}`); params.push(accountId); }
   const accountScope = ownerClause(req, 'a', 'accounts.read_all', pi);
@@ -625,7 +641,8 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
             p.name AS provider_name,
             typ.name AS account_type,
             trf.cnt AS transfer_count,
-            trf.fees AS transfer_service_fee
+            trf.fees AS transfer_service_fee,
+            pchg.charges AS provider_charges
      FROM accounts a
      LEFT JOIN providers p ON p.id = a.provider_id
      LEFT JOIN account_types typ ON typ.id = a.account_type_id
@@ -637,6 +654,14 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
        WHERE ${trfConds.join(' AND ')}
        GROUP BY tr.source_account_id
      ) trf ON trf.account_id = a.id
+     LEFT JOIN (
+       SELECT t.account_id,
+              COALESCE(SUM(t.amount), 0) AS charges
+       FROM transactions t
+       JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       WHERE ${pchgConds.join(' AND ')}
+       GROUP BY t.account_id
+     ) pchg ON pchg.account_id = a.id
      ${accountWhere}
      ORDER BY a.name`,
     params
@@ -716,6 +741,32 @@ const loadTransfersDetail = async (
   );
 };
 
+// The other half of /expense-detail: the provider charges, which are ordinary
+// transactions typed `expense` (migration 032). Written beside
+// loadTransfersDetail and shaped the same way — one account, one scope, one
+// date window — so the two panels behind a single total are filtered by
+// exactly the same rules and neither can silently cover a different period
+// than the other. The origin transaction is joined in so the operator sees
+// which cash movement provoked the charge rather than a bare number.
+const loadExpenseChargesDetail = async (
+  req: Request,
+  accountId: unknown,
+  filters: IncomeFilters,
+): Promise<any[]> => {
+  const scope = detailScope(req, 't', 'transactions.read_all', 't.transaction_date', filters, 2);
+  const conds = ['t.account_id = $1', `t.status = 'completed'`, `tt.code = 'expense'`, ...scope.conds];
+  return query(
+    `SELECT t.id, t.transaction_number, t.transaction_date, t.description, t.amount,
+            origin.transaction_number AS linked_transaction_number
+     FROM transactions t
+     JOIN transaction_types tt ON tt.id = t.transaction_type_id
+     LEFT JOIN transactions origin ON origin.id = t.linked_transaction_id
+     WHERE ${conds.join(' AND ')}
+     ORDER BY t.transaction_date DESC`,
+    [accountId, ...scope.params]
+  );
+};
+
 router.get('/income-detail', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { accountId, startDate, endDate } = req.query;
@@ -727,7 +778,10 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
     const filters = { startDate, endDate };
 
     const cashScope = detailScope(req, 't', 'transactions.read_all', 't.transaction_date', filters, 2);
-    const cashConds = ['t.account_id = $1', `t.status IN ('completed', 'reversed')`, ...cashScope.conds];
+    // Same exclusion as loadIncomeReport's TXNS column: provider charges are
+    // the company's own cost, and listing them here would put a row in the
+    // income drill-down that the income total above it never counted.
+    const cashConds = ['t.account_id = $1', `t.status IN ('completed', 'reversed')`, `tt.code <> 'expense'`, ...cashScope.conds];
     const cash = await query(
       `SELECT t.id, t.transaction_number, t.reference_number, t.transaction_date,
               tt.name AS type_name, tt.direction, t.description, t.status,
@@ -763,10 +817,13 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
   } catch (error) { next(error); }
 });
 
-// The transfers behind one account's service fees. Deliberately narrower than
-// /income-detail: an expense row is funded only by transfers, so returning the
-// cash and loading queries as well would spend two queries on data this drill
-// never renders.
+// The transfers and provider charges behind one account's expense row. Two
+// queries rather than one because the two come from different tables and
+// different shapes, but both are fetched so the drill-down can account for the
+// whole of the total it sits under — a panel listing only transfers would
+// reconcile with the service-fees column while leaving provider charges
+// unexplained, and an unexplained remainder is indistinguishable from an
+// error.
 router.get('/expense-detail', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { accountId, startDate, endDate } = req.query;
@@ -775,8 +832,12 @@ router.get('/expense-detail', authorize('reports.read'), async (req: Request, re
     const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
     assertOwner(req, account, 'accounts.read_all', 'Account not found');
 
-    const rows = await loadTransfersDetail(req, accountId, { startDate, endDate });
-    res.json({ success: true, data: buildExpenseDetail(rows) });
+    const filters = { startDate, endDate };
+    const [transfers, charges] = await Promise.all([
+      loadTransfersDetail(req, accountId, filters),
+      loadExpenseChargesDetail(req, accountId, filters),
+    ]);
+    res.json({ success: true, data: buildExpenseDetail({ transfers, charges }) });
   } catch (error) { next(error); }
 });
 
@@ -942,6 +1003,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         account_type: r.accountType ?? '',
         transfer_count: r.transferCount,
         service_fees: r.serviceFees.toFixed(2),
+        provider_charges: r.providerCharges.toFixed(2),
         total_expense: r.totalExpense.toFixed(2),
       }));
       columns = [
@@ -950,11 +1012,13 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Type', key: 'account_type' },
         { header: 'Transfers', key: 'transfer_count' },
         { header: 'Service Fees', key: 'service_fees' },
+        { header: 'Provider Charges', key: 'provider_charges' },
         { header: 'Total Expense', key: 'total_expense' },
       ];
       csvTotals = { account_name: `TOTAL (${report.summary.accounts} accounts)` };
       if (report.summary.transferCount) csvTotals.transfer_count = report.summary.transferCount;
       if (report.summary.serviceFees) csvTotals.service_fees = report.summary.serviceFees.toFixed(2);
+      if (report.summary.providerCharges) csvTotals.provider_charges = report.summary.providerCharges.toFixed(2);
       if (report.summary.totalExpense) csvTotals.total_expense = report.summary.totalExpense.toFixed(2);
     } else if (type === 'income') {
       const report = await loadIncomeReport(req, { startDate, endDate, accountId });

@@ -314,7 +314,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       accountId, transactionTypeId, transactionCategoryId, feeRuleId, amount, fee, manualFee,
       referenceNumber, externalReference, transactionDate, description,
       customerName, customerContact, status, feeAddedToBalance, additionalCharges, notes, customerId,
-      paymentMethod,
+      paymentMethod, providerCharge,
     } = req.body;
 
     let resolvedTypeId = transactionTypeId;
@@ -380,6 +380,29 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     );
     if (!txType) throw createError(404, 'Transaction type not found');
 
+    // A provider charge on a cash movement is the company's own cost: the
+    // customer is never billed for it, so it cannot be folded into this row's
+    // amount or fee. It is recorded as a second, linked row typed `expense`
+    // (migration 032 explains why the two figures must stay separate).
+    //
+    // Keyed in by hand because it happens on only some movements — a rule
+    // that fired on every cash transaction would invent charges the provider
+    // never made. Restricted to money actually moving in or out, so it can
+    // never be bolted onto a reversal or an adjustment.
+    let providerChargeNum = 0;
+    if (providerCharge !== undefined && providerCharge !== null && providerCharge !== '') {
+      providerChargeNum = parseFloat(String(providerCharge));
+      if (!Number.isFinite(providerChargeNum)) throw createError(400, 'Provider charge must be a number');
+      if (providerChargeNum < 0) throw createError(400, 'Provider charge cannot be negative');
+      providerChargeNum = Math.round(providerChargeNum * 100) / 100;
+      if (providerChargeNum > 0 && txType.direction !== 'in' && txType.direction !== 'out') {
+        throw createError(400, 'A provider charge can only be recorded on a cash-in or cash-out');
+      }
+      if (providerChargeNum > 0 && txType.code === 'expense') {
+        throw createError(400, 'A provider charge cannot be added to an expense row');
+      }
+    }
+
     const deductFee = feeAddedToBalance === false && feeNum > 0;
     if (deductFee && amountNum < feeNum) {
       throw createError(400, 'Fee cannot exceed the transaction amount when deducted from transaction amount');
@@ -398,12 +421,25 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       throw createError(400, 'Only owner fund movements can be created as pending');
     }
 
+    // Rejected rather than silently dropped: a charge the operator typed in
+    // and the books then forgot would be worse than one refused up front.
+    if (providerChargeNum > 0 && finalStatus !== 'completed') {
+      throw createError(400, 'A provider charge can only be recorded on a transaction that completes now');
+    }
+
     if (entryType === 'debit') {
       const balance = await queryOne<{ current_balance: string }>(
         'SELECT current_balance FROM accounts WHERE id = $1 FOR UPDATE', [accountId]
       );
-      if (parseFloat(balance?.current_balance || '0') < totalAmount) {
-        throw createError(400, 'Insufficient balance');
+      // The charge is a second debit from the same balance, so the account has
+      // to carry both. Rounded before comparing: two 2-decimal figures added
+      // as floats can land a hair above the true total and reject a balance
+      // that is exactly enough.
+      const required = Math.round((totalAmount + providerChargeNum) * 100) / 100;
+      if (parseFloat(balance?.current_balance || '0') < required) {
+        throw createError(400, providerChargeNum > 0
+          ? 'Insufficient balance for the transaction plus the provider charge'
+          : 'Insufficient balance');
       }
     }
 
@@ -426,11 +462,47 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     );
 
     let newBalance: number | undefined;
+    const effectiveDate = new Date(transactionDate || Date.now());
     if (finalStatus === 'completed') {
       ({ newBalance } = await processTransaction(
         accountId, resolvedTypeId, totalAmount, feeNum, entryType as 'debit' | 'credit',
-        transaction!.id, referenceNumber, description, new Date(transactionDate || Date.now()), client,
+        transaction!.id, referenceNumber, description, effectiveDate, client,
         feeAddedToBalance !== false
+      ));
+    }
+
+    // Posted after the movement it belongs to, so on a cash-in the money it is
+    // paid out of has already landed. It is a debit with no credit anywhere in
+    // the pool — the same shape as a transfer's service fee, which is exactly
+    // what makes it an expense rather than a customer's cost. All of it stays
+    // inside the caller's BEGIN: if the charge cannot be afforded, nothing the
+    // operator submitted is written either.
+    if (providerChargeNum > 0) {
+      const expenseType = await queryOne<{ id: string }>(
+        `SELECT id FROM transaction_types WHERE code = 'expense' AND is_active = true`
+      );
+      if (!expenseType) throw createError(500, 'The Expense transaction type is not configured');
+
+      const chargeNumber = await queryOne<{ nextval: string }>(
+        "SELECT nextval('transactions_transaction_number_seq') as nextval"
+      );
+      const chargeDescription = `Provider charge on transaction #${transaction!.transaction_number} (not billed to the customer)`;
+
+      const chargeRow = (await client.query(
+        `INSERT INTO transactions (transaction_number, account_id, transaction_type_id,
+           amount, fee, net_amount, description, transaction_date, status, created_by,
+           linked_transaction_id)
+         VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8, $9, $10)
+         RETURNING id`,
+        [
+          chargeNumber!.nextval, accountId, expenseType.id, providerChargeNum, providerChargeNum,
+          chargeDescription, effectiveDate, finalStatus, req.user!.userId, transaction!.id,
+        ]
+      )).rows[0];
+
+      ({ newBalance } = await processTransaction(
+        accountId, expenseType.id, providerChargeNum, 0, 'debit',
+        chargeRow.id, null, chargeDescription, effectiveDate, client, true
       ));
     }
 
@@ -445,6 +517,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       newData: {
         accountName: account.name, amount: amountNum, direction: txType.direction,
         status: finalStatus, ...(newBalance !== undefined ? { newBalance } : {}),
+        ...(providerChargeNum > 0 ? { providerCharge: providerChargeNum } : {}),
       },
     });
 

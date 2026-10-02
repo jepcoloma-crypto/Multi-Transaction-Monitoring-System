@@ -2,19 +2,29 @@
 // CSV export both render. Pure — no network, no database — so every component
 // and subtotal is testable without one.
 //
-// The only expense this report carries is the service charge on a fund
-// transfer. A transfer debits the sender the amount plus that charge and
-// credits the receiver only the amount, so the difference leaves the account
-// pool and is paid to the provider: money out, not money in. It was previously
-// totalled as income, which would have counted the same peso on two reports
-// once this one existed, so it appears here and is excluded from the income
-// totals (see incomeReport.ts).
+// Two expenses, sharing the property that is the whole reason each is an
+// expense: a debit with no credit anywhere in the account pool, so the money
+// is gone rather than merely moved.
+//
+//   service fees       the charge on a fund transfer. A transfer debits the
+//                      sender the amount plus that charge and credits the
+//                      receiver only the amount, so the difference is paid to
+//                      the provider. It was previously totalled as income,
+//                      which would have counted the same peso on two reports
+//                      once this one existed, so it appears here and is
+//                      excluded from the income totals (see incomeReport.ts).
+//
+//   provider charges   a charge the provider deducts straight from the balance
+//                      on a cash-in or a cash-out. The customer is never
+//                      billed for it, so it is written as its own linked
+//                      expense row rather than folded into the cash
+//                      transaction (migration 032) and until now reached no
+//                      report at all.
 //
 // Like the income report the figure is split into components rather than one
-// number: a component the operator can see is a component they can reconcile
-// against the transfer list. transferCount is every completed transfer sent by
-// the account, fee or no fee, so the count on the row and the count behind the
-// drill-down of the transfer report agree.
+// number: a component the operator can see is a component they can reconcile.
+// transferCount is every completed transfer sent by the account, fee or no
+// fee, so the count on the row and the count behind the drill-down agree.
 
 const NUMERIC = /^-?\d+(\.\d+)?$/;
 
@@ -47,6 +57,7 @@ export interface ExpenseSourceRow {
   account_type?: string | null;
   transfer_count?: number | string | null;
   transfer_service_fee?: number | string | null;
+  provider_charges?: number | string | null;
 }
 
 export interface ExpenseReportRow {
@@ -56,6 +67,7 @@ export interface ExpenseReportRow {
   accountType: string | null;
   transferCount: number;
   serviceFees: number;
+  providerCharges: number;
   totalExpense: number;
 }
 
@@ -64,6 +76,7 @@ export interface ExpenseSummary {
   payingAccounts: number;
   transferCount: number;
   serviceFees: number;
+  providerCharges: number;
   totalExpense: number;
 }
 
@@ -75,17 +88,22 @@ export interface ExpenseReport {
 export function buildExpenseReport(sourceRows: ExpenseSourceRow[]): ExpenseReport {
   let transferCount = 0;
   let serviceFeesCents = 0;
+  let providerChargesCents = 0;
   let payingAccounts = 0;
 
   const rows = sourceRows.map((row) => {
     const rowServiceCents = toCents(row.transfer_service_fee);
-    // With one component the two figures agree by construction; they are kept
-    // separate so a later expense can be added without changing the shape, and
-    // so the row still reads component-then-total like the income report does.
-    const rowTotalCents = rowServiceCents;
+    const rowProviderCents = toCents(row.provider_charges);
+    // Both components are summed here rather than one arriving pre-totalled,
+    // so each can be checked against the list behind it — service fees against
+    // the transfers, provider charges against the expense rows — and a total
+    // that disagreed with its own components would show rather than reconcile
+    // with itself by construction.
+    const rowTotalCents = rowServiceCents + rowProviderCents;
 
     transferCount += asCount(row.transfer_count);
     serviceFeesCents += rowServiceCents;
+    providerChargesCents += rowProviderCents;
     if (rowTotalCents > 0) payingAccounts += 1;
 
     return {
@@ -95,6 +113,7 @@ export function buildExpenseReport(sourceRows: ExpenseSourceRow[]): ExpenseRepor
       accountType: asText(row.account_type),
       transferCount: asCount(row.transfer_count),
       serviceFees: money(rowServiceCents),
+      providerCharges: money(rowProviderCents),
       totalExpense: money(rowTotalCents),
     } satisfies ExpenseReportRow;
   });
@@ -110,7 +129,8 @@ export function buildExpenseReport(sourceRows: ExpenseSourceRow[]): ExpenseRepor
       payingAccounts,
       transferCount,
       serviceFees: money(serviceFeesCents),
-      totalExpense: money(serviceFeesCents),
+      providerCharges: money(providerChargesCents),
+      totalExpense: money(serviceFeesCents + providerChargesCents),
     },
   };
 }
@@ -140,6 +160,15 @@ export interface ExpenseDetailSourceRow {
   transfer_fee?: number | string | null;
 }
 
+export interface ExpenseChargeSourceRow {
+  id: string;
+  transaction_number?: number | string | null;
+  transaction_date?: string | Date | null;
+  description?: string | null;
+  amount?: number | string | null;
+  linked_transaction_number?: number | string | null;
+}
+
 export interface ExpenseDetailRow {
   id: string;
   transferNumber: number | null;
@@ -150,31 +179,60 @@ export interface ExpenseDetailRow {
   fee: number;
 }
 
+export interface ExpenseChargeRow {
+  id: string;
+  transactionNumber: number | null;
+  transactionDate: string | null;
+  description: string | null;
+  amount: number;
+  linkedTransactionNumber: number | null;
+}
+
 export interface ExpenseDetail {
-  rows: ExpenseDetailRow[];
+  transfers: ExpenseDetailRow[];
+  charges: ExpenseChargeRow[];
   summary: {
     transferCount: number;
     transferAmount: number;
     serviceFees: number;
+    chargeCount: number;
+    providerCharges: number;
+    totalExpense: number;
   };
+}
+
+export interface ExpenseDetailSource {
+  transfers: ExpenseDetailSourceRow[];
+  charges: ExpenseChargeSourceRow[];
 }
 
 // The detail sums its own totals from the rows it was handed rather than
 // copying the account row's figures down. The account row's serviceFees comes
-// from an aggregate over transfers; these come from the individual rows
-// fetched for one account. Two independently computed figures either agree or
-// visibly do not, which is the only way a drill-down can ever prove the number
-// above it instead of merely restating it.
+// from an aggregate over transfers and its providerCharges from one over
+// expense transactions; these come from the individual rows fetched for one
+// account. Two independently computed figures either agree or visibly do not,
+// which is the only way a drill-down can ever prove the number above it
+// instead of merely restating it.
 //
 // transferCount covers every completed transfer the account sent, fee or no
-// fee, because that is what the account row's Transfers column counts; service
-// fees then total the fees on those same rows, which is what its service fees
-// total. Matching both means neither figure can be right by accident.
-export function buildExpenseDetail(sourceRows: ExpenseDetailSourceRow[]): ExpenseDetail {
+// fee, because that is what the account row's Transfers column counts;
+// chargeCount likewise counts every provider charge so both component columns
+// reconcile. totalExpense is summed from both components rather than taken
+// from the account row, so the drill-down reconciles with the report row by
+// addition and not by mirroring it.
+//
+// Both source sets are required. A default of `[]` would let a missing
+// argument quietly produce a drill-down that under-reports what the row above
+// it claims — the exact disagreement this function exists to detect.
+export function buildExpenseDetail(source: ExpenseDetailSource): ExpenseDetail {
   let transferAmountCents = 0;
   let serviceFeesCents = 0;
+  let providerChargesCents = 0;
 
-  const rows: ExpenseDetailRow[] = sourceRows.map((row) => {
+  // Left in the order the queries returned: both are ordered newest first, so
+  // the two panels sit in the same convention and neither can appear to
+  // disagree with the other because one happens to be ascending.
+  const transfers: ExpenseDetailRow[] = source.transfers.map((row) => {
     const amountCents = toCents(row.transfer_amount);
     const feeCents = toCents(row.transfer_fee);
     transferAmountCents += amountCents;
@@ -191,12 +249,30 @@ export function buildExpenseDetail(sourceRows: ExpenseDetailSourceRow[]): Expens
     } satisfies ExpenseDetailRow;
   });
 
+  const charges: ExpenseChargeRow[] = source.charges.map((row) => {
+    const amountCents = toCents(row.amount);
+    providerChargesCents += amountCents;
+
+    return {
+      id: row.id,
+      transactionNumber: asIdentifier(row.transaction_number),
+      transactionDate: asDate(row.transaction_date),
+      description: asText(row.description),
+      amount: money(amountCents),
+      linkedTransactionNumber: asIdentifier(row.linked_transaction_number),
+    } satisfies ExpenseChargeRow;
+  });
+
   return {
-    rows,
+    transfers,
+    charges,
     summary: {
-      transferCount: rows.length,
+      transferCount: transfers.length,
       transferAmount: money(transferAmountCents),
       serviceFees: money(serviceFeesCents),
+      chargeCount: charges.length,
+      providerCharges: money(providerChargesCents),
+      totalExpense: money(serviceFeesCents + providerChargesCents),
     },
   };
 }
