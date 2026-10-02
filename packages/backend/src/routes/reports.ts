@@ -5,7 +5,7 @@ import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
 import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../services/incomeReport';
-import { buildExpenseReport, type ExpenseReport } from '../services/expenseReport';
+import { buildExpenseReport, buildExpenseDetail, type ExpenseReport, type ExpenseDetail } from '../services/expenseReport';
 import { statementReversal } from '../services/statementReversal';
 import { loadScopedLedger } from '../services/ledgerQuery';
 
@@ -690,6 +690,32 @@ const detailScope = (
   return { conds, params };
 };
 
+// The source side of one account's completed transfers, read by both report
+// drills. The expense drill-down and the income drill-down's Transfers tab
+// show exactly these rows because they are one query: a second copy written
+// for one of them could drift on its date column, its status filter or its
+// read scope and start disagreeing with the figure it exists to explain.
+//
+// Only source-side rows appear. The fee is charged to the funding account, so
+// a receiving row contributes nothing to the total either drill-down totals.
+const loadTransfersDetail = async (
+  req: Request,
+  accountId: unknown,
+  filters: IncomeFilters,
+): Promise<any[]> => {
+  const scope = detailScope(req, 'tr', 'transfers.read_all', 'tr.transfer_date', filters, 2);
+  const conds = ['tr.source_account_id = $1', `tr.status = 'completed'`, ...scope.conds];
+  return query(
+    `SELECT tr.id, tr.transfer_number, tr.transfer_reference, tr.transfer_date,
+            da.name AS destination_name, tr.transfer_amount, tr.transfer_fee
+     FROM transfers tr
+     JOIN accounts da ON da.id = tr.destination_account_id
+     WHERE ${conds.join(' AND ')}
+     ORDER BY tr.transfer_date DESC`,
+    [accountId, ...scope.params]
+  );
+};
+
 router.get('/income-detail', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { accountId, startDate, endDate } = req.query;
@@ -719,20 +745,7 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
       [accountId, ...cashScope.params]
     );
 
-    // Only source-side transfers appear: the parent row charges the transfer
-    // fee to the funding account, so listing the receiving side as well would
-    // put rows in the tab that contributed nothing to the figure it totals.
-    const trfScope = detailScope(req, 'tr', 'transfers.read_all', 'tr.transfer_date', filters, 2);
-    const trfConds = ['tr.source_account_id = $1', `tr.status = 'completed'`, ...trfScope.conds];
-    const transfers = await query(
-      `SELECT tr.id, tr.transfer_number, tr.transfer_reference, tr.transfer_date,
-              da.name AS destination_name, tr.transfer_amount, tr.transfer_fee
-       FROM transfers tr
-       JOIN accounts da ON da.id = tr.destination_account_id
-       WHERE ${trfConds.join(' AND ')}
-       ORDER BY tr.transfer_date DESC`,
-      [accountId, ...trfScope.params]
-    );
+    const transfers = await loadTransfersDetail(req, accountId, filters);
 
     const ldScope = detailScope(req, 'lt', 'loading.read_all', 'lt.created_at', filters, 2);
     const ldConds = ['lt.account_id = $1', `lt.status = 'completed'`, ...ldScope.conds];
@@ -747,6 +760,23 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
     );
 
     res.json({ success: true, data: buildIncomeDetail({ cash, loading, transfers }) });
+  } catch (error) { next(error); }
+});
+
+// The transfers behind one account's service fees. Deliberately narrower than
+// /income-detail: an expense row is funded only by transfers, so returning the
+// cash and loading queries as well would spend two queries on data this drill
+// never renders.
+router.get('/expense-detail', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { accountId, startDate, endDate } = req.query;
+    if (!accountId) return res.status(400).json({ success: false, error: { message: 'accountId is required' } });
+
+    const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
+    assertOwner(req, account, 'accounts.read_all', 'Account not found');
+
+    const rows = await loadTransfersDetail(req, accountId, { startDate, endDate });
+    res.json({ success: true, data: buildExpenseDetail(rows) });
   } catch (error) { next(error); }
 });
 

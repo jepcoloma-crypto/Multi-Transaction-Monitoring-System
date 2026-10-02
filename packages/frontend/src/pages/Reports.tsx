@@ -1,12 +1,20 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, TrendingUp, TrendingDown, ChevronRight, Printer } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
+import { ExpenseDetailPanel } from '../components/ExpenseDetail';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-report' | 'expense-report';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense';
+
+// One report module, two tabs. They are separate queries with separate
+// endpoints rather than one payload split in the browser: the income side
+// aggregates transactions, loading and transfers, the expense side aggregates
+// transfers alone, and fetching only the side on screen keeps a tab switch
+// from costing the other side's three queries.
+type IncomeExpenseTab = 'income' | 'expense';
 
 interface Account { id: string; name: string; masked_account_number: string; }
 
@@ -32,8 +40,14 @@ const statusBadgeClass = (status: string | null): string =>
 const statementStatusLabel = (status: string | null, entrySource: string | null): string =>
   status || (entrySource === 'transaction' ? '—' : 'ledger');
 
+const INCOME_EXPENSE_TABS: { id: IncomeExpenseTab; label: string }[] = [
+  { id: 'income', label: 'Income' },
+  { id: 'expense', label: 'Expense' },
+];
+
 export default function Reports() {
   const [activeReport, setActiveReport] = useState<ReportType>('consolidated');
+  const [incomeExpenseTab, setIncomeExpenseTab] = useState<IncomeExpenseTab>('income');
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
@@ -73,11 +87,18 @@ export default function Reports() {
       if (filters.status) params.append('status', filters.status);
       if (filters.providerId) params.append('providerId', filters.providerId);
       const qs = params.toString();
-      const url = `/reports/${activeReport}${qs ? `?${qs}` : ''}`;
+      // The merged module runs two endpoints rather than one payload split in
+      // the browser. Only the side on screen is fetched, so switching tabs
+      // costs one query and clears the cached drill-down — the two sides hold
+      // different shapes of detail and must never sit in the same cache.
+      const endpoint = activeReport !== 'income-expense'
+        ? activeReport
+        : incomeExpenseTab === 'income' ? 'income-report' : 'expense-report';
+      const url = `/reports/${endpoint}${qs ? `?${qs}` : ''}`;
       const data = await api.get(url);
       setReportData(data);
     } catch (err) { console.error('Reports load error:', err); } finally { setLoading(false); }
-  }, [activeReport, clearDetail, filters]);
+  }, [activeReport, incomeExpenseTab, clearDetail, filters]);
 
   const fetchDetail = useCallback(async (accountId: string) => {
     if (requestedRef.current.has(accountId)) return;
@@ -88,15 +109,18 @@ export default function Reports() {
       params.append('accountId', accountId);
       if (filters.startDate) params.append('startDate', filters.startDate);
       if (filters.endDate) params.append('endDate', filters.endDate);
-      const detail = await api.get(`/reports/income-detail?${params.toString()}`);
+      const endpoint = activeReport === 'income-expense' && incomeExpenseTab === 'expense'
+        ? 'expense-detail'
+        : 'income-detail';
+      const detail = await api.get(`/reports/${endpoint}?${params.toString()}`);
       setDetails(prev => ({ ...prev, [accountId]: detail }));
     } catch (err) {
-      console.error('Income detail load error:', err);
+      console.error('Report detail load error:', err);
       requestedRef.current.delete(accountId);
     } finally {
       setDetailLoading(prev => ({ ...prev, [accountId]: false }));
     }
-  }, [filters.startDate, filters.endDate]);
+  }, [filters.startDate, filters.endDate, activeReport, incomeExpenseTab]);
 
   const toggleDetail = useCallback((accountId: string) => {
     const opening = !expanded[accountId];
@@ -113,8 +137,7 @@ export default function Reports() {
       case 'transfer-report': return 'transfers';
       case 'loading-report': return 'loading';
       case 'reversal-report': return 'reversals';
-      case 'income-report': return 'income';
-      case 'expense-report': return 'expense';
+      case 'income-expense': return incomeExpenseTab === 'income' ? 'income' : 'expense';
       default: return null;
     }
   };
@@ -172,8 +195,7 @@ export default function Reports() {
     { id: 'transfer-report' as ReportType, name: 'Transfer Report', icon: ArrowLeftRight, desc: 'Fund transfer history' },
     { id: 'loading-report' as ReportType, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
     { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
-    { id: 'income-report' as ReportType, name: 'Income Report', icon: TrendingUp, desc: 'Fee income and loading margin earned per account' },
-    { id: 'expense-report' as ReportType, name: 'Expense Report', icon: TrendingDown, desc: 'Service charges paid to providers on fund transfers' },
+    { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, in two tabs' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
   ];
 
@@ -185,7 +207,12 @@ export default function Reports() {
       </div>
 
       <div className="hidden print:block border-b border-gray-300 pb-3 mb-4">
-        <h2 className="text-lg font-bold text-gray-900">{reports.find(r => r.id === activeReport)?.name}</h2>
+        <h2 className="text-lg font-bold text-gray-900">
+          {reports.find(r => r.id === activeReport)?.name}
+          {/* Only the chosen tab is on screen, so only it is printed; naming
+              it stops the sheet reading as both halves of the module. */}
+          {activeReport === 'income-expense' && ` — ${incomeExpenseTab === 'income' ? 'Income' : 'Expense'}`}
+        </h2>
         <p className="text-sm text-gray-700">
           Account: {accounts.find(a => a.id === filters.accountId)?.name || 'All accounts'} · Period:{' '}
           {filters.startDate || filters.endDate
@@ -241,7 +268,7 @@ export default function Reports() {
                 <label className="text-xs text-gray-500">To</label>
                 <input type="date" value={filters.endDate} onChange={e => setFilters({ ...filters, endDate: e.target.value })} className="input-field text-sm" />
               </div>
-              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || activeReport === 'income-report' || activeReport === 'expense-report') && (
+              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || activeReport === 'income-expense') && (
                 <div>
                   <label className="text-xs text-gray-500">Account</label>
                   <select value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })} className="input-field text-sm">
@@ -263,6 +290,25 @@ export default function Reports() {
               )}
             </div>
           </div>
+
+          {activeReport === 'income-expense' && (
+            <div className="flex flex-wrap items-center gap-1 border-b border-gray-200 print:hidden">
+              {INCOME_EXPENSE_TABS.map(t => {
+                const active = incomeExpenseTab === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => { if (!active) { setIncomeExpenseTab(t.id); setReportData(null); } }}
+                    aria-pressed={active}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${active ? 'border-primary-600 text-primary-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {loading ? (
             <div className="card"><div className="text-center py-12 text-gray-500">Loading report...</div></div>
@@ -592,7 +638,7 @@ export default function Reports() {
                 </div>
               </div>
             </div>
-          ) : activeReport === 'income-report' && reportData.rows ? (
+          ) : activeReport === 'income-expense' && incomeExpenseTab === 'income' && reportData.rows ? (
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm print:grid-cols-4">
                 <div className="card">
@@ -718,7 +764,7 @@ export default function Reports() {
                 </div>
               </div>
             </div>
-          ) : activeReport === 'expense-report' && reportData.rows ? (
+          ) : activeReport === 'income-expense' && incomeExpenseTab === 'expense' && reportData.rows ? (
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm print:grid-cols-4">
                 <div className="card">
@@ -747,7 +793,7 @@ export default function Reports() {
                 <div className="px-4 pt-4 pb-1">
                   <h4 className="font-medium">Expense by Account</h4>
                   <p className="text-xs text-gray-500">
-                    {reportData.summary?.accounts || 0} accounts · {reportData.summary?.payingAccounts || 0} charged · {reportData.summary?.transferCount || 0} transfers · largest first · the same figure sits outside the Income Report totals so each peso is counted once
+                    {reportData.summary?.accounts || 0} accounts · {reportData.summary?.payingAccounts || 0} charged · {reportData.summary?.transferCount || 0} transfers · largest first · click an account to see the transfers behind its fee · the same figure is left out of the Income tab's totals so each peso is counted once
                   </p>
                 </div>
                 <div className="overflow-x-auto">
@@ -765,16 +811,47 @@ export default function Reports() {
                     <tbody className="divide-y divide-gray-200">
                       {reportData.rows.length === 0 ? (
                         <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500">No accounts for these filters.</td></tr>
-                      ) : reportData.rows.map((r: any) => (
-                        <tr key={r.accountId} className="hover:bg-gray-50">
-                          <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">{r.accountName}</td>
-                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.providerName || '—'}</td>
-                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.accountType || '—'}</td>
-                          <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.transferCount}</td>
-                          <td className="px-4 py-3.5 text-sm text-right font-mono">{r.serviceFees > 0 ? formatCurrency(r.serviceFees) : <span className="text-gray-400">—</span>}</td>
-                          <td className={`px-4 py-3.5 text-sm text-right font-mono font-semibold ${r.totalExpense > 0 ? 'text-red-600' : 'text-gray-400'}`}>{formatCurrency(r.totalExpense)}</td>
-                        </tr>
-                      ))}
+                      ) : reportData.rows.map((r: any) => {
+                        const isOpen = !!expanded[r.accountId];
+                        return (
+                          <Fragment key={r.accountId}>
+                            <tr className="hover:bg-gray-50">
+                              <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() => toggleDetail(r.accountId)}
+                                  aria-expanded={isOpen}
+                                  title={isOpen ? 'Hide the transfers behind this fee' : 'Show the transfers behind this fee'}
+                                  className="inline-flex items-center gap-1.5 -ml-1 rounded px-1 py-0.5 text-left hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
+                                >
+                                  <ChevronRight className={`h-4 w-4 shrink-0 text-gray-400 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                                  <span>{r.accountName}</span>
+                                </button>
+                              </td>
+                              <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.providerName || '—'}</td>
+                              <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.accountType || '—'}</td>
+                              <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.transferCount}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono">{r.serviceFees > 0 ? formatCurrency(r.serviceFees) : <span className="text-gray-400">—</span>}</td>
+                              <td className={`px-4 py-3.5 text-sm text-right font-mono font-semibold ${r.totalExpense > 0 ? 'text-red-600' : 'text-gray-400'}`}>{formatCurrency(r.totalExpense)}</td>
+                            </tr>
+                            {isOpen && (
+                              <tr className="bg-gray-50 detail-row">
+                                <td colSpan={6} className="border-t border-gray-200 px-4 pb-5 pt-1">
+                                  {detailLoading[r.accountId] ? (
+                                    <p className="py-4 text-center text-sm text-gray-500">Loading transfers…</p>
+                                  ) : details[r.accountId] ? (
+                                    <ExpenseDetailPanel detail={details[r.accountId]} parent={r} />
+                                  ) : (
+                                    <p className="py-4 text-center text-sm text-amber-600">
+                                      Transfers could not be loaded. Collapse and expand this row to retry.
+                                    </p>
+                                  )}
+                                </td>
+                              </tr>
+                            )}
+                          </Fragment>
+                        );
+                      })}
                     </tbody>
                     {reportData.rows.length > 0 && (
                       <tfoot className="bg-gray-50 border-t border-gray-200">

@@ -114,3 +114,89 @@ export function buildExpenseReport(sourceRows: ExpenseSourceRow[]): ExpenseRepor
     },
   };
 }
+
+const asDate = (value: unknown): string | null => {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
+  const text = asText(value);
+  if (text === null) return null;
+  const parsed = Date.parse(text);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString();
+};
+
+const asIdentifier = (value: unknown): number | null => {
+  const text = typeof value === 'number' ? String(value) : asText(value);
+  if (text === null || !NUMERIC.test(text)) return null;
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+};
+
+export interface ExpenseDetailSourceRow {
+  id: string;
+  transfer_number?: number | string | null;
+  transfer_reference?: string | null;
+  transfer_date?: string | Date | null;
+  destination_name?: string | null;
+  transfer_amount?: number | string | null;
+  transfer_fee?: number | string | null;
+}
+
+export interface ExpenseDetailRow {
+  id: string;
+  transferNumber: number | null;
+  transferReference: string | null;
+  transferDate: string | null;
+  destinationName: string | null;
+  amount: number;
+  fee: number;
+}
+
+export interface ExpenseDetail {
+  rows: ExpenseDetailRow[];
+  summary: {
+    transferCount: number;
+    transferAmount: number;
+    serviceFees: number;
+  };
+}
+
+// The detail sums its own totals from the rows it was handed rather than
+// copying the account row's figures down. The account row's serviceFees comes
+// from an aggregate over transfers; these come from the individual rows
+// fetched for one account. Two independently computed figures either agree or
+// visibly do not, which is the only way a drill-down can ever prove the number
+// above it instead of merely restating it.
+//
+// transferCount covers every completed transfer the account sent, fee or no
+// fee, because that is what the account row's Transfers column counts; service
+// fees then total the fees on those same rows, which is what its service fees
+// total. Matching both means neither figure can be right by accident.
+export function buildExpenseDetail(sourceRows: ExpenseDetailSourceRow[]): ExpenseDetail {
+  let transferAmountCents = 0;
+  let serviceFeesCents = 0;
+
+  const rows: ExpenseDetailRow[] = sourceRows.map((row) => {
+    const amountCents = toCents(row.transfer_amount);
+    const feeCents = toCents(row.transfer_fee);
+    transferAmountCents += amountCents;
+    serviceFeesCents += feeCents;
+
+    return {
+      id: row.id,
+      transferNumber: asIdentifier(row.transfer_number),
+      transferReference: asText(row.transfer_reference),
+      transferDate: asDate(row.transfer_date),
+      destinationName: asText(row.destination_name),
+      amount: money(amountCents),
+      fee: money(feeCents),
+    } satisfies ExpenseDetailRow;
+  });
+
+  return {
+    rows,
+    summary: {
+      transferCount: rows.length,
+      transferAmount: money(transferAmountCents),
+      serviceFees: money(serviceFeesCents),
+    },
+  };
+}

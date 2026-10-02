@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildExpenseReport, type ExpenseSourceRow } from '../services/expenseReport';
+import { buildExpenseReport, buildExpenseDetail, type ExpenseSourceRow, type ExpenseDetailSourceRow } from '../services/expenseReport';
 import { buildIncomeReport, type IncomeSourceRow } from '../services/incomeReport';
 
 const row = (overrides: Partial<ExpenseSourceRow> = {}): ExpenseSourceRow => ({
@@ -148,4 +148,101 @@ test('a transfer with no service charge counts as a transfer but costs nothing',
   assert.equal(rows[0].serviceFees, 0);
   assert.equal(summary.payingAccounts, 0);
   assert.equal(summary.totalExpense, 0);
+});
+
+const detailRow = (overrides: Partial<ExpenseDetailSourceRow> = {}): ExpenseDetailSourceRow => ({
+  id: 'trf-1',
+  transfer_number: 28,
+  transfer_reference: 'TRF-2026-000028',
+  transfer_date: '2026-09-25T14:19:00.000Z',
+  destination_name: 'Benito Bautista',
+  transfer_amount: '22000.00',
+  transfer_fee: '10.00',
+  ...overrides,
+});
+
+test('the drill-down totals its own rows rather than repeating the account row', () => {
+  const detail = buildExpenseDetail([
+    detailRow(),
+    detailRow({ id: 'trf-2', transfer_number: 21, transfer_amount: '5000.00', transfer_fee: '0.00' }),
+    detailRow({ id: 'trf-3', transfer_number: 25, transfer_amount: '1500.00', transfer_fee: '20.00' }),
+  ]);
+
+  // Summed from the three rows above, not read off the aggregate that produced
+  // the account row. Two independently computed figures either agree or show
+  // that they do not.
+  assert.equal(detail.summary.transferCount, 3);
+  assert.equal(detail.summary.transferAmount, 28500);
+  assert.equal(detail.summary.serviceFees, 30);
+});
+
+test('the drill-down reproduces the account row exactly', () => {
+  const accountRow = buildExpenseReport([
+    row({ transfer_count: '3', transfer_service_fee: '30.00' }),
+  ]).rows[0];
+
+  const detail = buildExpenseDetail([
+    detailRow(),
+    detailRow({ id: 'trf-2', transfer_amount: '5000.00', transfer_fee: '0.00' }),
+    detailRow({ id: 'trf-3', transfer_amount: '1500.00', transfer_fee: '20.00' }),
+  ]);
+
+  // Both sides are built from the same transfers by different code: the row
+  // from an aggregate in SQL, the drill-down from the fetched rows. They are
+  // compared on screen, so they must be built the same way here too.
+  assert.equal(detail.summary.transferCount, accountRow.transferCount);
+  assert.equal(detail.summary.serviceFees, accountRow.serviceFees);
+});
+
+test('a transfer with no fee still appears, because the row counts it', () => {
+  const detail = buildExpenseDetail([
+    detailRow({ id: 'trf-1', transfer_fee: '0.00' }),
+    detailRow({ id: 'trf-2', transfer_fee: '0.00' }),
+  ]);
+
+  assert.equal(detail.rows.length, 2);
+  assert.equal(detail.summary.transferCount, 2);
+  assert.equal(detail.summary.serviceFees, 0);
+});
+
+test('an account that sent nothing returns an empty drill-down, not a broken one', () => {
+  const detail = buildExpenseDetail([]);
+
+  assert.deepEqual(detail.rows, []);
+  assert.equal(detail.summary.transferCount, 0);
+  assert.equal(detail.summary.transferAmount, 0);
+  assert.equal(detail.summary.serviceFees, 0);
+  assert.equal(Number.isNaN(detail.summary.serviceFees), false);
+});
+
+test('the drill-down keeps the reference, date and destination an auditor reads', () => {
+  const detail = buildExpenseDetail([detailRow()]);
+
+  assert.equal(detail.rows[0].transferReference, 'TRF-2026-000028');
+  assert.equal(detail.rows[0].transferNumber, 28);
+  assert.equal(detail.rows[0].destinationName, 'Benito Bautista');
+  assert.equal(detail.rows[0].transferDate, '2026-09-25T14:19:00.000Z');
+  assert.equal(detail.rows[0].amount, 22000);
+  assert.equal(detail.rows[0].fee, 10);
+});
+
+test('a column the database left out reads as empty rather than as a blank reference', () => {
+  const detail = buildExpenseDetail([{ id: 'trf-1', transfer_fee: '10.00' }]);
+
+  assert.equal(detail.rows[0].transferReference, null);
+  assert.equal(detail.rows[0].transferNumber, null);
+  assert.equal(detail.rows[0].destinationName, null);
+  assert.equal(detail.rows[0].transferDate, null);
+  assert.equal(detail.rows[0].fee, 10);
+  assert.equal(detail.summary.transferCount, 1);
+});
+
+test('a non-numeric fee is ignored rather than poisoning the drill-down total', () => {
+  const detail = buildExpenseDetail([
+    detailRow(),
+    detailRow({ id: 'trf-2', transfer_fee: 'not a number' }),
+  ]);
+
+  assert.equal(detail.summary.serviceFees, 10);
+  assert.equal(Number.isNaN(detail.summary.serviceFees), false);
 });

@@ -104,13 +104,21 @@ const countFor = (detail: Detail, tab: IncomeDetailTab): number =>
 // Every tab prints the number its rows total next to the number on the account
 // row above. Agreeing is the expected case and says so quietly; disagreeing is
 // a bug the operator should see as a bug, not as a figure to second-guess.
-const Reconciles = ({ label, expected, actual }: { label: string; expected: number; actual: number }) => {
+//
+// format exists because a drill-down also reconciles counts, and writing
+// "Transfers ₱3.00" beside a row that says 3 would be its own small lie.
+export const Reconciles = ({ label, expected, actual, format = formatCurrency }: {
+  label: string;
+  expected: number;
+  actual: number;
+  format?: (value: number) => string;
+}) => {
   const matches = Math.abs(expected - actual) < 0.005;
   return (
     <p className={matches ? 'text-finance-green' : 'text-amber-600 font-medium'}>
       {matches
-        ? `Reconciles with the account row — ${label} ${formatCurrency(expected)}`
-        : `Does not reconcile — account row shows ${label} ${formatCurrency(expected)}, these rows total ${formatCurrency(actual)}`}
+        ? `Reconciles with the account row — ${label} ${format(expected)}`
+        : `Does not reconcile — account row shows ${label} ${format(expected)}, these rows total ${format(actual)}`}
     </p>
   );
 };
