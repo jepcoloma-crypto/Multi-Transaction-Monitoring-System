@@ -45,7 +45,7 @@ export default function Settings() {
       const data = await api.put<Record<string, Setting>>('/settings', updates);
       setSettings(data);
       setHasChanges(false);
-    } catch (err: any) { alert(err.response?.data?.message || 'Failed to save'); } finally { setSaving(false); }
+    } catch (err: any) { alert(err.message || 'Failed to save'); } finally { setSaving(false); }
   };
 
   const handleReset = () => {

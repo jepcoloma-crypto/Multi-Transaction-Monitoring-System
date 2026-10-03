@@ -80,7 +80,7 @@ export default function Loading() {
       setShowModal(false);
       setForm({ accountId: '', productId: '', customerNumber: '', quantity: '1', paymentMethod: 'cash', referenceNumber: '', notes: '', transactionDate: localDateValue() });
       loadData(1);
-    } catch (err: any) { alert(err.response?.data?.message || 'Failed'); } finally { setSubmitting(false); }
+    } catch (err: any) { alert(err.message || 'Failed'); } finally { setSubmitting(false); }
   };
 
   const openCreateProduct = () => {

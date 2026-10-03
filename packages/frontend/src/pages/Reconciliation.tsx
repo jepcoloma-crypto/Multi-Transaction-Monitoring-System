@@ -105,7 +105,7 @@ export default function Reconciliation() {
       setShowModal(false);
       setForm({ accountId: '', actualBalance: '', notes: '' });
       loadRecons();
-    } catch (err: any) { alert(err.response?.data?.message || 'Failed'); } finally { setSubmitting(false); }
+    } catch (err: any) { alert(err.message || 'Failed'); } finally { setSubmitting(false); }
   };
 
   const handleAdjust = async () => {
@@ -115,12 +115,12 @@ export default function Reconciliation() {
       setShowDetail(null);
       setAdjustForm({ adjustmentAmount: '', reason: '' });
       loadRecons();
-    } catch (err: any) { alert(err.response?.data?.message || 'Failed'); }
+    } catch (err: any) { alert(err.message || 'Failed'); }
   };
 
   const handleComplete = async (id: string) => {
     if (!confirm('Mark as reconciled?')) return;
-    try { await api.post(`/reconciliations/${id}/complete`); loadRecons(); } catch (err: any) { alert(err.response?.data?.message || 'Failed'); }
+    try { await api.post(`/reconciliations/${id}/complete`); loadRecons(); } catch (err: any) { alert(err.message || 'Failed'); }
   };
 
   const viewDetail = async (r: Reconciliation) => {
@@ -134,7 +134,7 @@ export default function Reconciliation() {
       const res = await api.post<{ data: { matched: number } }>('/bank-reconciliation/auto-match', { accountId: bankAccountId });
       alert(`Auto-matched ${res.data.matched} transaction(s)`);
       loadBankData(bankAccountId);
-    } catch (err: any) { alert(err.response?.data?.message || 'Failed'); } finally { setAutoMatching(false); }
+    } catch (err: any) { alert(err.message || 'Failed'); } finally { setAutoMatching(false); }
   };
 
   const handleManualMatch = async () => {
@@ -144,12 +144,12 @@ export default function Reconciliation() {
       setSelectedStmt(null);
       setSelectedTxn(null);
       loadBankData(bankAccountId);
-    } catch (err: any) { alert(err.response?.data?.message || 'Failed'); }
+    } catch (err: any) { alert(err.message || 'Failed'); }
   };
 
   const handleUnmatch = async (matchId: string) => {
     if (!confirm('Unmatch this pair?')) return;
-    try { await api.post(`/bank-reconciliation/unmatch/${matchId}`); loadBankData(bankAccountId); } catch (err: any) { alert(err.response?.data?.message || 'Failed'); }
+    try { await api.post(`/bank-reconciliation/unmatch/${matchId}`); loadBankData(bankAccountId); } catch (err: any) { alert(err.message || 'Failed'); }
   };
 
   const handleImportCSV = async () => {

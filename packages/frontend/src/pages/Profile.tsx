@@ -75,7 +75,7 @@ export default function Profile() {
       await api.put('/profile/profile', form);
       setEditing(false);
       loadProfile();
-    } catch (err: any) { alert(err.response?.data?.message || 'Failed'); } finally { setSaving(false); }
+    } catch (err: any) { alert(err.message || 'Failed'); } finally { setSaving(false); }
   };
 
   const handleChangePassword = async (e: React.FormEvent) => {
@@ -88,7 +88,7 @@ export default function Profile() {
       setShowPassword(false);
       setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
       alert('Password updated');
-    } catch (err: any) { alert(err.response?.data?.message || 'Failed'); } finally { setChangingPassword(false); }
+    } catch (err: any) { alert(err.message || 'Failed'); } finally { setChangingPassword(false); }
   };
 
   if (loading) return <div className="flex justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-600" /></div>;
