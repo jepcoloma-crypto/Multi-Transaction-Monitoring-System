@@ -95,12 +95,13 @@ test('the same charge is totalled as expense and nowhere as income', () => {
   // The figure stays visible on the income payload so the two reports can be
   // seen to describe one charge — but only the expense report totals it.
   assert.equal(income.summary.transferFees, expense.summary.totalExpense);
-  assert.equal(income.summary.feeIncome, 1830);
-  assert.equal(income.summary.totalIncome, 1876);
+  assert.equal(income.summary.feeIncome, 1800);
+  assert.equal(income.summary.totalIncome, 1846);
   assert.equal(expense.summary.totalExpense, 10);
-  // Income plus expense equals the old income figure, so the 10.00 that used
-  // to sit inside income has moved rather than been counted twice.
-  assert.equal(income.summary.totalIncome + expense.summary.totalExpense, 1886);
+  // Income plus expense accounts for the transfer charge that moved out of
+  // income but leaves the 30.00 of additional charges out of both: 1,846 +
+  // 10 is the 1,886 these figures used to reach, less those 30.00.
+  assert.equal(income.summary.totalIncome + expense.summary.totalExpense, 1856);
 });
 
 test('pg hands money over as strings and the cents survive the trip', () => {

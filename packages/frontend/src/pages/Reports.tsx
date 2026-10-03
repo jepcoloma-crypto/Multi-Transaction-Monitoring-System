@@ -640,7 +640,7 @@ export default function Reports() {
             </div>
           ) : activeReport === 'income-expense' && incomeExpenseTab === 'income' && reportData.rows ? (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm print:grid-cols-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 text-sm print:grid-cols-5">
                 <div className="card">
                   <p className="text-gray-500">Total Income</p>
                   <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.summary?.totalIncome || 0)}</p>
@@ -649,12 +649,17 @@ export default function Reports() {
                 <div className="card">
                   <p className="text-gray-500">Fee Income</p>
                   <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.feeIncome || 0)}</p>
-                  <p className="text-sm text-gray-500">Fees {formatCurrency(reportData.summary?.txnFees || 0)} · Charges {formatCurrency(reportData.summary?.additionalCharges || 0)}</p>
+                  <p className="text-sm text-gray-500">Fees {formatCurrency(reportData.summary?.txnFees || 0)}</p>
                 </div>
                 <div className="card">
                   <p className="text-gray-500">Loading Margin</p>
                   <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.loadMargin || 0)}</p>
                   <p className="text-sm text-gray-500">Revenue {formatCurrency(reportData.summary?.loadRevenue || 0)} − Cost {formatCurrency(reportData.summary?.loadCost || 0)}</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Charges</p>
+                  <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.additionalCharges || 0)}</p>
+                  <p className="text-sm text-gray-500">Billed alongside transactions — not counted as income</p>
                 </div>
                 <div className="card">
                   <p className="text-gray-500">Excluded as Reversed</p>
@@ -681,7 +686,7 @@ export default function Reports() {
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transfers</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Loadings</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Txn Fees</th>
-                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Charges</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase" title="Not included in Fee Income or Total Income">Charges</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Fee Income</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Loading Margin</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total Income</th>
@@ -715,7 +720,7 @@ export default function Reports() {
                               <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.transferCount}</td>
                               <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.loadCount}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.txnFees)}</td>
-                              <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.additionalCharges)}</td>
+                              <td className="px-4 py-3.5 text-sm text-right font-mono" title="Billed alongside the transaction — shown for reference, not added to Fee Income or Total Income">{formatCurrency(r.additionalCharges)}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.feeIncome)}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(r.loadMargin)}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-finance-green">{formatCurrency(r.totalIncome)}</td>

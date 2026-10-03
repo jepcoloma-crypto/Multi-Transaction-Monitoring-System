@@ -25,14 +25,35 @@ test('every total is the sum of the components printed beside it', () => {
     row({ txn_fees: '1800.00', additional_charges: '30.00', transfer_fees: '10.00', load_margin: '46.00' }),
   ]);
 
-  assert.equal(rows[0].feeIncome, 1830);
-  assert.equal(rows[0].totalIncome, 1876);
-  assert.equal(summary.feeIncome, 1830);
-  assert.equal(summary.totalIncome, 1876);
+  assert.equal(rows[0].feeIncome, 1800);
+  assert.equal(rows[0].totalIncome, 1846);
+  assert.equal(summary.feeIncome, 1800);
+  assert.equal(summary.totalIncome, 1846);
   // An operator has to be able to walk left across the row and reach the last
-  // column without trusting a figure they cannot reconstruct.
-  assert.equal(rows[0].txnFees + rows[0].additionalCharges, rows[0].feeIncome);
+  // column without trusting a figure they cannot reconstruct. Charges are the
+  // exception the next test covers: they print on the row but are deliberately
+  // outside both totals, so the addition stops at fee income.
+  assert.equal(rows[0].txnFees, rows[0].feeIncome);
   assert.equal(rows[0].feeIncome + rows[0].loadMargin, rows[0].totalIncome);
+});
+
+test('additional charges are carried on the row but never totalled as income', () => {
+  const { rows, summary } = buildIncomeReport([
+    row({ txn_fees: '1800.00', additional_charges: '30.00', load_margin: '46.00' }),
+  ]);
+
+  // The charge is a figure the operator reads, not revenue the company earned,
+  // so it gets a column and a card of its own. Folding it into feeIncome made
+  // the card claim 1,830 of income the account had not made.
+  assert.equal(rows[0].additionalCharges, 30);
+  assert.equal(summary.additionalCharges, 30);
+  assert.equal(rows[0].feeIncome, 1800);
+  assert.equal(summary.feeIncome, 1800);
+  assert.equal(rows[0].totalIncome, 1846);
+  assert.equal(summary.totalIncome, 1846);
+  // Charging the customer shows up on the row, but no total absorbs it.
+  assert.equal(rows[0].txnFees + rows[0].additionalCharges + rows[0].loadMargin, 1876);
+  assert.notEqual(rows[0].txnFees + rows[0].additionalCharges, rows[0].feeIncome);
 });
 
 test('a transfer service charge is carried on the row but never totalled as income', () => {
@@ -45,9 +66,14 @@ test('a transfer service charge is carried on the row but never totalled as inco
   // report. Leaving it here would put the same peso on two reports.
   assert.equal(rows[0].transferFees, 10);
   assert.equal(summary.transferFees, 10);
-  assert.equal(rows[0].feeIncome, 1830);
-  assert.equal(summary.totalIncome, 1876);
-  assert.equal(rows[0].txnFees + rows[0].additionalCharges + rows[0].transferFees, rows[0].feeIncome + rows[0].transferFees);
+  assert.equal(rows[0].feeIncome, 1800);
+  assert.equal(summary.totalIncome, 1846);
+  // Every figure the row carries stays visible, and only fees and loading
+  // margin reach the total — charges and transfer fees sit beside it.
+  assert.equal(
+    rows[0].txnFees + rows[0].additionalCharges + rows[0].transferFees + rows[0].loadMargin,
+    1886,
+  );
 });
 
 test('pg hands money over as strings and the cents survive the trip', () => {
@@ -97,9 +123,11 @@ test('a reversed fee is reported as excluded and never reaches income', () => {
   assert.equal(rows[0].reversedExcluded, 250);
   assert.equal(summary.reversedExcluded, 250);
   // The reversal refunded the fee, so counting it here would pay the company
-  // twice for one transaction.
-  assert.equal(rows[0].feeIncome, 1815);
-  assert.equal(summary.feeIncome, 1815);
+  // twice for one transaction. The 15.00 of charges beside it never entered
+  // feeIncome in the first place.
+  assert.equal(rows[0].feeIncome, 1800);
+  assert.equal(summary.feeIncome, 1800);
+  assert.equal(rows[0].additionalCharges, 15);
 });
 
 test('a loading that lost money reduces the total instead of flooring at zero', () => {

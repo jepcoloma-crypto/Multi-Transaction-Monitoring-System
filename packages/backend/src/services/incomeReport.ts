@@ -13,6 +13,13 @@
 // still carried on every row so the figure remains visible beside the income it
 // used to inflate, but adding it back into feeIncome or totalIncome would count
 // the same peso twice.
+//
+// Additional charges are handled the same way. They keep their own column and
+// their own summary card so the figure stays in front of the operator, but both
+// feeIncome and totalIncome exclude them: a charge is money billed alongside a
+// transaction rather than revenue the company earned. Leaving it inside
+// feeIncome meant the card read "Fees 1,800 + Charges 30" as one income figure,
+// which made the account look like it earned thirty pesos it had not.
 
 const NUMERIC = /^-?\d+(\.\d+)?$/;
 
@@ -113,9 +120,8 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
     const rowTxnFeesCents = toCents(row.txn_fees);
     const rowChargesCents = toCents(row.additional_charges);
     const rowTransferFeesCents = toCents(row.transfer_fees);
-    const rowFeeCents = rowTxnFeesCents + rowChargesCents;
     const rowLoadMarginCents = toCents(row.load_margin);
-    const rowTotalCents = rowFeeCents + rowLoadMarginCents;
+    const rowTotalCents = rowTxnFeesCents + rowLoadMarginCents;
 
     txnCount += asCount(row.txn_count);
     transferCount += asCount(row.transfer_count);
@@ -140,7 +146,7 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
       txnFees: money(rowTxnFeesCents),
       additionalCharges: money(rowChargesCents),
       transferFees: money(rowTransferFeesCents),
-      feeIncome: money(rowFeeCents),
+      feeIncome: money(rowTxnFeesCents),
       loadRevenue: money(toCents(row.load_revenue)),
       loadCost: money(toCents(row.load_cost)),
       loadMargin: money(rowLoadMarginCents),
@@ -164,11 +170,11 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
       txnFees: money(txnFeesCents),
       additionalCharges: money(chargesCents),
       transferFees: money(transferFeesCents),
-      feeIncome: money(txnFeesCents + chargesCents),
+      feeIncome: money(txnFeesCents),
       loadRevenue: money(loadRevenueCents),
       loadCost: money(loadCostCents),
       loadMargin: money(loadMarginCents),
-      totalIncome: money(txnFeesCents + chargesCents + loadMarginCents),
+      totalIncome: money(txnFeesCents + loadMarginCents),
       reversedExcluded: money(reversedCents),
     },
   };
