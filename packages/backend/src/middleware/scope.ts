@@ -15,10 +15,20 @@ import { query, queryOne } from '../database/connection';
  */
 export type AccountLink = 'self' | 'account' | 'transfer';
 
-export function canSeeAll(req: Request, permission: string): boolean {
-  const roles = req.user?.roles || [];
-  const permissions = req.user?.permissions || [];
+/**
+ * The single test for "does this identity hold this permission".
+ *
+ * Deliberately a pure function over the two lists rather than something that
+ * reads a Request: the login response has to compute head-office visibility
+ * before any token exists, and a second copy of this rule there would let the
+ * branch badge claim "All branches" on a page that is quietly scoped.
+ */
+export function hasPermission(roles: string[], permissions: string[], permission: string): boolean {
   return roles.includes('administrator') || roles.includes(permission) || permissions.includes(permission);
+}
+
+export function canSeeAll(req: Request, permission: string): boolean {
+  return hasPermission(req.user?.roles || [], req.user?.permissions || [], permission);
 }
 
 /**
@@ -128,6 +138,35 @@ export async function assertBranch(
 }
 
 /**
+ * Checks the caller may place an account in `branchId`.
+ *
+ * Head office may name any branch; anyone else only one of their own, which
+ * is what stops a branch user from pulling a foreign account in or pushing
+ * theirs out to a branch they have no business assigning to. The branch is
+ * looked up as well so a stale id from an open form is a sentence rather
+ * than a foreign-key violation.
+ */
+export async function assertBranchAssignable(req: Request, branchId: string): Promise<void> {
+  const branchIds = req.user?.branchIds ?? [];
+  const headOffice = canSeeAll(req, 'branches.read_all');
+
+  if (!headOffice) {
+    if (branchIds.length === 0) {
+      throw createError(403, 'No branch is assigned to your account');
+    }
+    if (!branchIds.includes(branchId)) {
+      throw createError(403, 'You cannot assign an account to that branch');
+    }
+  }
+
+  const exists = await queryOne<{ id: string }>(
+    'SELECT id FROM branches WHERE id = $1',
+    [branchId],
+  );
+  if (!exists) throw createError(400, 'Branch not found');
+}
+
+/**
  * Resolves which branch a newly created account belongs to.
  *
  * `branchId` may come from the request, but only from within the caller's own
@@ -135,6 +174,10 @@ export async function assertBranch(
  * back to the caller's first branch, so an account can never be created
  * outside every branch -- which the NOT NULL on `accounts.branch_id` would
  * otherwise surface as a 500 instead of a sentence.
+ *
+ * Separate from assertBranchAssignable because an omitted value means
+ * different things on each path: "your first branch" when creating, "leave it
+ * where it is" when updating.
  */
 export async function resolveNewAccountBranch(
   req: Request,
@@ -149,15 +192,7 @@ export async function resolveNewAccountBranch(
 
   const branchId = requested || branchIds[0];
   if (!branchId) throw createError(400, 'Branch is required');
-  if (!headOffice && !branchIds.includes(branchId)) {
-    throw createError(403, 'You cannot create an account in that branch');
-  }
 
-  const exists = await queryOne<{ id: string }>(
-    'SELECT id FROM branches WHERE id = $1',
-    [branchId],
-  );
-  if (!exists) throw createError(400, 'Branch not found');
-
+  await assertBranchAssignable(req, branchId);
   return branchId;
 }

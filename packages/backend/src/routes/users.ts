@@ -10,6 +10,42 @@ const router = Router();
 
 router.use(authenticate);
 
+/**
+ * Replaces a user's branch membership.
+ *
+ * Assignment is a full replacement, exactly like roleIds above and below:
+ * the form submits the whole set, so there is no partial update to get
+ * wrong. Branches are validated against the table first, otherwise a stale
+ * id left in the form would reach the foreign key and come back as a 500
+ * that names nothing.
+ *
+ * It will not produce a user with no branches. authenticate() reads this
+ * table on every request, and an empty result makes every scoped read 403 --
+ * which presents to that user as the system being broken rather than as a
+ * person nobody ever assigned.
+ */
+async function setUserBranches(userId: string, branchIds: unknown, required: boolean): Promise<void> {
+  if (branchIds === undefined && !required) return;
+  if (!Array.isArray(branchIds)) {
+    throw createError(400, 'Branches must be an array of branch ids');
+  }
+
+  const ids = [...new Set(branchIds.filter((v): v is string => typeof v === 'string' && v.length > 0))];
+  if (ids.length === 0) {
+    throw createError(400, 'A user must belong to at least one branch');
+  }
+
+  const found = await query<{ id: string }>('SELECT id FROM branches WHERE id = ANY($1)', [ids]);
+  if (found.length !== ids.length) {
+    throw createError(400, 'One or more selected branches do not exist');
+  }
+
+  await query('DELETE FROM user_branches WHERE user_id = $1', [userId]);
+  for (const branchId of ids) {
+    await query('INSERT INTO user_branches (user_id, branch_id) VALUES ($1, $2)', [userId, branchId]);
+  }
+}
+
 router.get('/', authorize('users.read', 'administrator'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
@@ -30,12 +66,19 @@ router.get('/', authorize('users.read', 'administrator'), async (req: Request, r
       params
     );
 
+    // Adding the branch join multiplies the rows (roles x branches), which
+    // would otherwise repeat every role once per branch -- so both
+    // aggregates are DISTINCT. branch_ids rather than branch names: the
+    // client already loads /branches for its selectors, and one id array
+    // cannot drift out of step with a parallel name array the way two would.
     const users = await query(
       `SELECT u.id, u.email, u.username, u.first_name, u.last_name, u.is_active, u.last_login_at, u.created_at, u.updated_at,
-              COALESCE(ARRAY_AGG(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') as roles
+              COALESCE(ARRAY_AGG(DISTINCT r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL), '{}') as roles,
+              COALESCE(ARRAY_AGG(DISTINCT ub.branch_id ORDER BY ub.branch_id) FILTER (WHERE ub.branch_id IS NOT NULL), '{}') as branch_ids
        FROM users u
        LEFT JOIN user_roles ur ON u.id = ur.user_id
        LEFT JOIN roles r ON ur.role_id = r.id
+       LEFT JOIN user_branches ub ON u.id = ub.user_id
        ${whereClause}
        GROUP BY u.id
        ORDER BY u.created_at DESC
@@ -63,10 +106,12 @@ router.get('/:id', authorize('users.read', 'administrator'), async (req: Request
   try {
     const user = await queryOne(
       `SELECT u.id, u.email, u.username, u.first_name, u.last_name, u.is_active, u.last_login_at, u.created_at, u.updated_at,
-              COALESCE(ARRAY_AGG(r.name) FILTER (WHERE r.name IS NOT NULL), '{}') as roles
+              COALESCE(ARRAY_AGG(DISTINCT r.name ORDER BY r.name) FILTER (WHERE r.name IS NOT NULL), '{}') as roles,
+              COALESCE(ARRAY_AGG(DISTINCT ub.branch_id ORDER BY ub.branch_id) FILTER (WHERE ub.branch_id IS NOT NULL), '{}') as branch_ids
        FROM users u
        LEFT JOIN user_roles ur ON u.id = ur.user_id
        LEFT JOIN roles r ON ur.role_id = r.id
+       LEFT JOIN user_branches ub ON u.id = ub.user_id
        WHERE u.id = $1
        GROUP BY u.id`,
       [req.params.id]
@@ -84,7 +129,7 @@ router.get('/:id', authorize('users.read', 'administrator'), async (req: Request
 
 router.post('/', authorize('users.write', 'administrator'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { email, username, password, firstName, lastName, roleIds } = req.body;
+    const { email, username, password, firstName, lastName, roleIds, branchIds } = req.body;
 
     if (!email || !username || !password || !firstName || !lastName) {
       throw createError(400, 'Email, username, password, first name, and last name are required');
@@ -119,6 +164,11 @@ router.post('/', authorize('users.write', 'administrator'), async (req: Request,
       }
     }
 
+    // Required on creation: a new user with no branches would be able to
+    // log in and then 403 on every scoped read, which is a confusing way to
+    // discover an incomplete form.
+    await setUserBranches(user!.id, branchIds, true);
+
     await createAuditLog({
       userId: req.user!.userId,
       action: 'user.created',
@@ -136,7 +186,7 @@ router.post('/', authorize('users.write', 'administrator'), async (req: Request,
 
 router.put('/:id', authorize('users.write', 'administrator'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { firstName, lastName, isActive, roleIds } = req.body;
+    const { firstName, lastName, isActive, roleIds, branchIds } = req.body;
     const userId = req.params.id;
 
     const existing = await queryOne('SELECT id, first_name, last_name, is_active FROM users WHERE id = $1', [userId]);
@@ -158,6 +208,11 @@ router.put('/:id', authorize('users.write', 'administrator'), async (req: Reques
         await query('INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)', [userId, roleId]);
       }
     }
+
+    // Optional here, unlike creation: a request that does not mention
+    // branches leaves membership alone, so an edit that only changes a name
+    // cannot silently empty somebody's assignment.
+    await setUserBranches(userId, branchIds, false);
 
     await createAuditLog({
       userId: req.user!.userId,

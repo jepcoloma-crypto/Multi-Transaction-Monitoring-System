@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
-import { branchClause, assertBranch, resolveNewAccountBranch } from '../middleware/scope';
+import { branchClause, assertBranch, assertBranchAssignable, resolveNewAccountBranch } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -57,11 +57,13 @@ router.get('/', authorize('accounts.read'), async (req: Request, res: Response, 
 
     const accounts = await query(
       `SELECT a.*, p.name as provider_name, p.code as provider_code, p.type as provider_type,
-              at.name as type_name, at.code as type_code, u.email as created_by_email
+              at.name as type_name, at.code as type_code, u.email as created_by_email,
+              b.name as branch_name, b.code as branch_code
        FROM accounts a
        JOIN providers p ON a.provider_id = p.id
        JOIN account_types at ON a.account_type_id = at.id
        LEFT JOIN users u ON a.created_by = u.id
+       LEFT JOIN branches b ON a.branch_id = b.id
        ${whereClause}
        ORDER BY a.name
        LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
@@ -257,11 +259,18 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
 
     const {
       name, providerId, accountTypeId, maskedAccountNumber, accountReference, owner, purpose,
-      minimumBalance, targetBalance, status, notes, currentBalance,
+      minimumBalance, targetBalance, status, notes, currentBalance, branchId,
     } = req.body;
 
     if (maskedAccountNumber !== undefined && !String(maskedAccountNumber ?? '').trim()) {
       throw createError(400, 'Masked account number is required');
+    }
+
+    // Reassignment moves who owns the balance, so it is gated exactly like
+    // creation. Omitted means unchanged here, which is the one thing that
+    // differs: creation reads omission as "your first branch".
+    if (branchId !== undefined && branchId !== null && branchId !== '') {
+      await assertBranchAssignable(req, String(branchId));
     }
 
     if (providerId) {
@@ -305,6 +314,7 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
         notes = COALESCE($9, notes),
         provider_id = COALESCE($12, provider_id),
         account_type_id = COALESCE($13, account_type_id),
+        branch_id = COALESCE($14, branch_id),
         current_balance = COALESCE($11, current_balance),
         updated_at = NOW()
        WHERE id = $10 RETURNING *`,
@@ -322,6 +332,7 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
           newBalance,
           providerId || null,
           accountTypeId || null,
+          branchId !== undefined && branchId !== null && branchId !== '' ? String(branchId) : null,
         ]
       )).rows[0] || null;
 

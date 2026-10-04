@@ -5,6 +5,7 @@ import { config } from '../config';
 import { query, queryOne } from '../database/connection';
 import { createError } from '../middleware/error';
 import { authenticate } from '../middleware/auth';
+import { hasPermission } from '../middleware/scope';
 import { JwtPayload } from '../types';
 import { createAuditLog } from '../services/audit';
 import { blacklistToken } from '../services/tokenBlacklist';
@@ -55,6 +56,23 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
     );
     const permissionNames = permissions.map(p => p.name);
 
+    // Branches ride along with the login payload because AuthContext caches
+    // this user object in localStorage and never re-reads /auth/me, so this
+    // is the only place the header can learn them without an extra request
+    // on every page load.
+    const branches = await query<{ id: string; code: string; name: string }>(
+      `SELECT b.id, b.code, b.name
+       FROM branches b
+       JOIN user_branches ub ON ub.branch_id = b.id
+       WHERE ub.user_id = $1
+       ORDER BY b.name`,
+      [user.id],
+    );
+
+    // Evaluated with the same predicate the scoping middleware uses, so the
+    // badge can never advertise a wider view than the queries return.
+    const canSeeAllBranches = hasPermission(roleNames, permissionNames, 'branches.read_all');
+
     const tokenPayload: JwtPayload = {
       userId: user.id,
       email: user.email,
@@ -92,6 +110,8 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
           lastName: user.last_name,
           roles: roleNames,
           avatarUrl: user.avatar_url || null,
+          branches,
+          canSeeAllBranches,
         },
         accessToken,
         refreshToken,
@@ -201,6 +221,15 @@ router.get('/me', authenticate, async (req: Request, res: Response, next: NextFu
       [user.id]
     );
 
+    const roleNames = roles.map(r => r.name);
+    const branchIds = req.user!.branchIds ?? [];
+    const branches = branchIds.length === 0
+      ? []
+      : await query<{ id: string; code: string; name: string }>(
+          `SELECT id, code, name FROM branches WHERE id = ANY($1) ORDER BY name`,
+          [branchIds],
+        );
+
     res.json({
       success: true,
       data: {
@@ -209,8 +238,14 @@ router.get('/me', authenticate, async (req: Request, res: Response, next: NextFu
         username: user.username,
         firstName: user.first_name,
         lastName: user.last_name,
-        roles: roles.map(r => r.name),
+        roles: roleNames,
         avatarUrl: user.avatar_url || null,
+        branches,
+        // From the token rather than a fresh query: roles and permissions
+        // come from the same place, so the flag cannot describe a
+        // combination that never existed. Login already reports it from
+        // source, which is where the client takes it from.
+        canSeeAllBranches: hasPermission(req.user!.roles, req.user!.permissions ?? [], 'branches.read_all'),
       },
     });
   } catch (error) {
