@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
-import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
+import { branchClause, assertBranch, resolveNewAccountBranch } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -41,7 +41,7 @@ router.get('/', authorize('accounts.read'), async (req: Request, res: Response, 
       conditions.push(`a.account_type_id = $${paramIndex++}`);
       params.push(typeId);
     }
-    const scope = ownerClause(req, 'a', 'accounts.read_all', paramIndex);
+    const scope = branchClause(req, 'a', 'accounts.read_all', paramIndex, 'self');
     if (scope.clause) {
       conditions.push(scope.clause);
       params.push(...scope.params);
@@ -86,6 +86,14 @@ router.get('/', authorize('accounts.read'), async (req: Request, res: Response, 
 
 router.get('/summary', authorize('accounts.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    // The first query filters `accounts` directly, the other two filter a
+    // LEFT JOINed copy of it -- so they need their own alias, not just their
+    // own parameter position.
+    const scope = branchClause(req, 'accounts', 'accounts.read_all', 1, 'self');
+    const joinScope = branchClause(req, 'a', 'accounts.read_all', 1, 'self');
+    const where = scope.clause ? ` WHERE ${scope.clause}` : '';
+    const and = joinScope.clause ? ` AND ${joinScope.clause}` : '';
+
     const summary = await queryOne<{
       total_accounts: string;
       total_balance: string;
@@ -97,8 +105,8 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
         COALESCE(SUM(current_balance), 0) as total_balance,
         COUNT(*) FILTER (WHERE status = 'active') as active_accounts,
         COUNT(*) FILTER (WHERE current_balance <= minimum_balance AND status = 'active') as low_balance_count
-       FROM accounts${canSeeAll(req, 'accounts.read_all') ? '' : ` WHERE created_by = $1`}`,
-      canSeeAll(req, 'accounts.read_all') ? [] : [req.user!.userId]
+       FROM accounts${where}`,
+      scope.params
     );
 
     const byProvider = await query(
@@ -106,11 +114,11 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
               COUNT(a.id) as account_count,
               COALESCE(SUM(a.current_balance), 0) as total_balance
        FROM providers p
-       LEFT JOIN accounts a ON p.id = a.provider_id AND a.status = 'active'${canSeeAll(req, 'accounts.read_all') ? '' : ' AND a.created_by = $1'}
+       LEFT JOIN accounts a ON p.id = a.provider_id AND a.status = 'active'${and}
        GROUP BY p.id, p.name, p.code
        HAVING COUNT(a.id) > 0
        ORDER BY total_balance DESC`,
-      canSeeAll(req, 'accounts.read_all') ? [] : [req.user!.userId]
+      joinScope.params
     );
 
     const byType = await query(
@@ -118,11 +126,11 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
               COUNT(a.id) as account_count,
               COALESCE(SUM(a.current_balance), 0) as total_balance
        FROM account_types at
-       LEFT JOIN accounts a ON at.id = a.account_type_id AND a.status = 'active'${canSeeAll(req, 'accounts.read_all') ? '' : ' AND a.created_by = $1'}
+       LEFT JOIN accounts a ON at.id = a.account_type_id AND a.status = 'active'${and}
        GROUP BY at.id, at.name, at.code
        HAVING COUNT(a.id) > 0
        ORDER BY total_balance DESC`,
-      canSeeAll(req, 'accounts.read_all') ? [] : [req.user!.userId]
+      joinScope.params
     );
 
     res.json({
@@ -160,7 +168,7 @@ router.get('/:id', authorize('accounts.read'), async (req: Request, res: Respons
     if (!account) {
       throw createError(404, 'Account not found');
     }
-    assertOwner(req, account, 'accounts.read_all', 'Account not found');
+    await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
 
     res.json({ success: true, data: account });
   } catch (error) {
@@ -195,18 +203,20 @@ router.post('/', authorize('accounts.write'), async (req: Request, res: Response
       throw createError(400, 'Opening balance cannot be negative');
     }
 
+    const branchId = await resolveNewAccountBranch(req, req.body.branchId);
+
     const account = await queryOne(
       `INSERT INTO accounts (name, provider_id, account_type_id, masked_account_number,
        account_reference, owner, purpose, opening_balance, current_balance,
-       minimum_balance, target_balance, notes, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       minimum_balance, target_balance, notes, branch_id, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING *`,
       [
         name, providerId, accountTypeId, maskedAccountNumber || null,
         accountReference || null, owner || null, purpose || null,
         balance, balance,
         parseFloat(minimumBalance || '0'), parseFloat(targetBalance || '0'),
-        notes || null, req.user!.userId,
+        notes || null, branchId, req.user!.userId,
       ]
     );
 
@@ -239,7 +249,7 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
     if (!existing) {
       throw createError(404, 'Account not found');
     }
-    assertOwner(req, existing, 'accounts.write_all', 'Account not found');
+    await assertBranch(req, existing?.id, 'accounts.write_all', 'Account not found');
 
     if (existing.status === 'closed') {
       throw createError(400, 'Cannot modify a closed account');
@@ -354,11 +364,11 @@ router.put('/:id', authorize('accounts.write'), async (req: Request, res: Respon
 
 router.get('/:id/balance-history', authorize('accounts.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const account = await queryOne<{ created_by: string | null }>(
-      'SELECT created_by FROM accounts WHERE id = $1',
+    const account = await queryOne<{ id: string }>(
+      'SELECT id FROM accounts WHERE id = $1',
       [req.params.id]
     );
-    assertOwner(req, account, 'accounts.read_all', 'Account not found');
+    await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
 
     const history = await query(
       `SELECT abh.*, u.email as recorded_by_email
@@ -382,7 +392,7 @@ router.delete('/:id', authorize('accounts.write'), async (req: Request, res: Res
       'SELECT id, name, status, created_by FROM accounts WHERE id = $1', [req.params.id]
     );
     if (!account) throw createError(404, 'Account not found');
-    assertOwner(req, account, 'accounts.write_all', 'Account not found');
+    await assertBranch(req, account?.id, 'accounts.write_all', 'Account not found');
 
     const usage = await queryOne<{ count: string }>(
       `SELECT (

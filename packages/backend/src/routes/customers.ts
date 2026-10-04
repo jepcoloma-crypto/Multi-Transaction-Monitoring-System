@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
-import { canSeeAll, ownerClause } from '../middleware/scope';
+import { branchClause } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -74,7 +74,7 @@ router.get('/from-transactions', authorize('transactions.read'), async (req: Req
       conditions.push(`t.customer_name ILIKE $${paramIndex++}`);
       params.push(`%${search}%`);
     }
-    const scope = ownerClause(req, 't', 'transactions.read_all', paramIndex);
+    const scope = branchClause(req, 't', 'transactions.read_all', paramIndex);
     if (scope.clause) {
       conditions.push(scope.clause);
       params.push(...scope.params);
@@ -130,17 +130,11 @@ router.get('/from-transactions', authorize('transactions.read'), async (req: Req
 router.get('/from-transactions/:name', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const customerName = decodeURIComponent(req.params.name);
-    const seeAll = canSeeAll(req, 'transactions.read_all');
-    const listParams: any[] = [customerName];
-    const summaryParams: any[] = [customerName];
-    let listWhere = `WHERE t.customer_name = $1`;
-    let summaryWhere = `WHERE t.customer_name = $1 AND t.status = 'completed'`;
-    if (!seeAll) {
-      listWhere += ` AND t.created_by = $2`;
-      summaryWhere += ` AND t.created_by = $2`;
-      listParams.push(req.user!.userId);
-      summaryParams.push(req.user!.userId);
-    }
+    const scope = branchClause(req, 't', 'transactions.read_all', 2);
+    const listParams: any[] = [customerName, ...scope.params];
+    const summaryParams: any[] = [customerName, ...scope.params];
+    const listWhere = `WHERE t.customer_name = $1${scope.clause ? ` AND ${scope.clause}` : ''}`;
+    const summaryWhere = `WHERE t.customer_name = $1 AND t.status = 'completed'${scope.clause ? ` AND ${scope.clause}` : ''}`;
 
     const transactions = await query(
       `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
@@ -198,7 +192,9 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
        WHERE c.id = $1`, [req.params.id]
     );
     if (!customer) throw createError(404, 'Customer not found');
-    const seeAll = canSeeAll(req, 'transactions.read_all');
+    // The customer row itself is deliberately unscoped: customers are shared
+    // across branches. Only the transactions hanging off them are filtered.
+    const scope = branchClause(req, 't', 'transactions.read_all', 2);
 
     const linkedTransactions = await query(
       `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
@@ -207,9 +203,9 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
-       WHERE t.customer_id = $1${seeAll ? '' : ' AND t.created_by = $2'}
+       WHERE t.customer_id = $1${scope.clause ? ` AND ${scope.clause}` : ''}
        ORDER BY t.transaction_date DESC`,
-      seeAll ? [req.params.id] : [req.params.id, req.user!.userId]
+      [req.params.id, ...scope.params]
     );
 
     const fullName = `${customer.first_name} ${customer.last_name}`;
@@ -220,9 +216,9 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
-       WHERE t.customer_id IS NULL AND t.customer_name = $1${seeAll ? '' : ' AND t.created_by = $2'}
+       WHERE t.customer_id IS NULL AND t.customer_name = $1${scope.clause ? ` AND ${scope.clause}` : ''}
        ORDER BY t.transaction_date DESC`,
-      seeAll ? [fullName] : [fullName, req.user!.userId]
+      [fullName, ...scope.params]
     );
 
     res.json({

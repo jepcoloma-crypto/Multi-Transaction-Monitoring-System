@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
-import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
+import { branchClause, assertBranch } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { lookupProviderCharge } from '../services/providerCharge';
@@ -25,7 +25,7 @@ router.get('/', authorize('transfers.read'), async (req: Request, res: Response,
 
     if (status) { conditions.push(`t.status = $${pi++}`); params.push(status); }
     if (accountId) { conditions.push(`(t.source_account_id = $${pi} OR t.destination_account_id = $${pi})`); params.push(accountId); pi++; }
-    const scope = ownerClause(req, 't', 'transfers.read_all', pi);
+    const scope = branchClause(req, 't', 'transfers.read_all', pi, 'transfer');
     if (scope.clause) {
       conditions.push(scope.clause);
       params.push(...scope.params);
@@ -62,7 +62,7 @@ router.get('/summary', authorize('transfers.read'), async (req: Request, res: Re
     let pi = 1;
     if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
     if (endDate) { conds.push(`t.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
-    const scope = ownerClause(req, 't', 'transfers.read_all', pi);
+    const scope = branchClause(req, 't', 'transfers.read_all', pi, 'transfer');
     if (scope.clause) {
       conds.push(scope.clause);
       params.push(...scope.params);
@@ -89,7 +89,7 @@ router.get('/:id', authorize('transfers.read'), async (req: Request, res: Respon
        LEFT JOIN users u1 ON t.created_by = u1.id LEFT JOIN users u2 ON t.approved_by = u2.id WHERE t.id = $1`, [req.params.id]
     );
     if (!transfer) throw createError(404, 'Transfer not found');
-    assertOwner(req, transfer, 'transfers.read_all', 'Transfer not found');
+    await assertBranch(req, [transfer?.source_account_id, transfer?.destination_account_id], 'transfers.read_all', 'Transfer not found');
 
     const entries = await query(`SELECT * FROM transfer_entries WHERE transfer_id = $1 ORDER BY created_at`, [req.params.id]);
     res.json({ success: true, data: { ...transfer, entries } });
@@ -162,6 +162,15 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
     if (!dstAcct.rows[0]) throw createError(404, 'Destination account not found');
     if (dstAcct.rows[0].status !== 'active') throw createError(400, 'Destination account is not active');
 
+    // The debit lands on the source, so that account has to be in one of the
+    // caller's branches. The destination is deliberately left unchecked:
+    // sending money to another branch is a credit to them, and nobody
+    // authorises an incoming deposit. This is the inverse of the read rule,
+    // which matches on either side so each branch can reconcile its own half.
+    // Reusing the not-found wording means a scoped caller cannot use the
+    // response to discover that an account outside their branches exists.
+    await assertBranch(req, sourceAccountId, 'transfers.write_all', 'Source account not found');
+
     let charge = clientCharge;
     if (manualCharge !== true) {
       const rule = await lookupProviderCharge(srcAcct.rows[0].provider_id, dstAcct.rows[0].provider_id);
@@ -209,6 +218,10 @@ router.post('/:id/approve', authorize('transfers.approve'), async (req: Request,
 
     const transfer = (await client.query('SELECT * FROM transfers WHERE id = $1 FOR UPDATE', [req.params.id])).rows[0];
     if (!transfer) throw createError(404, 'Transfer not found');
+    // Approving executes the debit, so the source has to be the caller's.
+    // Asserted before the status check so a scoped caller learns nothing
+    // about a transfer they cannot act on.
+    await assertBranch(req, transfer.source_account_id, 'transfers.write_all', 'Transfer not found');
     if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be approved');
     if (transfer.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own transfer');
 
@@ -251,6 +264,7 @@ router.post('/:id/reject', authorize('transfers.approve'), async (req: Request, 
 
     const transfer = await queryOne('SELECT * FROM transfers WHERE id = $1', [req.params.id]);
     if (!transfer) throw createError(404, 'Transfer not found');
+    await assertBranch(req, transfer.source_account_id, 'transfers.write_all', 'Transfer not found');
     if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be rejected');
     if (transfer.created_by === req.user!.userId) throw createError(400, 'You cannot reject your own transfer');
 
@@ -275,7 +289,11 @@ router.delete('/:id', authorize('transfers.delete'), async (req: Request, res: R
 
     const transfer = (await client.query('SELECT * FROM transfers WHERE id = $1', [req.params.id])).rows[0];
     if (!transfer) throw createError(404, 'Transfer not found');
-    assertOwner(req, transfer, 'transfers.write_all', 'Transfer not found');
+    // Deleting unwinds both the debit and the credit, so both accounts have
+    // to be visible. One branch must never be able to unwind money sitting
+    // in the other by deleting the transfer that put it there.
+    await assertBranch(req, transfer?.source_account_id, 'transfers.write_all', 'Transfer not found');
+    await assertBranch(req, transfer?.destination_account_id, 'transfers.write_all', 'Transfer not found');
     if (transfer.status === 'reversed') throw createError(400, 'Reversed transfers cannot be deleted — its reversal is already recorded');
 
     const movesFunds = !['draft', 'pending', 'failed', 'rejected'].includes(transfer.status);

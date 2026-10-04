@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query } from '../database/connection';
 import { authenticate } from '../middleware/auth';
-import { canSeeAll } from '../middleware/scope';
+import { branchClause } from '../middleware/scope';
 
 const router = Router();
 router.use(authenticate);
@@ -15,19 +15,20 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
 
     const term = `%${q.trim().toLowerCase()}%`;
     const limit = 5;
-    const uid = req.user!.userId;
-    const seeAccounts = canSeeAll(req, 'accounts.read_all');
-    const seeTransactions = canSeeAll(req, 'transactions.read_all');
-    const seeTransfers = canSeeAll(req, 'transfers.read_all');
-    const seeLoading = canSeeAll(req, 'loading.read_all');
+    // Each block below binds its own scope at $3, after the shared $1 term
+    // and $2 limit, so a scoped and an unscoped caller run identical SQL.
+    const accountScope = branchClause(req, 'a', 'accounts.read_all', 3, 'self');
+    const transactionScope = branchClause(req, 't', 'transactions.read_all', 3);
+    const transferScope = branchClause(req, 't', 'transfers.read_all', 3, 'transfer');
+    const loadingScope = branchClause(req, 'lt', 'loading.read_all', 3);
 
     const [accounts, transactions, transfers, loading, users] = await Promise.all([
       query(
         `SELECT a.id, a.name, a.masked_account_number, a.current_balance, a.status
          FROM accounts a WHERE a.status = 'active'
          AND (LOWER(a.name) LIKE $1 OR LOWER(a.masked_account_number) LIKE $1)
-         ${seeAccounts ? '' : 'AND a.created_by = $3'}
-         ORDER BY a.name LIMIT $2`, [term, limit, ...(seeAccounts ? [] : [uid])]
+         ${accountScope.clause ? `AND ${accountScope.clause}` : ''}
+         ORDER BY a.name LIMIT $2`, [term, limit, ...accountScope.params]
       ),
       query(
         `SELECT t.id, t.transaction_number, t.amount, t.status, t.description, t.reference_number,
@@ -40,8 +41,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
            OR LOWER(t.reference_number) LIKE $1
            OR LOWER(t.customer_name) LIKE $1
            OR LOWER(a.name) LIKE $1 )
-         ${seeTransactions ? '' : 'AND t.created_by = $3'}
-         ORDER BY t.transaction_date DESC LIMIT $2`, [term, limit, ...(seeTransactions ? [] : [uid])]
+         ${transactionScope.clause ? `AND ${transactionScope.clause}` : ''}
+         ORDER BY t.transaction_date DESC LIMIT $2`, [term, limit, ...transactionScope.params]
       ),
       query(
         `SELECT t.id, t.transfer_number, t.transfer_amount, t.status, t.purpose,
@@ -53,8 +54,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
            OR LOWER(t.purpose) LIKE $1
            OR LOWER(sa.name) LIKE $1
            OR LOWER(da.name) LIKE $1 )
-         ${seeTransfers ? '' : 'AND t.created_by = $3'}
-         ORDER BY t.transfer_date DESC LIMIT $2`, [term, limit, ...(seeTransfers ? [] : [uid])]
+         ${transferScope.clause ? `AND ${transferScope.clause}` : ''}
+         ORDER BY t.transfer_date DESC LIMIT $2`, [term, limit, ...transferScope.params]
       ),
       query(
         `SELECT lt.id, lt.transaction_number, lt.customer_number, lt.total_revenue, lt.status,
@@ -64,8 +65,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
          WHERE ( CAST(lt.transaction_number AS TEXT) LIKE $1
            OR LOWER(lt.customer_number) LIKE $1
            OR LOWER(lp.name) LIKE $1 )
-         ${seeLoading ? '' : 'AND lt.created_by = $3'}
-         ORDER BY lt.created_at DESC LIMIT $2`, [term, limit, ...(seeLoading ? [] : [uid])]
+         ${loadingScope.clause ? `AND ${loadingScope.clause}` : ''}
+         ORDER BY lt.created_at DESC LIMIT $2`, [term, limit, ...loadingScope.params]
       ),
       query(
         `SELECT id, email, first_name, last_name

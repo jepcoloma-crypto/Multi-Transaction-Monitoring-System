@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
-import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
+import { branchClause, assertBranch } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry } from '../services/balance';
@@ -40,7 +40,7 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
       params.push(`%${search}%`);
       paramIndex++;
     }
-    const scope = ownerClause(req, 't', 'transactions.read_all', paramIndex);
+    const scope = branchClause(req, 't', 'transactions.read_all', paramIndex);
     if (scope.clause) {
       conditions.push(scope.clause);
       params.push(...scope.params);
@@ -98,7 +98,7 @@ router.get('/summary', authorize('transactions.read'), async (req: Request, res:
     if (startDate) { conditions.push(`t.transaction_date >= $${paramIndex++}`); params.push(startDate); }
     if (endDate) { conditions.push(`t.transaction_date < ($${paramIndex++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (accountId) { conditions.push(`t.account_id = $${paramIndex++}`); params.push(accountId); }
-    const scope = ownerClause(req, 't', 'transactions.read_all', paramIndex);
+    const scope = branchClause(req, 't', 'transactions.read_all', paramIndex);
     if (scope.clause) {
       conditions.push(scope.clause);
       params.push(...scope.params);
@@ -162,12 +162,9 @@ router.get('/summary', authorize('transactions.read'), async (req: Request, res:
 router.get('/today', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const todayParams: any[] = [today];
-    let todayWhere = `WHERE DATE(t.transaction_date) = $1`;
-    if (!canSeeAll(req, 'transactions.read_all')) {
-      todayWhere += ` AND t.created_by = $2`;
-      todayParams.push(req.user!.userId);
-    }
+    const scope = branchClause(req, 't', 'transactions.read_all', 2);
+    const todayWhere = `WHERE DATE(t.transaction_date) = $1${scope.clause ? ` AND ${scope.clause}` : ''}`;
+    const todayParams: any[] = [today, ...scope.params];
     const summary = await queryOne(
       `SELECT
         COUNT(*) as transaction_count,
@@ -213,17 +210,11 @@ router.get('/by-customer-name', authorize('transactions.read'), async (req: Requ
     const name = req.query.name as string;
     if (!name) throw createError(400, 'Customer name is required');
 
-    const seeAll = canSeeAll(req, 'transactions.read_all');
-    const nameParams: any[] = [`%${name}%`];
-    const nameSummaryParams: any[] = [`%${name}%`];
-    let listWhere = `WHERE t.customer_name ILIKE $1`;
-    let summaryWhere = `WHERE t.customer_name ILIKE $1 AND t.status = 'completed'`;
-    if (!seeAll) {
-      listWhere += ` AND t.created_by = $2`;
-      summaryWhere += ` AND t.created_by = $2`;
-      nameParams.push(req.user!.userId);
-      nameSummaryParams.push(req.user!.userId);
-    }
+    const scope = branchClause(req, 't', 'transactions.read_all', 2);
+    const nameParams: any[] = [`%${name}%`, ...scope.params];
+    const nameSummaryParams: any[] = [`%${name}%`, ...scope.params];
+    const listWhere = `WHERE t.customer_name ILIKE $1${scope.clause ? ` AND ${scope.clause}` : ''}`;
+    const summaryWhere = `WHERE t.customer_name ILIKE $1 AND t.status = 'completed'${scope.clause ? ` AND ${scope.clause}` : ''}`;
 
     const transactions = await query(
       `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
@@ -292,7 +283,7 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
     if (!transaction) {
       throw createError(404, 'Transaction not found');
     }
-    assertOwner(req, transaction, 'transactions.read_all', 'Transaction not found');
+    await assertBranch(req, transaction?.account_id, 'transactions.read_all', 'Transaction not found');
 
     const ledgerEntries = await query(
       `SELECT * FROM ledger_entries WHERE transaction_id = $1 ORDER BY created_at, id`,
@@ -333,6 +324,12 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     if (!accountId || !resolvedTypeId || amount === undefined) {
       throw createError(400, 'Account, transaction type (or fee rule), and amount are required');
     }
+
+    // Creating a transaction moves money on the named account, so the account
+    // has to sit in one of the caller's branches. Every read in this file was
+    // already scoped, but the create path never was -- without this, a scoped
+    // caller could name any account in the system and debit it directly.
+    await assertBranch(req, accountId, 'transactions.write_all', 'Account not found');
 
     const amountNum = parseFloat(amount);
     if (amountNum < 0) throw createError(400, 'Amount cannot be negative');
@@ -550,7 +547,7 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
     );
     const original = originalRes.rows[0];
     if (!original) throw createError(404, 'Transaction not found');
-    assertOwner(req, original, 'transactions.write_all', 'Transaction not found');
+    await assertBranch(req, original?.account_id, 'transactions.write_all', 'Transaction not found');
     if (original.status === 'completed' && !(req.user!.roles || []).includes('administrator')) {
       throw createError(403, 'Only administrators can adjust charges on a completed transaction');
     }
@@ -624,7 +621,7 @@ router.patch('/:id/notes', authorize('transactions.write'), async (req: Request,
   try {
     const { notes } = req.body;
     const transaction = await queryOne('SELECT id, created_by FROM transactions WHERE id = $1', [req.params.id]);
-    assertOwner(req, transaction, 'transactions.write_all', 'Transaction not found');
+    await assertBranch(req, transaction?.account_id, 'transactions.write_all', 'Transaction not found');
 
     const updated = await queryOne(
       `UPDATE transactions SET notes = $1, updated_at = NOW() WHERE id = $2 RETURNING *`,
@@ -761,7 +758,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
       [req.params.id]
     );
     if (!original) throw createError(404, 'Transaction not found');
-    assertOwner(req, original, 'transactions.write_all', 'Transaction not found');
+    await assertBranch(req, original?.account_id, 'transactions.write_all', 'Transaction not found');
     if (original.status === 'reversed') throw createError(400, 'Transaction already reversed');
     if (original.status === 'pending' || original.status === 'rejected') {
       throw createError(400, 'Unsettled fund movements cannot be reversed');
@@ -902,6 +899,10 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
       [req.params.id]
     )).rows[0];
     if (!row) throw createError(404, 'Transaction not found');
+    // Approving settles the movement on this account, so it must be the
+    // caller's. Checked before the status guard so a scoped caller cannot
+    // probe for pending requests outside their branches.
+    await assertBranch(req, row.account_id, 'transactions.write_all', 'Transaction not found');
     assertOwnerFundType(row.code);
     if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be approved');
     if (row.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own request');
@@ -973,6 +974,7 @@ router.post('/:id/reject', authorize('transactions.approve'), async (req: Reques
       [req.params.id]
     );
     if (!row) throw createError(404, 'Transaction not found');
+    await assertBranch(req, row.account_id, 'transactions.write_all', 'Transaction not found');
     assertOwnerFundType(row.code);
     if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be rejected');
     if (row.created_by === req.user!.userId) throw createError(400, 'You cannot reject your own request');
@@ -1180,7 +1182,7 @@ router.delete('/:id', authorize('transactions.delete'), async (req: Request, res
       [req.params.id]
     );
     const transaction = original.rows[0];
-    assertOwner(req, transaction, 'transactions.write_all', 'Transaction not found');
+    await assertBranch(req, transaction?.account_id, 'transactions.write_all', 'Transaction not found');
     if (transaction.status === 'completed' || transaction.status === 'reversed') {
       throw createError(400, transaction.status === 'reversed'
         ? 'Reversed transactions cannot be deleted — its reversal is already recorded'

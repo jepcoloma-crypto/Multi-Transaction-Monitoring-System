@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
+import { resolveNewAccountBranch } from '../middleware/scope';
 import { createAuditLog } from '../services/audit';
 import multer from 'multer';
 
@@ -139,6 +140,12 @@ router.post('/accounts', authorize('accounts.write'), upload.single('file'), asy
 
     const results = { created: 0, failed: 0, errors: [] as string[] };
 
+    // Resolved once, before the loop: a CSV carries no branch column, so
+    // every row of one import file lands in the same branch. Failing here
+    // rather than per row means a caller outside every branch gets one clear
+    // error instead of N identical ones.
+    const branchId = await resolveNewAccountBranch(req, req.body?.branchId);
+
     for (const row of rows) {
       try {
         const name = row.name || row.account_name;
@@ -157,10 +164,10 @@ router.post('/accounts', authorize('accounts.write'), upload.single('file'), asy
 
         const openingBalance = parseFloat(row.opening_balance || row.balance || '0');
         await query(
-          `INSERT INTO accounts (name, provider_id, account_type_id, masked_account_number, account_reference, opening_balance, current_balance, minimum_balance, target_balance, status, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10)`,
+          `INSERT INTO accounts (name, provider_id, account_type_id, masked_account_number, account_reference, opening_balance, current_balance, minimum_balance, target_balance, status, branch_id, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'active', $10, $11)`,
           [name, provider.id, acctType.id, row.masked_number || row.masked_account_number || '****0000', row.reference || row.account_reference || null,
-           openingBalance, openingBalance, parseFloat(row.minimum_balance || '1000'), parseFloat(row.target_balance || '100000'), req.user!.userId]
+           openingBalance, openingBalance, parseFloat(row.minimum_balance || '1000'), parseFloat(row.target_balance || '100000'), branchId, req.user!.userId]
         );
         results.created++;
       } catch (err: any) {

@@ -1,7 +1,8 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
-import { canSeeAll, ownerClause, assertOwner } from '../middleware/scope';
+import type { AccountLink } from '../middleware/scope';
+import { branchClause, assertBranch } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
 import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../services/incomeReport';
@@ -62,7 +63,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
     const wc = `WHERE ${conds.join(' AND ')}`;
 
     const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
-    assertOwner(req, account, 'accounts.read_all', 'Account not found');
+    await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
     const entries = await query(
       `SELECT le.id, le.entry_type, le.amount, le.balance_after, le.reference_number,
               le.description, le.entry_date, le.created_at, le.transaction_id, le.transfer_id,
@@ -196,7 +197,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
 
 router.get('/balance-reconciliation', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const scope = ownerClause(req, 'a', 'accounts.read_all', 1);
+    const scope = branchClause(req, 'a', 'accounts.read_all', 1, 'self');
     const { accounts, entries } = await loadScopedLedger(scope);
 
     res.json({ success: true, data: auditLedger(accounts, entries) });
@@ -213,7 +214,7 @@ router.get('/transaction-report', authorize('reports.read'), async (req: Request
     if (endDate) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (accountId) { conds.push(`t.account_id = $${pi++}`); params.push(accountId); }
     if (typeId) { conds.push(`t.transaction_type_id = $${pi++}`); params.push(typeId); }
-    const scope = ownerClause(req, 't', 'transactions.read_all', pi);
+    const scope = branchClause(req, 't', 'transactions.read_all', pi);
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
@@ -255,7 +256,7 @@ router.get('/transfer-report', authorize('reports.read'), async (req: Request, r
     if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
     if (endDate) { conds.push(`t.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (status) { conds.push(`t.status = $${pi++}`); params.push(status); }
-    const scope = ownerClause(req, 't', 'transfers.read_all', pi);
+    const scope = branchClause(req, 't', 'transfers.read_all', pi, 'transfer');
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
     const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
 
@@ -284,7 +285,7 @@ router.get('/loading-report', authorize('reports.read'), async (req: Request, re
     if (startDate) { conds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
     if (endDate) { conds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (providerId) { conds.push(`lp.provider_id = $${pi++}`); params.push(providerId); }
-    const scope = ownerClause(req, 'lt', 'loading.read_all', pi);
+    const scope = branchClause(req, 'lt', 'loading.read_all', pi);
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
@@ -320,15 +321,15 @@ router.get('/loading-report', authorize('reports.read'), async (req: Request, re
 
 router.get('/consolidated', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const seeAllAccounts = canSeeAll(req, 'accounts.read_all');
-    const seeAllTransactions = canSeeAll(req, 'transactions.read_all');
-    const seeAllTransfers = canSeeAll(req, 'transfers.read_all');
-    const seeAllLoading = canSeeAll(req, 'loading.read_all');
-    const uid = req.user!.userId;
+    const accountScope = branchClause(req, 'accounts', 'accounts.read_all', 1, 'self');
+    const txScope = branchClause(req, 't', 'transactions.read_all', 1);
+    const transferScope = branchClause(req, 'transfers', 'transfers.read_all', 1, 'transfer');
+    const loadingScope = branchClause(req, 'loading_transactions', 'loading.read_all', 1);
+    const reconScope = branchClause(req, 'reconciliations', 'accounts.read_all', 1);
 
     const accountSummary = await queryOne(
-      `SELECT COUNT(*) as count, COALESCE(SUM(current_balance), 0) as total_balance FROM accounts WHERE status = 'active'${seeAllAccounts ? '' : ' AND created_by = $1'}`,
-      seeAllAccounts ? [] : [uid]
+      `SELECT COUNT(*) as count, COALESCE(SUM(current_balance), 0) as total_balance FROM accounts WHERE status = 'active'${accountScope.clause ? ` AND ${accountScope.clause}` : ''}`,
+      accountScope.params
     );
     const txSummary = await queryOne(
       `SELECT COUNT(*) as count,
@@ -342,20 +343,20 @@ router.get('/consolidated', authorize('reports.read'), async (req: Request, res:
            CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
          ) c
        ) chg ON true
-       WHERE t.status != 'reversed'${seeAllTransactions ? '' : ' AND t.created_by = $1'}`,
-      seeAllTransactions ? [] : [uid]
+       WHERE t.status != 'reversed'${txScope.clause ? ` AND ${txScope.clause}` : ''}`,
+      txScope.params
     );
     const transferSummary = await queryOne(
-      `SELECT COUNT(*) as count, COALESCE(SUM(transfer_amount), 0) as total_amount, COALESCE(SUM(transfer_fee), 0) as total_fees FROM transfers WHERE status = 'completed'${seeAllTransfers ? '' : ' AND created_by = $1'}`,
-      seeAllTransfers ? [] : [uid]
+      `SELECT COUNT(*) as count, COALESCE(SUM(transfer_amount), 0) as total_amount, COALESCE(SUM(transfer_fee), 0) as total_fees FROM transfers WHERE status = 'completed'${transferScope.clause ? ` AND ${transferScope.clause}` : ''}`,
+      transferScope.params
     );
     const loadingSummary = await queryOne(
-      `SELECT COUNT(*) as count, COALESCE(SUM(total_revenue), 0) as revenue, COALESCE(SUM(profit), 0) as profit FROM loading_transactions WHERE status = 'completed'${seeAllLoading ? '' : ' AND created_by = $1'}`,
-      seeAllLoading ? [] : [uid]
+      `SELECT COUNT(*) as count, COALESCE(SUM(total_revenue), 0) as revenue, COALESCE(SUM(profit), 0) as profit FROM loading_transactions WHERE status = 'completed'${loadingScope.clause ? ` AND ${loadingScope.clause}` : ''}`,
+      loadingScope.params
     );
     const reconSummary = await queryOne(
-      `SELECT COUNT(*) as count, SUM(CASE WHEN status = 'reconciled' THEN 1 ELSE 0 END) as reconciled FROM reconciliations${seeAllAccounts ? '' : ' WHERE account_id IN (SELECT id FROM accounts WHERE created_by = $1)'}`,
-      seeAllAccounts ? [] : [uid]
+      `SELECT COUNT(*) as count, SUM(CASE WHEN status = 'reconciled' THEN 1 ELSE 0 END) as reconciled FROM reconciliations${reconScope.clause ? ` WHERE ${reconScope.clause}` : ''}`,
+      reconScope.params
     );
 
     res.json({
@@ -378,7 +379,7 @@ router.get('/balance-trends', authorize('reports.read'), async (req: Request, re
     const params: any[] = [];
     let pi = 1;
     if (accountId) { conds.push(`le.account_id = $${pi++}`); params.push(accountId); }
-    const scope = ownerClause(req, 'a', 'accounts.read_all', pi);
+    const scope = branchClause(req, 'a', 'accounts.read_all', pi, 'self');
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
@@ -405,7 +406,7 @@ const reversalScope = (req: Request, { startDate, endDate, accountId }: Reversal
   if (startDate) { reversals.push(`rev.created_at >= $${ri++}`); reversalParams.push(startDate); }
   if (endDate) { reversals.push(`rev.created_at < ($${ri++}::date + INTERVAL '1 day')`); reversalParams.push(endDate); }
   if (accountId) { reversals.push(`t.account_id = $${ri++}`); reversalParams.push(accountId); }
-  const reversalScopeClause = ownerClause(req, 't', 'transactions.read_all', ri);
+  const reversalScopeClause = branchClause(req, 't', 'transactions.read_all', ri);
   if (reversalScopeClause.clause) { reversals.push(reversalScopeClause.clause); reversalParams.push(...reversalScopeClause.params); }
 
   const requests: string[] = [`pr.entity_type = 'transaction'`];
@@ -414,7 +415,7 @@ const reversalScope = (req: Request, { startDate, endDate, accountId }: Reversal
   if (startDate) { requests.push(`pr.created_at >= $${qi++}`); requestParams.push(startDate); }
   if (endDate) { requests.push(`pr.created_at < ($${qi++}::date + INTERVAL '1 day')`); requestParams.push(endDate); }
   if (accountId) { requests.push(`t.account_id = $${qi++}`); requestParams.push(accountId); }
-  const requestScopeClause = ownerClause(req, 't', 'transactions.read_all', qi);
+  const requestScopeClause = branchClause(req, 't', 'transactions.read_all', qi);
   if (requestScopeClause.clause) { requests.push(requestScopeClause.clause); requestParams.push(...requestScopeClause.params); }
 
   return {
@@ -520,24 +521,24 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
   const txnConds: string[] = [`t.status IN ('completed', 'reversed')`, `tt.code <> 'expense'`];
   if (startDate) { txnConds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
   if (endDate) { txnConds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
-  const txnScope = ownerClause(req, 't', 'transactions.read_all', pi);
+  const txnScope = branchClause(req, 't', 'transactions.read_all', pi);
   if (txnScope.clause) { txnConds.push(txnScope.clause); params.push(...txnScope.params); pi = txnScope.paramIndex; }
 
   const trfConds: string[] = [`tr.status = 'completed'`];
   if (startDate) { trfConds.push(`tr.transfer_date >= $${pi++}`); params.push(startDate); }
   if (endDate) { trfConds.push(`tr.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
-  const trfScope = ownerClause(req, 'tr', 'transfers.read_all', pi);
+  const trfScope = branchClause(req, 'tr', 'transfers.read_all', pi, 'transfer');
   if (trfScope.clause) { trfConds.push(trfScope.clause); params.push(...trfScope.params); pi = trfScope.paramIndex; }
 
   const ldConds: string[] = [`lt.status = 'completed'`];
   if (startDate) { ldConds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
   if (endDate) { ldConds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
-  const ldScope = ownerClause(req, 'lt', 'loading.read_all', pi);
+  const ldScope = branchClause(req, 'lt', 'loading.read_all', pi);
   if (ldScope.clause) { ldConds.push(ldScope.clause); params.push(...ldScope.params); pi = ldScope.paramIndex; }
 
   const accountConds: string[] = [];
   if (accountId) { accountConds.push(`a.id = $${pi++}`); params.push(accountId); }
-  const accountScope = ownerClause(req, 'a', 'accounts.read_all', pi);
+  const accountScope = branchClause(req, 'a', 'accounts.read_all', pi, 'self');
   if (accountScope.clause) { accountConds.push(accountScope.clause); params.push(...accountScope.params); pi = accountScope.paramIndex; }
   const accountWhere = accountConds.length > 0 ? `WHERE ${accountConds.join(' AND ')}` : '';
 
@@ -616,7 +617,7 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
   const trfConds: string[] = [`tr.status = 'completed'`];
   if (startDate) { trfConds.push(`tr.transfer_date >= $${pi++}`); params.push(startDate); }
   if (endDate) { trfConds.push(`tr.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
-  const trfScope = ownerClause(req, 'tr', 'transfers.read_all', pi);
+  const trfScope = branchClause(req, 'tr', 'transfers.read_all', pi, 'transfer');
   if (trfScope.clause) { trfConds.push(trfScope.clause); params.push(...trfScope.params); pi = trfScope.paramIndex; }
 
   // Provider charges are ordinary transactions typed `expense` (migration 032),
@@ -626,12 +627,12 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
   const pchgConds: string[] = [`tt.code = 'expense'`, `t.status = 'completed'`];
   if (startDate) { pchgConds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
   if (endDate) { pchgConds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
-  const pchgScope = ownerClause(req, 't', 'transactions.read_all', pi);
+  const pchgScope = branchClause(req, 't', 'transactions.read_all', pi);
   if (pchgScope.clause) { pchgConds.push(pchgScope.clause); params.push(...pchgScope.params); pi = pchgScope.paramIndex; }
 
   const accountConds: string[] = [];
   if (accountId) { accountConds.push(`a.id = $${pi++}`); params.push(accountId); }
-  const accountScope = ownerClause(req, 'a', 'accounts.read_all', pi);
+  const accountScope = branchClause(req, 'a', 'accounts.read_all', pi, 'self');
   if (accountScope.clause) { accountConds.push(accountScope.clause); params.push(...accountScope.params); pi = accountScope.paramIndex; }
   const accountWhere = accountConds.length > 0 ? `WHERE ${accountConds.join(' AND ')}` : '';
 
@@ -704,13 +705,14 @@ const detailScope = (
   dateColumn: string,
   filters: IncomeFilters,
   firstParam: number,
+  link: AccountLink = 'account',
 ): { conds: string[]; params: any[] } => {
   const conds: string[] = [];
   const params: any[] = [];
   let pi = firstParam;
   if (filters.startDate) { conds.push(`${dateColumn} >= $${pi++}`); params.push(filters.startDate); }
   if (filters.endDate) { conds.push(`${dateColumn} < ($${pi++}::date + INTERVAL '1 day')`); params.push(filters.endDate); }
-  const scope = ownerClause(req, alias, permission, pi);
+  const scope = branchClause(req, alias, permission, pi, link);
   if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
   return { conds, params };
 };
@@ -728,7 +730,7 @@ const loadTransfersDetail = async (
   accountId: unknown,
   filters: IncomeFilters,
 ): Promise<any[]> => {
-  const scope = detailScope(req, 'tr', 'transfers.read_all', 'tr.transfer_date', filters, 2);
+  const scope = detailScope(req, 'tr', 'transfers.read_all', 'tr.transfer_date', filters, 2, 'transfer');
   const conds = ['tr.source_account_id = $1', `tr.status = 'completed'`, ...scope.conds];
   return query(
     `SELECT tr.id, tr.transfer_number, tr.transfer_reference, tr.transfer_date,
@@ -773,7 +775,7 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
     if (!accountId) return res.status(400).json({ success: false, error: { message: 'accountId is required' } });
 
     const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
-    assertOwner(req, account, 'accounts.read_all', 'Account not found');
+    await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
 
     const filters = { startDate, endDate };
 
@@ -830,7 +832,7 @@ router.get('/expense-detail', authorize('reports.read'), async (req: Request, re
     if (!accountId) return res.status(400).json({ success: false, error: { message: 'accountId is required' } });
 
     const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
-    assertOwner(req, account, 'accounts.read_all', 'Account not found');
+    await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
 
     const filters = { startDate, endDate };
     const [transfers, charges] = await Promise.all([
@@ -911,7 +913,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (endDate) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
       if (accountId) { conds.push(`t.account_id = $${pi++}`); params.push(accountId); }
       if (typeId) { conds.push(`t.transaction_type_id = $${pi++}`); params.push(typeId); }
-      const scope = ownerClause(req, 't', 'transactions.read_all', pi);
+      const scope = branchClause(req, 't', 'transactions.read_all', pi);
       if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
       const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
@@ -945,7 +947,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
       if (endDate) { conds.push(`t.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
       if (status) { conds.push(`t.status = $${pi++}`); params.push(status); }
-      const scope = ownerClause(req, 't', 'transfers.read_all', pi);
+      const scope = branchClause(req, 't', 'transfers.read_all', pi, 'transfer');
       if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
       const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
       data = await query(
@@ -973,7 +975,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (startDate) { conds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
       if (endDate) { conds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
       if (providerId) { conds.push(`lp.provider_id = $${pi++}`); params.push(providerId); }
-      const scope = ownerClause(req, 'lt', 'loading.read_all', pi);
+      const scope = branchClause(req, 'lt', 'loading.read_all', pi);
       if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
       const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
@@ -1075,7 +1077,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         return res.status(400).json({ success: false, error: { message: 'Select an account to export the account statement.' } });
       }
       const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
-      assertOwner(req, account, 'accounts.read_all', 'Account not found');
+      await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
       const conds: string[] = ['le.account_id = $1'];
       const params: any[] = [accountId];
       let pi = 2;

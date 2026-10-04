@@ -1,7 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
-import { ownerClause } from '../middleware/scope';
+import { branchClause } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { auditLedger } from '../services/ledgerAudit';
 import { loadScopedLedger, loadLedgerRowsBySource } from '../services/ledgerQuery';
@@ -88,7 +88,7 @@ async function requireCompleted(sourceType: string, sourceId: string, table: str
 
 router.get('/audit', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const scope = ownerClause(req, 'a', 'accounts.read_all', 1);
+    const scope = branchClause(req, 'a', 'accounts.read_all', 1, 'self');
     const { accounts, entries } = await loadScopedLedger(scope);
     res.json({ success: true, data: auditLedger(accounts, entries) });
   } catch (error) { next(error); }

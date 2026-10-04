@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
+import { assertBranch } from '../middleware/scope';
 import { createAuditLog } from '../services/audit';
 
 const router = Router();
@@ -59,6 +60,11 @@ router.post('/', authorize('reconciliation.write'), async (req: Request, res: Re
 
     const account = await queryOne('SELECT id, name, current_balance FROM accounts WHERE id = $1', [accountId]);
     if (!account) throw createError(404, 'Account not found');
+    // A reconciliation records one account's balance, so that account has to
+    // be one the caller can see. `accounts.read_all` is what lets a head
+    // office user reconcile outside their own branches; administrators
+    // bypass it by role.
+    await assertBranch(req, accountId, 'accounts.read_all', 'Account not found');
 
     const expected = parseFloat(account.current_balance);
     const actual = parseFloat(actualBalance);
