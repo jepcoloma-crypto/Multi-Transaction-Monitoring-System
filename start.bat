@@ -7,7 +7,10 @@ echo ============================================
 echo.
 echo [1/3] Starting monitor-backend via PM2...
 cd /d "C:\Projects\Mutli-Account Balance & Transaction Monitoring System"
-call pm2 delete all 2>nul
+rem call pm2 delete all 2>nul
+rem ^-- DISABLED: "delete all" wipes every pm2 app on this PC, including
+rem    nurselearn-api and nurselearn-tunnel (it did once). "pm2 start" below
+rem    already restarts monitor-backend if it is running.
 call pm2 start ecosystem.config.js
 call pm2 save
 
