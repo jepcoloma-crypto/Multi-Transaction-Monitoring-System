@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency } from '../lib/format';
+import { useAuth } from '../contexts/AuthContext';
 import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 import { ExpenseDetailPanel } from '../components/ExpenseDetail';
@@ -46,6 +47,16 @@ const INCOME_EXPENSE_TABS: { id: IncomeExpenseTab; label: string }[] = [
 ];
 
 export default function Reports() {
+  const { user } = useAuth();
+  // Stated on the printed sheet, because the header badge that normally says
+  // it is inside a print:hidden region. A PDF filed without knowing which
+  // branches it covers cannot later be told apart from the same report run
+  // over a different branch, and both look identical once printed.
+  const branchScope = user?.canSeeAllBranches
+    ? 'All branches'
+    : (user?.branches ?? []).length === 0
+      ? null
+      : (user?.branches ?? []).map((b) => b.name).join(', ');
   const [activeReport, setActiveReport] = useState<ReportType>('consolidated');
   const [incomeExpenseTab, setIncomeExpenseTab] = useState<IncomeExpenseTab>('income');
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -214,6 +225,7 @@ export default function Reports() {
           {activeReport === 'income-expense' && ` — ${incomeExpenseTab === 'income' ? 'Income' : 'Expense'}`}
         </h2>
         <p className="text-sm text-gray-700">
+          {branchScope && <>Scope: {branchScope} · </>}
           Account: {accounts.find(a => a.id === filters.accountId)?.name || 'All accounts'} · Period:{' '}
           {filters.startDate || filters.endDate
             ? `${filters.startDate || 'start'} to ${filters.endDate || 'today'}`

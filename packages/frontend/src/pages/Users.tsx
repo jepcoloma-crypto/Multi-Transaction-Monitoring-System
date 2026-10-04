@@ -13,11 +13,19 @@ interface User {
   last_login_at: string | null;
   created_at: string;
   roles: string[];
+  branch_ids: string[];
 }
 
 interface Role {
   id: string;
   name: string;
+}
+
+interface Branch {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
 }
 
 interface PaginatedData {
@@ -29,12 +37,13 @@ export default function Users() {
   const { user: currentUser } = useAuth();
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
-  const [formData, setFormData] = useState({ email: '', username: '', password: '', currentPassword: '', firstName: '', lastName: '', roleIds: [] as string[] });
+  const [formData, setFormData] = useState({ email: '', username: '', password: '', currentPassword: '', firstName: '', lastName: '', roleIds: [] as string[], branchIds: [] as string[] });
   const [error, setError] = useState('');
 
   const fetchUsers = async (page = 1) => {
@@ -59,9 +68,17 @@ export default function Users() {
     } catch (err) { console.error('Users roles load error:', err); }
   };
 
+  const fetchBranches = async () => {
+    try {
+      const result = await api.get<Branch[]>('/branches');
+      setBranches(result);
+    } catch (err) { console.error('Users branches load error:', err); }
+  };
+
   useEffect(() => {
     fetchUsers();
     fetchRoles();
+    fetchBranches();
   }, []);
 
   const handleSearch = () => {
@@ -70,7 +87,7 @@ export default function Users() {
 
   const openCreate = () => {
     setEditingUser(null);
-    setFormData({ email: '', username: '', password: '', currentPassword: '', firstName: '', lastName: '', roleIds: [] });
+    setFormData({ email: '', username: '', password: '', currentPassword: '', firstName: '', lastName: '', roleIds: [], branchIds: [] });
     setShowModal(true);
     setError('');
   };
@@ -85,6 +102,7 @@ export default function Users() {
       firstName: user.first_name,
       lastName: user.last_name,
       roleIds: roles.filter((r) => user.roles?.includes(r.name)).map((r) => r.id),
+      branchIds: user.branch_ids || [],
     });
     setShowModal(true);
     setError('');
@@ -99,6 +117,7 @@ export default function Users() {
           firstName: formData.firstName,
           lastName: formData.lastName,
           roleIds: formData.roleIds,
+          branchIds: formData.branchIds,
         });
         if (formData.password) {
           await api.post(`/users/${editingUser.id}/change-password`, {
@@ -114,6 +133,7 @@ export default function Users() {
           firstName: formData.firstName,
           lastName: formData.lastName,
           roleIds: formData.roleIds,
+          branchIds: formData.branchIds,
         });
       }
       setShowModal(false);
@@ -139,6 +159,15 @@ export default function Users() {
       roleIds: prev.roleIds.includes(roleId)
         ? prev.roleIds.filter((id) => id !== roleId)
         : [...prev.roleIds, roleId],
+    }));
+  };
+
+  const toggleBranch = (branchId: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      branchIds: prev.branchIds.includes(branchId)
+        ? prev.branchIds.filter((id) => id !== branchId)
+        : [...prev.branchIds, branchId],
     }));
   };
 
@@ -177,6 +206,7 @@ export default function Users() {
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Username</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Email</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Roles</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branches</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Last Login</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Actions</th>
@@ -184,9 +214,9 @@ export default function Users() {
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={7} className="text-center py-8 text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={8} className="text-center py-8 text-gray-500">Loading...</td></tr>
             ) : users.length === 0 ? (
-              <tr><td colSpan={7} className="text-center py-8 text-gray-500">No users found</td></tr>
+              <tr><td colSpan={8} className="text-center py-8 text-gray-500">No users found</td></tr>
             ) : (
               users.map((user) => (
                 <tr key={user.id} className="hover:bg-gray-50">
@@ -198,6 +228,19 @@ export default function Users() {
                       {user.roles?.filter(Boolean).map((role) => (
                         <span key={role} className="badge-blue">{role}</span>
                       ))}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap gap-1">
+                      {/* Unresolvable ids are skipped rather than printed: a
+                          uuid fragment tells a reader nothing, and an admin
+                          can always resolve every branch they are shown. */}
+                      {(user.branch_ids || []).map((id) => {
+                        const branch = branches.find((b) => b.id === id);
+                        return branch ? (
+                          <span key={id} className="badge-gray">{branch.name}</span>
+                        ) : null;
+                      })}
                     </div>
                   </td>
                   <td className="px-4 py-3">
@@ -307,6 +350,39 @@ export default function Users() {
                     </label>
                   ))}
                 </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Branches</label>
+                <div className="space-y-2">
+                  {branches.map((branch) => {
+                    // A retired branch cannot take a new assignment, but one
+                    // that is already ticked must stay interactive -- the
+                    // submit sends the whole set, so disabling it would drop
+                    // an existing assignment as a side effect of an edit
+                    // that had nothing to do with branches.
+                    const locked = branch.status !== 'active' && !formData.branchIds.includes(branch.id);
+                    return (
+                      <label key={branch.id} className={`flex items-center gap-2 ${locked ? 'opacity-50' : ''}`}>
+                        <input
+                          type="checkbox"
+                          disabled={locked}
+                          checked={formData.branchIds.includes(branch.id)}
+                          onChange={() => toggleBranch(branch.id)}
+                          className="rounded border-gray-300 text-primary-600"
+                        />
+                        <span className="text-sm text-gray-700">{branch.name}</span>
+                        <span className="text-xs text-gray-400 font-mono">{branch.code}</span>
+                        {branch.status !== 'active' && (
+                          <span className="badge-gray">Inactive</span>
+                        )}
+                      </label>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  This person sees accounts, transactions and reports only for the branches ticked
+                  here. One is enough; several lets a single person cover more than one outlet.
+                </p>
               </div>
               <div className="flex justify-end gap-2 pt-4">
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>

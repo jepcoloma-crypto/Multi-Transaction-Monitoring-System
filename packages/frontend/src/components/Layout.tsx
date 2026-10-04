@@ -23,6 +23,7 @@ import {
   UserCircle,
   Database,
   Pencil,
+  Building2,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { api, unwrapRows } from '../lib/api';
@@ -58,7 +59,45 @@ const adminSection: MenuItem[] = [
 const adminNavigation = [
   { name: 'Users', href: '/users', icon: Users },
   { name: 'Roles', href: '/roles', icon: Shield },
+  { name: 'Branches', href: '/branches', icon: Building2 },
 ];
+
+/**
+ * What this session can see, stated on every page.
+ *
+ * Branch scoping happens in the query layer, where it is invisible: a
+ * filtered list and a complete one look identical until somebody compares
+ * screens with a colleague and concludes the accounts have gone missing.
+ * Naming the scope makes a query that quietly excludes rows legible without
+ * anyone having to suspect data loss first.
+ */
+function BranchScopeBadge() {
+  const { user } = useAuth();
+  const branches = user?.branches ?? [];
+
+  if (user?.canSeeAllBranches) {
+    return (
+      <span className="hidden md:inline-flex items-center gap-1.5 rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
+        <Building2 className="w-3.5 h-3.5" />
+        Viewing: All branches
+      </span>
+    );
+  }
+
+  // Absent means unconfirmed, not empty: a session opened before these
+  // fields existed, or /auth/me failing to return. Stating nothing beats
+  // asserting a scope that was never checked.
+  if (branches.length === 0) return null;
+
+  return (
+    <span className="hidden md:inline-flex items-center gap-1.5 rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700">
+      <Building2 className="w-3.5 h-3.5" />
+      {branches.length === 1
+        ? `Branch: ${branches[0].name}`
+        : `Branches: ${branches.map((b) => b.name).join(', ')}`}
+    </span>
+  );
+}
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -221,6 +260,7 @@ export default function Layout() {
                adminNavigation.find((n) => n.href === location.pathname)?.name ||
                'Dashboard'}
             </h1>
+            <BranchScopeBadge />
           </div>
 
           <div className="flex items-center gap-3">

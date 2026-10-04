@@ -13,7 +13,10 @@ interface Transfer {
   created_by_email: string; approved_by_email: string; completed_at: string; notes: string; failure_reason: string;
 }
 
-interface Account { id: string; name: string; masked_account_number: string; current_balance: number; provider_id: string; provider_name: string; status: string; }
+// current_balance is optional: destination candidates deliberately carry no
+// balance (another branch's holdings are not the sender's business), while
+// the source list still needs one for the deduction preview.
+interface Account { id: string; name: string; masked_account_number: string; current_balance?: number; provider_id: string; provider_name: string; status: string; branch_name?: string; }
 
 export default function FundTransfers() {
   const { user } = useAuth();
@@ -21,6 +24,7 @@ export default function FundTransfers() {
   const isApprover = isAdmin || user?.roles?.includes('manager');
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [destinations, setDestinations] = useState<Account[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showDetail, setShowDetail] = useState<Transfer | null>(null);
@@ -37,13 +41,17 @@ export default function FundTransfers() {
     try {
       const params = new URLSearchParams({ page: String(page), limit: '20' });
       if (filter) params.set('status', filter);
-      const [t, a] = await Promise.all([
+      const [t, a, d] = await Promise.all([
         api.get<{ data: Transfer[]; pagination: any }>(`/transfers?${params}`),
         api.get<{ data: Account[] }>('/accounts?limit=100'),
+        // Deliberately a second, unscoped request: the destination may sit in
+        // another branch, and the server answers it with names only.
+        api.get<Account[]>('/accounts/transfer-destinations'),
       ]);
       setTransfers(t.data);
       setPagination(t.pagination);
       setAccounts(a.data);
+      setDestinations(d);
     } catch (err) { console.error('FundTransfers load error:', err); } finally { setLoading(false); }
   };
 
@@ -52,7 +60,7 @@ export default function FundTransfers() {
   useEffect(() => {
     if (chargeMode !== 'auto' || !form.sourceAccountId || !form.destinationAccountId) return;
     const src = accounts.find(a => a.id === form.sourceAccountId);
-    const dst = accounts.find(a => a.id === form.destinationAccountId);
+    const dst = destinations.find(a => a.id === form.destinationAccountId);
     if (!src?.provider_id || !dst?.provider_id) return;
     let cancelled = false;
     api.get<{ amount: number; rule: { name: string } | null }>(
@@ -63,7 +71,7 @@ export default function FundTransfers() {
       setChargeRule(res.rule ? res.rule.name : null);
     }).catch(err => console.error('Provider charge lookup error:', err));
     return () => { cancelled = true; };
-  }, [accounts, form.sourceAccountId, form.destinationAccountId, chargeMode]);
+  }, [accounts, destinations, form.sourceAccountId, form.destinationAccountId, chargeMode]);
 
   const openCreate = () => {
     setChargeMode('auto');
@@ -240,11 +248,15 @@ export default function FundTransfers() {
               <div>
                 <label className="form-label">Destination Account *</label>
                 <AccountSelect
-                  accounts={accounts.filter(a => a.status === 'active' && a.id !== form.sourceAccountId)}
+                  accounts={destinations.filter(a => a.id !== form.sourceAccountId)}
                   value={form.destinationAccountId}
                   onChange={id => setForm({ ...form, destinationAccountId: id })}
                   placeholder="Select destination account"
                 />
+                <p className="text-xs text-gray-500 mt-1">
+                  Includes accounts in other branches — sending across is allowed. Balances are not
+                  shown for accounts outside your branches.
+                </p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

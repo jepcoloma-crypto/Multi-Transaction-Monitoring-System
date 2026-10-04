@@ -7,7 +7,10 @@ export interface AccountOption {
   name: string;
   provider_name?: string | null;
   masked_account_number?: string | null;
-  current_balance: number;
+  /** Absent for cross-branch destination candidates, which are name-only by design. */
+  current_balance?: number;
+  /** Two branches can hold an identically named account; without this the picker is ambiguous. */
+  branch_name?: string | null;
 }
 
 function AccountLabel({ account }: { account: AccountOption }) {
@@ -20,8 +23,13 @@ function AccountLabel({ account }: { account: AccountOption }) {
           (<em className="italic">{account.provider_name}</em>
           {account.masked_account_number ? ` · ${account.masked_account_number}` : ''})
         </>
-      )}{' '}
-      - <em className="italic">{formatCurrency(account.current_balance)}</em>
+      )}
+      {typeof account.current_balance === 'number' && (
+        <> - <em className="italic">{formatCurrency(account.current_balance)}</em></>
+      )}
+      {account.branch_name && (
+        <span className="text-gray-400"> · {account.branch_name}</span>
+      )}
     </>
   );
 }

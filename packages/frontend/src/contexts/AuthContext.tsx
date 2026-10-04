@@ -10,6 +10,8 @@ interface User {
   lastName: string;
   roles: string[];
   avatarUrl: string | null;
+  branches: { id: string; code: string; name: string }[];
+  canSeeAllBranches: boolean;
 }
 
 interface AuthContextType {
@@ -33,7 +35,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const storedUser = localStorage.getItem('user');
     if (storedToken && storedUser) {
       setToken(storedToken);
-      setUser(JSON.parse(storedUser));
+      const cached = JSON.parse(storedUser) as User;
+      setUser(cached);
+
+      // Branch membership is refreshed rather than trusted from the cache,
+      // because it is the one field that decides what this person can see
+      // and it can change while they are signed in -- an operator moved to
+      // another branch should not keep looking at the old one until their
+      // next login. Refreshed alongside the cached user, never instead of
+      // it: a failed request leaves a working session rather than logging
+      // somebody out over a field the page can do without.
+      fetch(`${API_BASE}/auth/me`, {
+        headers: { Authorization: `Bearer ${storedToken}` },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((body) => {
+          if (!body?.success) return;
+          localStorage.setItem('user', JSON.stringify(body.data));
+          setUser(body.data as User);
+        })
+        .catch(() => {
+          // Cached user stays; scope is simply not re-confirmed this load.
+        });
     }
     setIsLoading(false);
   }, []);

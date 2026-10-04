@@ -9,7 +9,17 @@ const router = Router();
 
 router.use(authenticate);
 
-const BRANCH_COLUMNS = 'id, code, name, status, created_at, updated_at';
+// Counts are what make this an answer rather than a list: the first question
+// anyone setting up a second branch asks is whether the split has actually
+// happened yet. User counts are active-only, because deactivated accounts
+// still hold membership they can no longer exercise.
+const BRANCH_SELECT = `
+  SELECT b.id, b.code, b.name, b.status, b.created_at, b.updated_at,
+         (SELECT count(*) FROM accounts a WHERE a.branch_id = b.id)::int AS account_count,
+         (SELECT count(*) FROM user_branches ub
+            JOIN users u ON u.id = ub.user_id AND u.is_active = true
+           WHERE ub.branch_id = b.id)::int AS user_count
+  FROM branches b`;
 
 // Branches are never deleted: accounts and user_branches reference them, and
 // removing one would either cascade away assignments or strand accounts in a
@@ -28,11 +38,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     }
 
     const branches = headOffice
-      ? await query(`SELECT ${BRANCH_COLUMNS} FROM branches ORDER BY name`)
-      : await query(
-          `SELECT ${BRANCH_COLUMNS} FROM branches WHERE id = ANY($1) ORDER BY name`,
-          [branchIds],
-        );
+      ? await query(`${BRANCH_SELECT} ORDER BY b.name`)
+      : await query(`${BRANCH_SELECT} WHERE b.id = ANY($1) ORDER BY b.name`, [branchIds]);
 
     res.json({ success: true, data: branches });
   } catch (error) {

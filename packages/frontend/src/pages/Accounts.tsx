@@ -26,9 +26,13 @@ interface Account {
   created_at: string;
   created_by: string | null;
   created_by_email: string | null;
+  branch_id: string;
+  branch_name: string | null;
+  branch_code: string | null;
 }
 
 interface Provider { id: string; name: string; code: string; }
+interface Branch { id: string; code: string; name: string; status: string; }
 interface AccountType { id: string; name: string; code: string; }
 interface TransactionType { id: string; name: string; code: string; direction: string; }
 interface AccountSummary {
@@ -38,6 +42,7 @@ interface AccountSummary {
 export default function Accounts() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
   const [accountTypes, setAccountTypes] = useState<AccountType[]>([]);
   const [transactionTypes, setTransactionTypes] = useState<TransactionType[]>([]);
   const [summary, setSummary] = useState<AccountSummary['summary'] | null>(null);
@@ -52,6 +57,7 @@ export default function Accounts() {
     name: '', providerId: '', accountTypeId: '', maskedAccountNumber: '',
     accountReference: '', owner: '', purpose: '', openingBalance: '0',
     minimumBalance: '0', targetBalance: '0', notes: '', currentBalance: '0',
+    branchId: '',
   });
   const [error, setError] = useState('');
   const [fundsNotice, setFundsNotice] = useState('');
@@ -103,14 +109,19 @@ export default function Accounts() {
 
   const fetchMeta = async () => {
     try {
-      const [p, t, tt] = await Promise.all([
+      const [p, t, tt, b] = await Promise.all([
         api.get<Provider[]>('/providers'),
         api.get<AccountType[]>('/account-types'),
         api.get<TransactionType[]>('/transaction-types/types'),
+        // Already scoped server-side: head office is offered every branch,
+        // anyone else only their own, so this dropdown cannot name one the
+        // request would then be refused.
+        api.get<Branch[]>('/branches'),
       ]);
       setProviders(p);
       setAccountTypes(t);
       setTransactionTypes(tt);
+      setBranches(b);
     } catch (err) { console.error('Account meta load error:', err); }
   };
 
@@ -139,6 +150,9 @@ export default function Accounts() {
       name: '', providerId: providers[0]?.id || '', accountTypeId: accountTypes[0]?.id || '',
       maskedAccountNumber: '', accountReference: '', owner: '', purpose: '',
       openingBalance: '0', minimumBalance: '0', targetBalance: '0', notes: '', currentBalance: '0',
+      // Pre-selects the caller's first branch -- the one the server would
+      // fall back to anyway, only visible here rather than silent.
+      branchId: branches[0]?.id || '',
     });
     setShowModal(true);
     setError('');
@@ -153,6 +167,7 @@ export default function Accounts() {
       openingBalance: String(account.opening_balance), minimumBalance: String(account.minimum_balance),
       targetBalance: String(account.target_balance), notes: account.notes || '',
       currentBalance: String(account.current_balance),
+      branchId: account.branch_id,
     });
     setShowModal(true);
     setError('');
@@ -319,10 +334,11 @@ export default function Accounts() {
       </div>
 
       <div className="card overflow-x-auto">
-        <table className="w-full min-w-[800px]">
+        <table className="w-full min-w-[950px]">
           <thead className="bg-gray-50">
             <tr>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+              <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Provider</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
               <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Balance</th>
@@ -334,11 +350,11 @@ export default function Accounts() {
           </thead>
           <tbody className="divide-y divide-gray-200">
             {loading ? (
-              <tr><td colSpan={8} className="text-center py-8 text-gray-500">Loading...</td></tr>
+              <tr><td colSpan={9} className="text-center py-8 text-gray-500">Loading...</td></tr>
             ) : error ? (
-              <tr><td colSpan={8} className="text-center py-8 text-red-500">{error}</td></tr>
+              <tr><td colSpan={9} className="text-center py-8 text-red-500">{error}</td></tr>
             ) : accounts.length === 0 ? (
-              <tr><td colSpan={8} className="text-center py-8 text-gray-500">
+              <tr><td colSpan={9} className="text-center py-8 text-gray-500">
                 <Wallet className="w-12 h-12 mx-auto mb-3 opacity-50" />
                 No accounts found
               </td></tr>
@@ -353,6 +369,7 @@ export default function Accounts() {
                       )}
                     </div>
                   </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{account.branch_name || '-'}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{account.provider_name}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{account.type_name}</td>
                   <td className={`px-4 py-3 text-sm text-right font-medium ${getStatusColor(account)}`}>
@@ -486,6 +503,18 @@ export default function Accounts() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Account Name *</label>
                 <input type="text" required value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Branch *</label>
+                <select required value={formData.branchId} onChange={(e) => setFormData({ ...formData, branchId: e.target.value })} className="input">
+                  <option value="">Select branch</option>
+                  {branches.map((b) => <option key={b.id} value={b.id}>{b.name} ({b.code})</option>)}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Where this account is operated from. Every transaction, balance and report row is
+                  scoped to it, and it is the one thing on this form that decides who else can see
+                  the account.
+                </p>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>

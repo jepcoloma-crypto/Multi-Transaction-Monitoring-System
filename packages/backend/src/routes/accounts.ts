@@ -153,6 +153,38 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
   }
 });
 
+// Destination candidates are the one account read that crosses branch lines.
+// A transfer is meant to reach another branch's account, so scoping this
+// picker the way every other list is scoped would make the operation the
+// system explicitly supports impossible to even start.
+//
+// No current_balance anywhere in the response. Naming an account in a picker
+// is coordination; what another branch holds is disclosure. The number would
+// be misleading besides -- the receiving side is credited on approval, not
+// before, so a balance shown here would describe a state that does not yet
+// exist.
+router.get(
+  '/transfer-destinations',
+  authorize('transfers.write'),
+  async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const accounts = await query(
+        `SELECT a.id, a.name, a.provider_id, a.masked_account_number, a.status,
+                p.name AS provider_name,
+                b.name AS branch_name, b.code AS branch_code
+         FROM accounts a
+         JOIN providers p ON p.id = a.provider_id
+         JOIN branches b ON b.id = a.branch_id
+         WHERE a.status = 'active'
+         ORDER BY a.name`,
+      );
+      res.json({ success: true, data: accounts });
+    } catch (error) {
+      next(error);
+    }
+  },
+);
+
 router.get('/:id', authorize('accounts.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const account = await queryOne(
