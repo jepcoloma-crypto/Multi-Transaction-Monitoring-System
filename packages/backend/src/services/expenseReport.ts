@@ -53,6 +53,8 @@ const asCount = (value: unknown): number => {
 export interface ExpenseSourceRow {
   account_id: string;
   account_name: string;
+  branch_id?: string | null;
+  branch_name?: string | null;
   provider_name?: string | null;
   account_type?: string | null;
   transfer_count?: number | string | null;
@@ -64,6 +66,8 @@ export interface ExpenseSourceRow {
 export interface ExpenseReportRow {
   accountId: string;
   accountName: string;
+  branchId: string | null;
+  branchName: string | null;
   providerName: string | null;
   accountType: string | null;
   transferCount: number;
@@ -116,6 +120,8 @@ export function buildExpenseReport(sourceRows: ExpenseSourceRow[]): ExpenseRepor
     return {
       accountId: row.account_id,
       accountName: asText(row.account_name) ?? row.account_id,
+      branchId: asText(row.branch_id),
+      branchName: asText(row.branch_name),
       providerName: asText(row.provider_name),
       accountType: asText(row.account_type),
       transferCount: asCount(row.transfer_count),

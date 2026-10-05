@@ -228,11 +228,13 @@ router.get('/transaction-report', authorize('reports.read'), async (req: Request
     const wc = `WHERE ${conds.join(' AND ')}`;
 
     const transactions = await query(
-      `SELECT t.*, tt.name as type_name, tt.direction, tc.name as category_name, a.name as account_name
+      `SELECT t.*, tt.name as type_name, tt.direction, tc.name as category_name, a.name as account_name,
+              a.branch_id, b.name as branch_name
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN transaction_categories tc ON t.transaction_category_id = tc.id
        JOIN accounts a ON t.account_id = a.id
+       LEFT JOIN branches b ON b.id = a.branch_id
        ${wc} ORDER BY t.transaction_date DESC`, params
     );
 
@@ -271,8 +273,10 @@ router.get('/transfer-report', authorize('reports.read'), async (req: Request, r
     const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
 
     const transfers = await query(
-      `SELECT t.*, sa.name as source_name, da.name as destination_name
+      `SELECT t.*, sa.name as source_name, da.name as destination_name,
+              sa.branch_id, sb.name as branch_name
        FROM transfers t JOIN accounts sa ON t.source_account_id = sa.id JOIN accounts da ON t.destination_account_id = da.id
+       LEFT JOIN branches sb ON sb.id = sa.branch_id
        ${wc} ORDER BY t.transfer_date DESC`, params
     );
 
@@ -301,11 +305,13 @@ router.get('/loading-report', authorize('reports.read'), async (req: Request, re
     const wc = `WHERE ${conds.join(' AND ')}`;
 
     const sales = await query(
-      `SELECT lt.*, lp.name as product_name, lp.cost_price, lp.selling_price, p.name as provider_name, a.name as account_name
+      `SELECT lt.*, lp.name as product_name, lp.cost_price, lp.selling_price, p.name as provider_name, a.name as account_name,
+              a.branch_id, b.name as branch_name
        FROM loading_transactions lt
        JOIN loading_products lp ON lt.product_id = lp.id
        JOIN providers p ON lp.provider_id = p.id
        JOIN accounts a ON lt.account_id = a.id
+       LEFT JOIN branches b ON b.id = a.branch_id
        ${wc} ORDER BY lt.created_at DESC`, params
     );
 
@@ -447,6 +453,7 @@ const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
     `SELECT t.id, t.transaction_number, t.amount, t.net_amount, t.additional_charges,
               t.reference_number, t.description, t.transaction_date,
               tt.name AS type_name, tt.direction, a.name AS account_name,
+              a.branch_id, b.name AS branch_name,
               creator.username AS created_by,
               rev.id AS reversal_id, rev.transaction_number AS reversal_number,
               rev.amount AS reversal_amount, rev.created_at AS reversed_at,
@@ -461,6 +468,7 @@ const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
+       LEFT JOIN branches b ON b.id = a.branch_id
        LEFT JOIN users creator ON creator.id = t.created_by
        ${REVERSAL_TRAIL_JOINS}
        LEFT JOIN LATERAL (
@@ -487,12 +495,14 @@ const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
 
   const requestRows = await query(
     `SELECT pr.id, pr.entity_type, pr.entity_id, t.transaction_number,
-              a.name AS account_name, pr.status, pr.reversal_amount, pr.reason,
+              a.name AS account_name, a.branch_id, b.name AS branch_name,
+              pr.status, pr.reversal_amount, pr.reason,
               requester.username AS requested_by, approver.username AS approved_by,
               pr.created_at, pr.updated_at
        FROM pending_reversals pr
        JOIN transactions t ON t.id = pr.entity_id
        JOIN accounts a ON a.id = pr.account_id
+       LEFT JOIN branches b ON b.id = a.branch_id
        LEFT JOIN users requester ON requester.id = pr.requested_by
        LEFT JOIN users approver ON approver.id = pr.approved_by
        ${requestWhere}
@@ -565,6 +575,8 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
   const rows = await query(
     `SELECT a.id AS account_id,
             a.name AS account_name,
+            a.branch_id,
+            br.name AS branch_name,
             p.name AS provider_name,
             typ.name AS account_type,
             txn.cnt AS txn_count,
@@ -578,6 +590,7 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
             ld.cost AS load_cost,
             ld.margin AS load_margin
      FROM accounts a
+     LEFT JOIN branches br ON br.id = a.branch_id
      LEFT JOIN providers p ON p.id = a.provider_id
      LEFT JOIN account_types typ ON typ.id = a.account_type_id
      LEFT JOIN (
@@ -672,6 +685,8 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
   const rows = await query(
     `SELECT a.id AS account_id,
             a.name AS account_name,
+            a.branch_id,
+            br.name AS branch_name,
             p.name AS provider_name,
             typ.name AS account_type,
             trf.cnt AS transfer_count,
@@ -679,6 +694,7 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
             pchg.charges AS provider_charges,
             opex.expenses AS operating_expenses
      FROM accounts a
+     LEFT JOIN branches br ON br.id = a.branch_id
      LEFT JOIN providers p ON p.id = a.provider_id
      LEFT JOIN account_types typ ON typ.id = a.account_type_id
      LEFT JOIN (
@@ -944,6 +960,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         type_name: r.typeName,
         direction: r.direction,
         account_name: r.accountName,
+        branch_name: r.branchName ?? '',
         original_entry_type: r.originalEntryType,
         original_amount: r.originalTotal.toFixed(2),
         charges_amount: r.chargesAmount.toFixed(2),
@@ -962,6 +979,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Type', key: 'type_name' },
         { header: 'Direction', key: 'direction' },
         { header: 'Account', key: 'account_name' },
+        { header: 'Branch', key: 'branch_name' },
         { header: 'Original Side', key: 'original_entry_type' },
         { header: 'Original Amount', key: 'original_amount' },
         { header: 'Charges', key: 'charges_amount' },
@@ -995,12 +1013,14 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
         `SELECT t.transaction_number, tt.name as type_name, tt.direction, a.name as account_name,
+                b.name as branch_name,
                 t.amount, t.fee, tc.name as category_name, t.reference_number, t.description, t.status,
                 t.transaction_date, u.username as created_by
          FROM transactions t
          JOIN transaction_types tt ON t.transaction_type_id = tt.id
          LEFT JOIN transaction_categories tc ON t.transaction_category_id = tc.id
          JOIN accounts a ON t.account_id = a.id
+         LEFT JOIN branches b ON b.id = a.branch_id
          LEFT JOIN users u ON t.created_by = u.id ${wc} ORDER BY t.transaction_date DESC`, params
       );
       columns = [
@@ -1008,6 +1028,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Type', key: 'type_name' },
         { header: 'Direction', key: 'direction' },
         { header: 'Account', key: 'account_name' },
+        { header: 'Branch', key: 'branch_name' },
         { header: 'Amount', key: 'amount' },
         { header: 'Fee', key: 'fee' },
         { header: 'Category', key: 'category_name' },
@@ -1029,14 +1050,17 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
       data = await query(
         `SELECT t.transfer_number, sa.name as source_name, da.name as destination_name,
+                sb.name as branch_name,
                 t.transfer_amount, t.transfer_fee, t.status, t.purpose, t.transfer_date, u.username as created_by
          FROM transfers t JOIN accounts sa ON t.source_account_id = sa.id
          JOIN accounts da ON t.destination_account_id = da.id LEFT JOIN users u ON t.created_by = u.id
+         LEFT JOIN branches sb ON sb.id = sa.branch_id
          ${wc} ORDER BY t.transfer_date DESC`, params
       );
       columns = [
         { header: 'Number', key: 'transfer_number' },
         { header: 'Source', key: 'source_name' },
+        { header: 'Branch', key: 'branch_name' },
         { header: 'Destination', key: 'destination_name' },
         { header: 'Amount', key: 'transfer_amount' },
         { header: 'Fee', key: 'transfer_fee' },
@@ -1057,9 +1081,11 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
         `SELECT lt.transaction_number, lp.name as product_name, lt.customer_number, lt.quantity,
-                lt.total_cost, lt.total_revenue, lt.profit, a.name as account_name, lt.status, lt.created_at
+                lt.total_cost, lt.total_revenue, lt.profit, a.name as account_name, b.name as branch_name,
+                lt.status, lt.created_at
          FROM loading_transactions lt JOIN loading_products lp ON lt.product_id = lp.id
          JOIN accounts a ON lt.account_id = a.id
+         LEFT JOIN branches b ON b.id = a.branch_id
          ${wc} ORDER BY lt.created_at DESC`, params
       );
       columns = [
@@ -1071,6 +1097,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Revenue', key: 'total_revenue' },
         { header: 'Profit', key: 'profit' },
         { header: 'Account', key: 'account_name' },
+        { header: 'Branch', key: 'branch_name' },
         { header: 'Status', key: 'status' },
         { header: 'Date', key: 'created_at' },
       ];
@@ -1078,6 +1105,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       const report = await loadExpenseReport(req, { startDate, endDate, accountId, branchId });
       data = report.rows.map((r) => ({
         account_name: r.accountName,
+        branch_name: r.branchName ?? '',
         provider_name: r.providerName ?? '',
         account_type: r.accountType ?? '',
         transfer_count: r.transferCount,
@@ -1088,6 +1116,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       }));
       columns = [
         { header: 'Account', key: 'account_name' },
+        { header: 'Branch', key: 'branch_name' },
         { header: 'Provider', key: 'provider_name' },
         { header: 'Type', key: 'account_type' },
         { header: 'Transfers', key: 'transfer_count' },
@@ -1106,6 +1135,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       const report = await loadIncomeReport(req, { startDate, endDate, accountId, branchId });
       data = report.rows.map((r) => ({
         account_name: r.accountName,
+        branch_name: r.branchName ?? '',
         provider_name: r.providerName ?? '',
         account_type: r.accountType ?? '',
         transaction_count: r.txnCount,
@@ -1123,6 +1153,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       }));
       columns = [
         { header: 'Account', key: 'account_name' },
+        { header: 'Branch', key: 'branch_name' },
         { header: 'Provider', key: 'provider_name' },
         { header: 'Type', key: 'account_type' },
         { header: 'Transactions', key: 'transaction_count' },

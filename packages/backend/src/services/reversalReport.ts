@@ -78,6 +78,8 @@ export interface ReversalSourceRow {
   type_name?: string | null;
   direction?: string | null;
   account_name?: string | null;
+  branch_id?: string | null;
+  branch_name?: string | null;
   created_by?: string | null;
   reversal_id?: string | null;
   reversal_number?: number | string | null;
@@ -104,6 +106,8 @@ export interface ReversalRequestSourceRow {
   entity_id: string;
   transaction_number?: number | string | null;
   account_name?: string | null;
+  branch_id?: string | null;
+  branch_name?: string | null;
   status: string;
   reversal_amount: number | string;
   reason?: string | null;
@@ -117,6 +121,8 @@ export interface ReversalReportRow {
   id: string;
   transactionNumber: number;
   accountName: string | null;
+  branchId: string | null;
+  branchName: string | null;
   typeName: string | null;
   direction: string | null;
   originalAmount: number;
@@ -148,6 +154,8 @@ export interface ReversalRequestReportRow {
   entityId: string;
   transactionNumber: number | null;
   accountName: string | null;
+  branchId: string | null;
+  branchName: string | null;
   status: string;
   amount: number;
   reason: string | null;
@@ -198,6 +206,8 @@ export function buildReversalReport(
       id: row.id,
       transactionNumber: asCountOrNull(row.transaction_number) ?? 0,
       accountName: asText(row.account_name),
+      branchId: asText(row.branch_id),
+      branchName: asText(row.branch_name),
       typeName: asText(row.type_name),
       direction: asText(row.direction),
       originalAmount: money(toCents(row.net_amount)),
@@ -244,6 +254,8 @@ export function buildReversalReport(
       entityId: row.entity_id,
       transactionNumber: asCountOrNull(row.transaction_number),
       accountName: asText(row.account_name),
+      branchId: asText(row.branch_id),
+      branchName: asText(row.branch_name),
       status,
       amount: money(amountCents),
       reason: asText(row.reason),

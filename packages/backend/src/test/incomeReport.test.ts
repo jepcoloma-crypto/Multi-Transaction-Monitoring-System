@@ -310,3 +310,25 @@ test('rows stay in the order the query handed them; the service does not re-sort
 
   assert.deepEqual(transfers.map((t) => t.id), ['t1', 't2', 't3']);
 });
+
+test('a row carries its branch across the row mapping', () => {
+  // The query returns snake_case and the payload is camelCase, so a branch
+  // that is selected but not copied here reaches the renderer as undefined
+  // and every subtotal silently groups under one unknown branch.
+  const [carried] = buildIncomeReport([
+    row({ branch_id: '239c3926-3745-4e4e-b73a-63c9fe8c8a17', branch_name: 'Main Branch' }),
+  ]).rows;
+
+  assert.equal(carried.branchId, '239c3926-3745-4e4e-b73a-63c9fe8c8a17');
+  assert.equal(carried.branchName, 'Main Branch');
+});
+
+test('a row the query gave no branch reads as null, never undefined', () => {
+  // Two accounts can share a name across branches, so an absent branch must
+  // not quietly become an empty string that prints as a blank cell -- and
+  // undefined would not be caught by a `|| '—'` fallback either.
+  const [bare] = buildIncomeReport([row()]).rows;
+
+  assert.equal(bare.branchId, null);
+  assert.equal(bare.branchName, null);
+});
