@@ -514,7 +514,7 @@ always wrong is one operators learn to ignore.
 
 ---
 
-## 12. Data model changes (migration 036)
+## 12. Data model changes (migrations 036–037)
 
 1. **`payment_method`** — a value check on `transactions`:
    `CHECK (payment_method IS NULL OR payment_method IN ('cash','gcash','bank','maya','provider_interest'))`.
@@ -523,16 +523,27 @@ always wrong is one operators learn to ignore.
 
    **A `NOT NULL` check scoped to the cash-movement codes was specified here and is now
    rejected.** It would have been declared `NOT VALID` to spare the 108 historical `NULL`
-   rows, but `NOT VALID` still constrains *updates*, and reversing or editing a transaction
-   rewrites the original row (`transactions.ts` lines 798, 1095 and 728). Every historical
-   cash movement would have become un-reversible the moment the migration ran. Presence is
-   instead enforced where the row is created, and the column-level constraint guarantees
-   only that a stored value is one the system understands — which is what stops the drawer
-   gate from silently skipping an unrecognised code.
+   rows, but `NOT VALID` still constrains *updates*, and reversal rewrites the original row
+   (`transactions.ts` lines 798 and 1095). Every historical cash movement would have become
+   un-reversible the moment the migration ran, and backfilling them would have meant
+   guessing which were physical cash. Presence is instead enforced where the row is created,
+   and the column-level constraint guarantees only that a stored value is one the system
+   understands — which is what stops the drawer gate from silently skipping an unrecognised
+   code.
 
 2. **Application-level presence** — `cash_in`, `cash_out`, `customer_payment`,
    `customer_withdrawal` require `paymentMethod` on create, restricted to `cash` / `gcash` /
-   `bank` / `maya`. On those types a stored payment method may be edited but not cleared.
+   `bank` / `maya`. Creation is the only writer for these types — the edit path refuses any
+   row that is not pending, and a cash movement is always completed — so an edit-time rule
+   would have nothing to act on.
+
+   Two writers deliberately sit outside it. The correction/re-entry path copies
+   `payment_method` from the row it clones, so a re-entered movement keeps its method. The
+   CSV import path writes its own ledger row rather than going through `processTransaction`
+   and leaves the column `NULL`: imported rows are backfill, and treating them as
+   historical — single-legged and unclassified, exactly like the 108 — is the same decision
+   D11 already made for pre-existing data. The requirement applies to movements an operator
+   raises, not to rows being loaded in.
 
 3. **`shifts`** table:
 

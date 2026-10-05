@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, localDateTimeValue, paymentMethodLabel, paymentMethodOptions } from '../lib/format';
+import { formatCurrency, localDateTimeValue, paymentMethodLabel, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
@@ -98,7 +98,7 @@ export default function Transactions() {
     accountId: '', feeRuleId: '', amount: '',
     fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(),
     feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select' as 'select' | 'manual', customerPhone: '',
-    providerCharge: '',
+    providerCharge: '', paymentMethod: '',
   });
   const [error, setError] = useState('');
   const [customerHistory, setCustomerHistory] = useState<CustomerHistory | null>(null);
@@ -252,6 +252,10 @@ export default function Transactions() {
   // dropped from the payload rather than sent and rejected.
   const chargeApplies = selectedDirection === 'in' || selectedDirection === 'out';
   const providerChargeAmount = chargeApplies ? (parseFloat(formData.providerCharge) || 0) : 0;
+  // A cash movement can only be raised once the operator says how the money
+  // actually changed hands, because that is what decides whether the drawer
+  // takes part in it. The type is always whatever the selected fee rule carries.
+  const movementRequested = isCashMovementCode(selectedRule?.type_code);
   const totalOutflow = (formData.feeAddedToBalance
     ? inputAmount + chargesTotal
     : inputAmount - feeAmount + chargesTotal) + providerChargeAmount;
@@ -323,7 +327,7 @@ export default function Transactions() {
     const rule = feeRules.find(r => r.id === ruleId);
     const amount = parseFloat(formData.amount) || 0;
     const autoFee = (feeMode === 'auto' && rule && amount > 0) ? String(calculateFee(rule, amount)) : formData.fee;
-    setFormData({ ...formData, feeRuleId: ruleId, fee: autoFee });
+    setFormData({ ...formData, feeRuleId: ruleId, fee: autoFee, paymentMethod: '' });
   };
 
   const handleAmountChange = (amount: string) => {
@@ -337,7 +341,7 @@ export default function Transactions() {
       accountId: accounts.find(a => a.status === 'active')?.id || '', feeRuleId: '',
       amount: '', fee: '0', referenceNumber: '', description: '', customerName: '',
       transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
-      providerCharge: '',
+      providerCharge: '', paymentMethod: '',
     });
     setCreateCharges([]);
     setFeeMode('auto');
@@ -349,6 +353,7 @@ export default function Transactions() {
     e.preventDefault();
     setError('');
     if (!formData.accountId) { setError('Please select an account'); return; }
+    if (movementRequested && !formData.paymentMethod) { setError('Please select a payment method'); return; }
     try {
       const validCharges = createCharges.filter(c => c.description.trim() && parseFloat(c.amount) > 0)
         .map(c => ({ description: c.description.trim(), amount: Math.round(parseFloat(c.amount) * 100) / 100 }));
@@ -369,9 +374,10 @@ export default function Transactions() {
         providerCharge: chargeApplies ? formData.providerCharge || undefined : undefined,
         notes: formData.notes || undefined,
         customerId: formData.customerMode === 'select' ? formData.customerId || undefined : undefined,
+        paymentMethod: formData.paymentMethod || undefined,
       });
       setShowModal(false);
-      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '' });
+      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: '' });
       fetchTransactions(pagination.page);
       fetchSummary();
     } catch (err: any) { setError(err.message); }
@@ -981,6 +987,30 @@ export default function Transactions() {
                 )}
               </div>
 
+              {movementRequested && (
+                <div className="border-t pt-3">
+                  <label htmlFor="paymentMethod" className="text-sm font-medium text-gray-700">
+                    Payment Method <span className="text-red-500">*</span>
+                  </label>
+                  <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
+                    How the money actually changed hands. <strong>Cash</strong> means the operator took it out of or
+                    put it into the branch's cash drawer, and it is the only method that moves the drawer balance.
+                    GCash, Bank Transfer and Maya land in the wallet without touching it.
+                  </p>
+                  <select
+                    id="paymentMethod"
+                    value={formData.paymentMethod}
+                    onChange={(e) => setFormData({ ...formData, paymentMethod: e.target.value })}
+                    className="input text-sm w-40"
+                  >
+                    <option value="">Select payment method</option>
+                    {movementPaymentMethodOptions.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
               {chargeApplies && (
                 <div className="border-t pt-3">
                   <label htmlFor="providerCharge" className="text-sm font-medium text-gray-700">Provider Charge</label>
@@ -1005,7 +1035,7 @@ export default function Transactions() {
 
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
-                <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!!hasInsufficientBalance || !formData.referenceNumber.trim()}>Create Transaction</button>
+                <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!!hasInsufficientBalance || !formData.referenceNumber.trim() || (movementRequested && !formData.paymentMethod)}>Create Transaction</button>
               </div>
             </form>
           </div>

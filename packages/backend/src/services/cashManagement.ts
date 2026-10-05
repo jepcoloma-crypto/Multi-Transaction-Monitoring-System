@@ -50,6 +50,47 @@ const toCents = (value: unknown): number => {
   return Number.isFinite(parsed) ? Math.round(parsed * 100) : 0;
 };
 
+// The movement codes where money can physically change hands, and so the only
+// ones asked for a payment method. These are the codes the drawer gate keys on;
+// every other type is money moving between accounts rather than through them.
+export const CASH_MOVEMENT_CODES = [
+  'cash_in',
+  'cash_out',
+  'customer_payment',
+  'customer_withdrawal',
+] as const;
+
+// Everything the column may store, matching paymentMethodOptions on the client.
+export const PAYMENT_METHODS = ['cash', 'gcash', 'bank', 'maya', 'provider_interest'] as const;
+
+// provider_interest is excluded from what a cash movement may carry: it
+// describes where an interest credit came from, not how cash was handed over,
+// and accepting it on a cash movement would record a method the operator could
+// not have used.
+export const MOVEMENT_PAYMENT_METHODS = ['cash', 'gcash', 'bank', 'maya'] as const;
+
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+export type MovementPaymentMethod = (typeof MOVEMENT_PAYMENT_METHODS)[number];
+
+export function isCashMovement(code: string | null | undefined): boolean {
+  return (CASH_MOVEMENT_CODES as readonly string[]).includes(String(code));
+}
+
+export function isPaymentMethod(value: unknown): value is PaymentMethod {
+  return typeof value === 'string' && (PAYMENT_METHODS as readonly string[]).includes(value);
+}
+
+export function isMovementPaymentMethod(value: unknown): value is MovementPaymentMethod {
+  return typeof value === 'string' && (MOVEMENT_PAYMENT_METHODS as readonly string[]).includes(value);
+}
+
+// The drawer participates only when the money is physically handed over. A
+// GCash or bank movement lands in the wallet without passing through it, and
+// giving those a drawer leg would double-count the same peso.
+export function touchesDrawer(paymentMethod: string | null | undefined): boolean {
+  return paymentMethod === 'cash';
+}
+
 const money = (cents: number): number => cents / 100;
 
 // A ledger row carries either a transaction (source_type 'transaction', with

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, touchesDrawer } from '../services/cashManagement';
 import type { BranchBalance, LedgerFlowRow } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
@@ -146,4 +146,76 @@ test('a branch with no activity at all still reports a balanced zero statement',
   assert.equal(statement.branches.length, 2);
   assert.equal(statement.totals.difference, 0);
   assert.equal(statement.totals.balanced, true);
+});
+
+test('only the four money-through-the-drawer codes count as cash movements', () => {
+  assert.equal(isCashMovement('cash_in'), true);
+  assert.equal(isCashMovement('cash_out'), true);
+  assert.equal(isCashMovement('customer_payment'), true);
+  assert.equal(isCashMovement('customer_withdrawal'), true);
+
+  // These move money between accounts rather than through them, so asking the
+  // operator how the cash was handed over would be a meaningless question.
+  assert.equal(isCashMovement('owner_funding'), false);
+  assert.equal(isCashMovement('operating_expense'), false);
+  assert.equal(isCashMovement('adjustment_in'), false);
+  assert.equal(isCashMovement(null), false);
+  assert.equal(isCashMovement(undefined), false);
+});
+
+test('every cash movement code reports into the customer cash bucket', () => {
+  // The two vocabularies are declared independently, so this is the check that
+  // they still agree: a movement asked for a payment method had better be one
+  // of the rows counted as money moving through the branch.
+  const codes = ['cash_in', 'cash_out', 'customer_payment', 'customer_withdrawal'];
+  for (const code of codes) {
+    assert.equal(isCashMovement(code), true, `${code} is no longer a cash movement`);
+    assert.equal(bucketFor('transaction', code), 'customer_cash', `${code} left the cash bucket`);
+  }
+});
+
+test('a payment method has to be one the system understands', () => {
+  for (const value of ['cash', 'gcash', 'bank', 'maya', 'provider_interest']) {
+    assert.equal(isPaymentMethod(value), true, `${value} should be accepted`);
+  }
+
+  assert.equal(isPaymentMethod('bitcoin'), false);
+  assert.equal(isPaymentMethod('Cash'), false);
+  assert.equal(isPaymentMethod(''), false);
+  assert.equal(isPaymentMethod(null), false);
+  assert.equal(isPaymentMethod(undefined), false);
+  assert.equal(isPaymentMethod(12), false);
+});
+
+test('a cash movement may not be recorded as paid by provider interest', () => {
+  assert.equal(isMovementPaymentMethod('cash'), true);
+  assert.equal(isMovementPaymentMethod('gcash'), true);
+  assert.equal(isMovementPaymentMethod('bank'), true);
+  assert.equal(isMovementPaymentMethod('maya'), true);
+
+  // Interest income describes where a credit came from, not how cash changed
+  // hands, so it stays legal on the column while being refused here.
+  assert.equal(isMovementPaymentMethod('provider_interest'), false);
+  assert.equal(isMovementPaymentMethod('cash'), isPaymentMethod('cash'));
+});
+
+test('every accepted movement method is also a legal stored value', () => {
+  for (const value of ['cash', 'gcash', 'bank', 'maya']) {
+    assert.equal(isPaymentMethod(value), true, `${value} is on the movement list but not the column list`);
+  }
+});
+
+test('only physical cash touches the drawer', () => {
+  assert.equal(touchesDrawer('cash'), true);
+
+  // A GCash or bank movement lands in the wallet without passing through the
+  // drawer, so giving it a second leg would count the same peso twice.
+  assert.equal(touchesDrawer('gcash'), false);
+  assert.equal(touchesDrawer('bank'), false);
+  assert.equal(touchesDrawer('maya'), false);
+  assert.equal(touchesDrawer('provider_interest'), false);
+  // Historical rows are NULL on purpose and must stay single-legged rather than
+  // defaulting to the drawer.
+  assert.equal(touchesDrawer(null), false);
+  assert.equal(touchesDrawer(undefined), false);
 });

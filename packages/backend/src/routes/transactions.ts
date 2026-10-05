@@ -5,6 +5,7 @@ import { branchClause, assertBranch } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry } from '../services/balance';
+import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS } from '../services/cashManagement';
 import { calculateTieredFee } from '../services/feeCalc';
 import { PaginatedResponse } from '../types';
 
@@ -377,6 +378,27 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     );
     if (!txType) throw createError(404, 'Transaction type not found');
 
+    // A cash movement is not recorded until the operator says how the money
+    // actually changed hands, because that is what decides whether the drawer
+    // takes part. Presence is enforced here rather than as a NOT NULL column
+    // constraint because reversal rewrites the original row (see :798 and :1095
+    // below) and all 108 historical cash movements are NULL — a constraint would
+    // have made every one of them un-reversible the moment it ran, and
+    // backfilling them would mean guessing which were physical cash. Migration
+    // 036 records that reasoning and carries the value check instead.
+    const paymentMethodValue =
+      paymentMethod === undefined || paymentMethod === null || String(paymentMethod).trim() === ''
+        ? null
+        : String(paymentMethod).trim();
+
+    if (paymentMethodValue !== null && !isPaymentMethod(paymentMethodValue)) {
+      throw createError(400, `Payment method must be one of: ${PAYMENT_METHODS.join(', ')}`);
+    }
+    if (isCashMovement(txType.code) && !isMovementPaymentMethod(paymentMethodValue)) {
+      throw createError(400,
+        `A ${txType.code.replace(/_/g, ' ')} needs a payment method: ${MOVEMENT_PAYMENT_METHODS.join(', ')}`);
+    }
+
     // A provider charge on a cash movement is the company's own cost: the
     // customer is never billed for it, so it cannot be folded into this row's
     // amount or fee. It is recorded as a second, linked row typed `expense`
@@ -467,7 +489,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
         transactionDate || new Date(), description || null,
         customerName || null, customerContact || null, finalStatus, req.user!.userId,
         feeAddedToBalance !== false, JSON.stringify(additionalCharges || []), notes || null, customerId || null,
-        paymentMethod || null, payee || null,
+        paymentMethodValue, payee || null,
       ]
     );
 
