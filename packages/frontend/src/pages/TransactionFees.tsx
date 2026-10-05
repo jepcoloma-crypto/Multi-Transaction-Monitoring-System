@@ -40,7 +40,14 @@ export default function TransactionFees() {
         api.get<TransactionCategory[]>('/transaction-types/categories'),
       ]);
       setFees(f);
-      setTxTypes(t);
+      // A fee rule is what the New Transaction form takes its type from, so
+      // attaching one to a controlled movement would let anyone raise an owner
+      // fund or an operating expense from the general form — with no payee and
+      // nothing to tell an approver what they are being asked to release. The
+      // server refuses those movements regardless; this stops them being
+      // offered in the first place.
+      const controlled = new Set(['owner_funding', 'owner_return', 'operating_expense']);
+      setTxTypes(t.filter(ty => !controlled.has(ty.code)));
       setTxCategories(c);
     } catch (err: any) { console.error('TransactionFees load error:', err); } finally { setLoading(false); }
   };

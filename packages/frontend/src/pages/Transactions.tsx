@@ -482,6 +482,13 @@ export default function Transactions() {
           <option value="">All Accounts</option>
           {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
         </select>
+        {/* Operating expenses are transactions and land in this list like any
+            other, so this filter is the only way to isolate them here. They
+            are deliberately NOT removed from it: dropping the option would
+            leave the rows visible but unfindable. What stops an expense being
+            raised from this page is the fee-rule guard — no fee rule may carry
+            a controlled type, and the type on a new transaction comes from the
+            fee rule. */}
         <select value={filters.typeId} onChange={(e) => setFilters({ ...filters, typeId: e.target.value })} className="input w-auto">
           <option value="">All Types</option>
           {filterTypes.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
