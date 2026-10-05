@@ -142,10 +142,21 @@ export function branchClause(
  * Scoped with `accounts.read_all` because that is the dimension the filter
  * acts on: it constrains `accounts.branch_id`, which is where every report
  * resolves a row's branch from.
+ *
+ * Called first by every report route, and the only thing standing between a
+ * query string and a `uuid` column: nothing should build a branch condition
+ * from `req.query` without going through this.
  */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function resolveBranchFilter(req: Request, requested: unknown): Promise<string | null> {
   const value = typeof requested === 'string' ? requested.trim() : '';
   if (!value) return null;
+
+  // Before anything else, and before any query: binding a non-UUID to a
+  // `uuid` column is an invalid input syntax error, which would answer 500
+  // for a value that is simply not a branch at all.
+  if (!UUID_RE.test(value)) throw createError(404, 'Branch not found');
 
   if (!canSeeEveryBranch(req, 'accounts.read_all')) {
     if (!requireBranches(req).includes(value)) {

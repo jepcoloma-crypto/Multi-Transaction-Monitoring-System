@@ -208,8 +208,22 @@ test('resolveBranchFilter returns null when no branch was named', async () => {
   assert.equal(await resolveBranchFilter(branchUser, '   '), null);
 });
 
+// The resolver is the one place a requested branch becomes a bound
+// parameter, so what it is handed has to be shaped like the uuid column it
+// lands on. The `br-a` fixtures above are only ever written into SQL text and
+// never executed, which is why they stay as they are.
+const MAIN_ID = '239c3926-3745-4e4e-b73a-63c9fe8c8a17';
+const RM_ID = 'f8af5291-1f3b-4b72-a411-40498bd82e88';
+
+const mainScopedUser = asRequest({
+  userId: 'u-op-main',
+  roles: ['operator'],
+  permissions: ['transactions.read'],
+  branchIds: [MAIN_ID],
+});
+
 test('resolveBranchFilter accepts one of the caller own branches without asking the database', async () => {
-  assert.equal(await resolveBranchFilter(branchUser, 'br-b'), 'br-b');
+  assert.equal(await resolveBranchFilter(mainScopedUser, MAIN_ID), MAIN_ID);
 });
 
 test('resolveBranchFilter refuses a branch outside the caller scope with 404', async () => {
@@ -217,7 +231,7 @@ test('resolveBranchFilter refuses a branch outside the caller scope with 404', a
   // caller may not see must not look alike, and the caller must not be able
   // to tell an existing foreign branch from one that was never created.
   await assert.rejects(
-    () => resolveBranchFilter(branchUser, 'br-elsewhere'),
+    () => resolveBranchFilter(mainScopedUser, RM_ID),
     (err: any) => err.statusCode === 404 && err.message === 'Branch not found',
   );
 });
@@ -231,7 +245,21 @@ test('resolveBranchFilter does not soften a caller with no branches', async () =
   });
 
   await assert.rejects(
-    () => resolveBranchFilter(noBranch, 'br-a'),
+    () => resolveBranchFilter(noBranch, MAIN_ID),
     (err: any) => err.statusCode === 403,
+  );
+});
+
+test('a value that is not a UUID is a missing branch, not a database error', async () => {
+  // Head office would otherwise bind it to a `uuid` column and surface
+  // invalid input syntax as a 500. Rejected before any query, so this
+  // asserts the shape check by running without a database to fail against.
+  await assert.rejects(
+    () => resolveBranchFilter(headOffice, 'not-a-branch'),
+    (err: any) => err.statusCode === 404 && err.message === 'Branch not found',
+  );
+  await assert.rejects(
+    () => resolveBranchFilter(headOffice, '239c3926-3745-4e4e-b73a'),
+    (err: any) => err.statusCode === 404,
   );
 });
