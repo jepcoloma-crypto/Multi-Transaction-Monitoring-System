@@ -263,3 +263,41 @@ test('a value that is not a UUID is a missing branch, not a database error', asy
     (err: any) => err.statusCode === 404,
   );
 });
+
+// --- Which permission may remove the filter -------------------------------
+
+test('holding the permission being scoped by does not make a caller head office', () => {
+  // The leak this guards: `reports.read` is what an operator needs merely to
+  // open Cash Management, so asking "do you hold reports.read?" answered yes
+  // and dropped the branch filter -- a MAIN operator could then read another
+  // branch's balances, drawer and statement. Only an all-scope grant counts.
+  const operator = asRequest({
+    userId: 'u-vanessa',
+    roles: ['operator'],
+    permissions: ['reports.read', 'transactions.read', 'transfers.read'],
+    branchIds: [MAIN_ID],
+  });
+
+  const scope = branchClause(operator, 'a', 'reports.read', 1, 'self');
+
+  assert.equal(scope.clause, 'a.branch_id = ANY($1)', 'a plain permission must never widen a scope');
+  assert.deepEqual(scope.params, [[MAIN_ID]]);
+  assert.equal(scope.paramIndex, 2);
+});
+
+test('an all-scope grant held directly is still enough to see every branch', () => {
+  // The other half of the same rule: narrowing the test to `_all` grants must
+  // not have narrowed it so far that an actual all-scope holder is scoped too.
+  const allGrantee = asRequest({
+    userId: 'u-audit-all',
+    roles: ['auditor'],
+    permissions: ['accounts.read_all'],
+    branchIds: ['br-a'],
+  });
+
+  const scope = branchClause(allGrantee, 'a', 'accounts.read_all', 1, 'self');
+
+  assert.equal(scope.clause, null);
+  assert.deepEqual(scope.params, []);
+  assert.equal(scope.paramIndex, 1);
+});

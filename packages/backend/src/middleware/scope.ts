@@ -32,6 +32,13 @@ export function canSeeAll(req: Request, permission: string): boolean {
 }
 
 /**
+ * The naming convention that distinguishes "may ignore branches" from
+ * "may open the page": every all-scope grant in the permission set ends
+ * this way, and nothing else does.
+ */
+const ALL_SCOPE_GRANT = /_all$/;
+
+/**
  * Whether this caller sees every branch.
  *
  * Two permissions can grant it. The entity's own `*_read_all` used to mean
@@ -42,7 +49,15 @@ export function canSeeAll(req: Request, permission: string): boolean {
  * is not already an administrator -- granting it would do nothing.
  */
 function canSeeEveryBranch(req: Request, permission: string): boolean {
-  return canSeeAll(req, permission) || canSeeAll(req, 'branches.read_all');
+  // Only an all-scope grant removes the branch filter. The permission is
+  // otherwise the one the call site is scoping *by*, and asking a caller
+  // "do you hold reports.read?" answers yes for every operator -- because
+  // that is the permission they need just to open the page. Cash Management
+  // passed it, so the filter vanished for exactly the callers it existed to
+  // stop, and a branch could read another branch's balances, drawer and
+  // statement. A grant that is not an all-scope grant cannot grant all.
+  return (ALL_SCOPE_GRANT.test(permission) && canSeeAll(req, permission))
+    || canSeeAll(req, 'branches.read_all');
 }
 
 /**

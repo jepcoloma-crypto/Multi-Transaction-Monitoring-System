@@ -41,7 +41,7 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
 
     const branchParams: any[] = [];
     const branchConds: string[] = [];
-    const branchScope = branchClause(req, 'a', 'reports.read', 1, 'self');
+    const branchScope = branchClause(req, 'a', 'accounts.read_all', 1, 'self');
     if (branchScope.clause) {
       branchConds.push(branchScope.clause);
       branchParams.push(...branchScope.params);
@@ -70,7 +70,7 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     if (start) {
       const priorParams: any[] = [start.toISOString()];
       const priorConds = [`l.entry_date < $1`];
-      const priorScope = branchClause(req, 'l', 'reports.read', 2, 'account');
+      const priorScope = branchClause(req, 'l', 'accounts.read_all', 2, 'account');
       if (priorScope.clause) {
         priorConds.push(priorScope.clause);
         priorParams.push(...priorScope.params);
@@ -101,7 +101,7 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
       flowConds.push(`l.entry_date < ($${flowParams.length + 1}::date + INTERVAL '1 day')`);
       flowParams.push(end.toISOString().slice(0, 10));
     }
-    const flowScope = branchClause(req, 'l', 'reports.read', flowParams.length + 1, 'account');
+    const flowScope = branchClause(req, 'l', 'accounts.read_all', flowParams.length + 1, 'account');
     if (flowScope.clause) {
       flowConds.push(flowScope.clause);
       flowParams.push(...flowScope.params);
@@ -195,7 +195,7 @@ router.get('/statement/drill', authorize('reports.read'), async (req: Request, r
       conds.push(`l.entry_date < ($${params.length + 1}::date + INTERVAL '1 day')`);
       params.push(end.toISOString().slice(0, 10));
     }
-    const scope = branchClause(req, 'l', 'reports.read', params.length + 1, 'account');
+    const scope = branchClause(req, 'l', 'accounts.read_all', params.length + 1, 'account');
     if (scope.clause) {
       conds.push(scope.clause);
       params.push(...scope.params);
@@ -348,7 +348,7 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
 
     const params: any[] = [];
     const conds: string[] = [];
-    const scope = branchClause(req, 's', 'reports.read', 1, 'self');
+    const scope = branchClause(req, 's', 'branches.read_all', 1, 'self');
     if (scope.clause) {
       conds.push(scope.clause);
       params.push(...scope.params);
@@ -401,7 +401,7 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
       });
     }
 
-    const accountScope = branchClause(req, 'a', 'reports.read', 1, 'self');
+    const accountScope = branchClause(req, 'a', 'accounts.read_all', 1, 'self');
     const drawerConds = [`t.code = 'cash'`];
     const drawerParams: any[] = [];
     if (accountScope.clause) {
