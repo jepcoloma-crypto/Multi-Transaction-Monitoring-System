@@ -131,6 +131,24 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
 
     const statement = buildCashStatement(flowRows, branches);
 
+    // The drawer's own figure, deliberately outside `totals`.
+    //
+    // `totals.current` adds every account balance in scope — wallets, banks and
+    // cash alike — which is what the company has on the books, not what any
+    // branch could count out of a drawer. Reporting only that under the name
+    // "cash on hand" is how the page came to call ₱122,372 the branch's cash
+    // while the cash accounts held nothing. Two figures, two names, never
+    // summed (design D14).
+    const drawerConds = [`t.code = 'cash'`, ...branchConds];
+    const drawerRow = await queryOne<{ balance: string }>(
+      `SELECT COALESCE(SUM(a.current_balance), 0) AS balance
+       FROM branches b
+       JOIN accounts a ON a.branch_id = b.id
+       JOIN account_types t ON t.id = a.account_type_id
+       WHERE ${drawerConds.join(' AND ')}`,
+      branchParams,
+    );
+
     res.json({
       success: true,
       data: {
@@ -139,6 +157,7 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
           endDate: end ? end.toISOString().slice(0, 10) : null,
         },
         ...statement,
+        drawer: num(drawerRow?.balance),
       },
     });
   } catch (error) {
@@ -372,6 +391,8 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
         ...row,
         live: {
           movementCount: movements.length,
+          cashIn: netMovement(movements.filter((m) => m.entry_type === 'credit')),
+          cashOut: netMovement(movements.filter((m) => m.entry_type === 'debit')),
           netMovement: netMovement(movements),
           expected,
           drawerBalance: balance,
@@ -380,7 +401,34 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
       });
     }
 
-    res.json({ success: true, data });
+    const accountScope = branchClause(req, 'a', 'reports.read', 1, 'self');
+    const drawerConds = [`t.code = 'cash'`];
+    const drawerParams: any[] = [];
+    if (accountScope.clause) {
+      drawerConds.push(accountScope.clause);
+      drawerParams.push(...accountScope.params);
+    }
+    if (branchFilter) {
+      drawerConds.push(`a.branch_id = $${drawerParams.length + 1}`);
+      drawerParams.push(branchFilter);
+    }
+    const drawerRows = await query<{ branch_id: string; balance: string }>(
+      `SELECT a.branch_id, COALESCE(SUM(a.current_balance), 0) AS balance
+       FROM accounts a
+       JOIN account_types t ON t.id = a.account_type_id
+       WHERE ${drawerConds.join(' AND ')}
+       GROUP BY a.branch_id`,
+      drawerParams,
+    );
+
+    // Returned for branches with no open shift as well as those with one: the
+    // operator needs to know what the books say before entering what they
+    // count, and the two are shown side by side rather than merged. If the
+    // counted float were prefilled from this figure it could never disagree
+    // with it, and the cross-check would have nothing to catch (design D16).
+    const drawers = drawerRows.map((row) => ({ branchId: row.branch_id, balance: num(row.balance) }));
+
+    res.json({ success: true, data: { shifts: data, drawers } });
   } catch (error) {
     next(error);
   }

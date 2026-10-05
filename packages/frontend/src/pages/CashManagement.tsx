@@ -7,6 +7,14 @@ import {
   Wallet, Plus, Check, X, ChevronRight, RefreshCw, ShieldAlert, AlertTriangle, Inbox,
 } from 'lucide-react';
 
+// NUMERIC columns arrive as strings and a shift's close fields are still null
+// while it is open, so every figure passes through one coercion rather than
+// each call site spelling its own.
+const money = (value: number | string | null | undefined): number => {
+  const parsed = typeof value === 'number' ? value : parseFloat(String(value ?? ''));
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
 interface BucketLine {
   bucket: string;
   label: string;
@@ -34,6 +42,39 @@ interface Statement {
     opening: number; sources: number; uses: number;
     closing: number; current: number; difference: number; balanced: boolean;
   };
+  drawer?: number;
+}
+
+interface Shift {
+  id: string;
+  branch_id: string;
+  branch_code: string;
+  branch_name: string;
+  status: 'open' | 'closed';
+  opening_float: number | string;
+  counted_closing: number | string | null;
+  expected_closing: number | string | null;
+  variance: number | string | null;
+  opened_at: string;
+  closed_at: string | null;
+  opened_by_username: string | null;
+  closed_by_username: string | null;
+  notes: string | null;
+  live: {
+    movementCount: number;
+    cashIn: number;
+    cashOut: number;
+    netMovement: number;
+    expected: number;
+    drawerBalance: number;
+    drawerDifference: number;
+  } | null;
+}
+
+interface ShiftResult extends Shift {
+  varianceLabel?: 'BALANCED' | 'OVER' | 'SHORT';
+  drawerBalance?: number;
+  drawerDifference?: number;
 }
 
 interface DrillRow {
@@ -126,6 +167,15 @@ export default function CashManagement() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [expenseTypeId, setExpenseTypeId] = useState('');
 
+  const [shifts, setShifts] = useState<Shift[]>([]);
+  const [drawers, setDrawers] = useState<{ branchId: string; balance: number }[]>([]);
+  const [loadingShifts, setLoadingShifts] = useState(false);
+  const [shiftError, setShiftError] = useState('');
+  const [shiftOpen, setShiftOpen] = useState<{ branchId: string; openingFloat: string; booksBalance: number } | null>(null);
+  const [shiftClose, setShiftClose] = useState<{ shift: Shift; countedClosing: string; notes: string } | null>(null);
+  const [lastClose, setLastClose] = useState<ShiftResult | null>(null);
+  const [savingShift, setSavingShift] = useState(false);
+
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
@@ -164,6 +214,24 @@ export default function CashManagement() {
     }
   }, [isApprover]);
 
+  const loadShifts = useCallback(async () => {
+    setLoadingShifts(true);
+    try {
+      const value = await api.get<{ shifts: Shift[]; drawers: { branchId: string; balance: number }[] }>(
+        '/cash-management/shifts'
+      );
+      setShifts(value.shifts || []);
+      setDrawers(value.drawers || []);
+      setShiftError('');
+    } catch (err) {
+      setShiftError(err instanceof Error ? err.message : 'Could not load shift status');
+      setShifts([]);
+      setDrawers([]);
+    } finally {
+      setLoadingShifts(false);
+    }
+  }, []);
+
   const loadSetup = useCallback(async () => {
     try {
       const [branchVal, accountVal, typeVal, categoryVal] = await Promise.allSettled([
@@ -187,6 +255,61 @@ export default function CashManagement() {
   useEffect(() => { loadSetup(); }, [loadSetup]);
   useEffect(() => { loadStatement(); }, [loadStatement]);
   useEffect(() => { loadExpenses(); }, [loadExpenses]);
+  useEffect(() => { loadShifts(); }, [loadShifts]);
+
+  // A shift records a count. Neither of these writes a balance or a ledger row:
+  // opening stores the float that was physically counted, and closing stores
+  // that count beside arithmetic over movements that already exist. A
+  // discrepancy is therefore an event to investigate, never a balance adjusted
+  // away from this form (design D14).
+  const submitShiftOpen = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!shiftOpen) return;
+    const openingFloat = parseFloat(shiftOpen.openingFloat);
+    if (!Number.isFinite(openingFloat) || openingFloat < 0) {
+      setShiftError('Enter the cash you actually counted in the drawer');
+      return;
+    }
+    setSavingShift(true);
+    setShiftError('');
+    try {
+      await api.post('/cash-management/shifts/open', {
+        branchId: shiftOpen.branchId,
+        openingFloat,
+      });
+      setShiftOpen(null);
+      await loadShifts();
+    } catch (err) {
+      setShiftError(err instanceof Error ? err.message : 'Could not open the shift');
+    } finally {
+      setSavingShift(false);
+    }
+  };
+
+  const submitShiftClose = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!shiftClose) return;
+    const countedClosing = parseFloat(shiftClose.countedClosing);
+    if (!Number.isFinite(countedClosing) || countedClosing < 0) {
+      setShiftError('Enter the cash you actually counted in the drawer');
+      return;
+    }
+    setSavingShift(true);
+    setShiftError('');
+    try {
+      const closed = await api.post<ShiftResult>(`/cash-management/shifts/${shiftClose.shift.id}/close`, {
+        countedClosing,
+        notes: shiftClose.notes || undefined,
+      });
+      setShiftClose(null);
+      setLastClose(closed);
+      await loadShifts();
+    } catch (err) {
+      setShiftError(err instanceof Error ? err.message : 'Could not close the shift');
+    } finally {
+      setSavingShift(false);
+    }
+  };
 
   const openDrill = async (line: BucketLine, direction: 'credit' | 'debit') => {
     setDrillLoading(true);
@@ -301,7 +424,7 @@ export default function CashManagement() {
   }
 
   const t = statement?.totals;
-  const cardGrid = 'grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 text-sm';
+  const cardGrid = 'grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 text-sm';
 
   return (
     <div className="p-6 space-y-6">
@@ -376,10 +499,20 @@ export default function CashManagement() {
         <>
           <div className={cardGrid}>
             <div className="card">
-              <p className="text-gray-500">Cash on hand now</p>
+              <p className="text-gray-500">Total funds on the books</p>
               <p className="text-2xl font-bold mt-1">{formatCurrency(t.current)}</p>
               <p className="text-sm text-gray-500">Every account balance, totalled</p>
             </div>
+            {/* Only when the field is actually present: a stale backend sends
+                nothing here, and printing a figure it did not send would be
+                inventing one. */}
+            {statement.drawer !== undefined && (
+              <div className="card border border-amber-300">
+                <p className="text-gray-500">Cash in branch</p>
+                <p className="text-2xl font-bold mt-1 text-amber-700">{formatCurrency(statement.drawer)}</p>
+                <p className="text-sm text-gray-500">Held in the branch drawers</p>
+              </div>
+            )}
             <div className="card">
               <p className="text-gray-500">Opening</p>
               <p className="text-2xl font-bold mt-1">{formatCurrency(t.opening)}</p>
@@ -404,6 +537,149 @@ export default function CashManagement() {
                   : `Off by ${formatCurrency(t.difference)} — this period ends before today`}
               </p>
             </div>
+          </div>
+
+          <div className="card">
+            <div className="px-1 pb-1">
+              <h4 className="font-medium">Shifts</h4>
+              <p className="text-xs text-gray-500">
+                A count, not a movement. Opening records the cash physically in the drawer; closing checks
+                that count against the movements the drawer has already taken. Neither writes a balance, so
+                a discrepancy stays something to investigate rather than something this screen can adjust away.
+              </p>
+            </div>
+
+            {shiftError && (
+              <p className="mt-3 text-sm text-red-600">{shiftError}</p>
+            )}
+
+            {lastClose && (
+              <div className={`mt-3 rounded-lg border p-4 text-sm ${
+                lastClose.varianceLabel === 'BALANCED'
+                  ? 'border-emerald-300 bg-emerald-50'
+                  : lastClose.varianceLabel === 'OVER'
+                    ? 'border-amber-300 bg-amber-50'
+                    : 'border-red-300 bg-red-50'
+              }`}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="font-semibold">
+                    {branches.find((b) => b.id === lastClose.branch_id)?.name || 'Shift'} — closed
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <span className={`badge-${lastClose.varianceLabel === 'BALANCED' ? 'green' : lastClose.varianceLabel === 'OVER' ? 'yellow' : 'red'}`}>
+                      {lastClose.varianceLabel}
+                    </span>
+                    <button type="button" className="text-xs underline text-gray-500" onClick={() => setLastClose(null)}>
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+                <dl className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div>
+                    <dt className="text-xs text-gray-500">Counted</dt>
+                    <dd className="font-medium">{formatCurrency(money(lastClose.counted_closing))}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-gray-500">Expected</dt>
+                    <dd className="font-medium">{formatCurrency(money(lastClose.expected_closing))}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-gray-500">Difference</dt>
+                    <dd className="font-medium">{formatCurrency(money(lastClose.variance))}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-gray-500">Drawer on the books</dt>
+                    <dd className="font-medium">{formatCurrency(money(lastClose.drawerBalance))}</dd>
+                  </div>
+                </dl>
+                <p className="text-xs text-gray-600 mt-2">
+                  Expected comes from your opening count plus the drawer's movements; the books figure comes
+                  from the account balance. They are derived from different things precisely so they can
+                  disagree — a gap between them means the float or the movements are wrong.
+                </p>
+              </div>
+            )}
+
+            {loadingShifts ? (
+              <p className="text-sm text-gray-500 mt-3">Loading shift status…</p>
+            ) : branches.length === 0 ? (
+              <p className="text-sm text-gray-500 mt-3">No branches in scope.</p>
+            ) : (
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                {branches.map((b) => {
+                  const open = shifts.find((s) => s.branch_id === b.id && s.status === 'open');
+                  const books = drawers.find((d) => d.branchId === b.id)?.balance ?? 0;
+                  const live = open?.live || null;
+
+                  return (
+                    <div
+                      key={b.id}
+                      className={`rounded-lg border p-4 ${live ? 'border-emerald-300 bg-emerald-50' : 'border-gray-200 bg-white'}`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold">{b.name} ({b.code})</p>
+                        <span className={live ? 'badge-green' : 'badge-gray'}>{live ? 'OPEN' : 'CLOSED'}</span>
+                      </div>
+
+                      {live && open ? (
+                        <>
+                          <dl className="mt-3 space-y-1 text-sm">
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-gray-500">Opening count</dt>
+                              <dd className="font-medium">{formatCurrency(money(open.opening_float))}</dd>
+                            </div>
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-gray-500">Cash in / out since</dt>
+                              <dd className="font-medium">+{formatCurrency(live.cashIn)} / −{formatCurrency(live.cashOut)}</dd>
+                            </div>
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-gray-500">Expected now</dt>
+                              <dd className="font-medium">{formatCurrency(live.expected)}</dd>
+                            </div>
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-gray-500">Drawer on the books</dt>
+                              <dd className="font-medium">{formatCurrency(live.drawerBalance)}</dd>
+                            </div>
+                          </dl>
+                          <p className={`text-xs mt-2 ${Math.abs(live.drawerDifference) < 0.005 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                            {Math.abs(live.drawerDifference) < 0.005
+                              ? 'The two readings agree.'
+                              : `The two readings differ by ${formatCurrency(live.drawerDifference)}.`}
+                          </p>
+                          <button
+                            type="button"
+                            className="btn-secondary mt-3 w-full"
+                            onClick={() => { setLastClose(null); setShiftOpen(null); setShiftClose({ shift: open, countedClosing: '', notes: '' }); }}
+                          >
+                            Close shift
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <dl className="mt-3 space-y-1 text-sm">
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-gray-500">Drawer on the books</dt>
+                              <dd className="font-medium">{formatCurrency(books)}</dd>
+                            </div>
+                          </dl>
+                          <p className="text-xs text-gray-500 mt-2">
+                            The float is never prefilled — count the drawer yourself. The books figure is
+                            shown so you can see afterwards where the two disagree.
+                          </p>
+                          <button
+                            type="button"
+                            className="btn-primary mt-3 w-full"
+                            onClick={() => { setLastClose(null); setShiftClose(null); setShiftOpen({ branchId: b.id, openingFloat: '', booksBalance: books }); }}
+                          >
+                            Open shift
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           <div className="card overflow-hidden">
@@ -817,6 +1093,156 @@ export default function CashManagement() {
           </div>
         </div>
       )}
+
+      {shiftOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
+          <div className="mx-auto mt-12 max-w-md bg-white rounded-xl shadow-xl border border-gray-200">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+              <h3 className="text-lg font-semibold">Open shift</h3>
+              <button type="button" onClick={() => setShiftOpen(null)} aria-label="Close" className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={submitShiftOpen} className="p-5 space-y-4">
+              <div className="bg-blue-50 border border-blue-200 text-blue-800 text-xs rounded-lg p-3">
+                Count the drawer before you enter anything. This stores the number you counted — it does
+                not write a balance or a ledger row, so nothing here can move money.
+              </div>
+
+              <div>
+                <label className="form-label">Branch</label>
+                <select
+                  className="form-input"
+                  value={shiftOpen.branchId}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    setShiftOpen((s) => s && {
+                      ...s,
+                      branchId: next,
+                      booksBalance: drawers.find((d) => d.branchId === next)?.balance ?? 0,
+                    });
+                  }}
+                >
+                  {branches
+                    .filter((b) => !shifts.some((s) => s.branch_id === b.id && s.status === 'open'))
+                    .map((b) => (
+                      <option key={b.id} value={b.id}>{b.name} ({b.code})</option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="form-label">Opening count</label>
+                <input
+                  className="form-input"
+                  inputMode="decimal"
+                  autoFocus
+                  placeholder="0.00"
+                  value={shiftOpen.openingFloat}
+                  onChange={(e) => setShiftOpen((s) => s && { ...s, openingFloat: e.target.value })}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  The books say this drawer holds {formatCurrency(shiftOpen.booksBalance)}. That figure is
+                  deliberately not filled in for you — if the two disagree at close, the difference is the finding.
+                </p>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-1">
+                <button type="button" className="btn-secondary" onClick={() => setShiftOpen(null)}>Cancel</button>
+                <button type="submit" className="btn-primary" disabled={savingShift}>
+                  {savingShift ? 'Saving…' : 'Open shift'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {shiftClose && (() => {
+        const live = shiftClose.shift.live;
+        const counted = Number(shiftClose.countedClosing);
+        const countedOk = shiftClose.countedClosing.trim() !== '' && Number.isFinite(counted);
+        const previewCents = live && countedOk
+          ? Math.round(Math.round(counted * 100) - Math.round(live.expected * 100))
+          : null;
+
+        return (
+          <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
+            <div className="mx-auto mt-12 max-w-md bg-white rounded-xl shadow-xl border border-gray-200">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                <h3 className="text-lg font-semibold">Close shift — {shiftClose.shift.branch_name}</h3>
+                <button type="button" onClick={() => setShiftClose(null)} aria-label="Close" className="text-gray-400 hover:text-gray-600">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <form onSubmit={submitShiftClose} className="p-5 space-y-4">
+                <div className="rounded-lg border border-gray-200 divide-y divide-gray-100 text-sm">
+                  <div className="flex justify-between gap-3 px-3 py-2">
+                    <span className="text-gray-500">Opening count</span>
+                    <span className="font-medium">{formatCurrency(money(shiftClose.shift.opening_float))}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 px-3 py-2">
+                    <span className="text-gray-500">Cash in since</span>
+                    <span className="font-medium text-emerald-600">+{formatCurrency(live?.cashIn || 0)}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 px-3 py-2">
+                    <span className="text-gray-500">Cash out since</span>
+                    <span className="font-medium text-red-600">−{formatCurrency(live?.cashOut || 0)}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 px-3 py-2 bg-gray-50">
+                    <span className="text-gray-700 font-medium">Expected closing</span>
+                    <span className="font-semibold">{formatCurrency(live?.expected || 0)}</span>
+                  </div>
+                  <div className="flex justify-between gap-3 px-3 py-2">
+                    <span className="text-gray-500">Drawer on the books</span>
+                    <span className="font-medium">{formatCurrency(live?.drawerBalance || 0)}</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="form-label">Counted closing cash</label>
+                  <input
+                    className="form-input"
+                    inputMode="decimal"
+                    autoFocus
+                    placeholder="0.00"
+                    value={shiftClose.countedClosing}
+                    onChange={(e) => setShiftClose((s) => s && { ...s, countedClosing: e.target.value })}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                  <span className="text-gray-500">Difference</span>
+                  {previewCents === null ? (
+                    <span className="text-gray-400">Enter a count</span>
+                  ) : (
+                    <span className={`font-semibold ${previewCents === 0 ? 'text-emerald-600' : previewCents > 0 ? 'text-amber-600' : 'text-red-600'}`}>
+                      {formatCurrency(previewCents / 100)}
+                    </span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="form-label">Notes (optional)</label>
+                  <textarea
+                    className="form-input"
+                    rows={2}
+                    value={shiftClose.notes}
+                    onChange={(e) => setShiftClose((s) => s && { ...s, notes: e.target.value })}
+                  />
+                </div>
+
+                <div className="flex justify-end gap-3 pt-1">
+                  <button type="button" className="btn-secondary" onClick={() => setShiftClose(null)}>Cancel</button>
+                  <button type="submit" className="btn-primary" disabled={savingShift || !countedOk}>
+                    {savingShift ? 'Saving…' : 'Close shift'}
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
