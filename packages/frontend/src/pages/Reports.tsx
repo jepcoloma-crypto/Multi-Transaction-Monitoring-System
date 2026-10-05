@@ -783,11 +783,11 @@ export default function Reports() {
             </div>
           ) : activeReport === 'income-expense' && incomeExpenseTab === 'expense' && reportData.rows ? (
             <div className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 text-sm print:grid-cols-5">
+              <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 text-sm print:grid-cols-6">
                 <div className="card">
                   <p className="text-gray-500">Total Expense</p>
                   <p className="text-2xl font-bold mt-1 text-red-600">{formatCurrency(reportData.summary?.totalExpense || 0)}</p>
-                  <p className="text-sm text-gray-500">Both costs below added together</p>
+                  <p className="text-sm text-gray-500">All three costs below added together</p>
                 </div>
                 <div className="card">
                   <p className="text-gray-500">Service Fees</p>
@@ -798,6 +798,11 @@ export default function Reports() {
                   <p className="text-gray-500">Provider Charges</p>
                   <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.providerCharges || 0)}</p>
                   <p className="text-sm text-gray-500">Taken from the balance on cash movements, never billed to the customer</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Operating Expenses</p>
+                  <p className="text-2xl font-bold mt-1 text-red-600">{formatCurrency(reportData.summary?.operatingExpenses || 0)}</p>
+                  <p className="text-sm text-gray-500">Paid out of a branch wallet in cash</p>
                 </div>
                 <div className="card">
                   <p className="text-gray-500">Transfers</p>
@@ -815,11 +820,11 @@ export default function Reports() {
                 <div className="px-4 pt-4 pb-1">
                   <h4 className="font-medium">Expense by Account</h4>
                   <p className="text-xs text-gray-500">
-                    {reportData.summary?.accounts || 0} accounts · {reportData.summary?.payingAccounts || 0} charged · {reportData.summary?.transferCount || 0} transfers · largest first · click an account to see the transfers and provider charges behind its total · both costs are left out of the Income tab's totals so each peso is counted once
+                    {reportData.summary?.accounts || 0} accounts · {reportData.summary?.payingAccounts || 0} charged · {reportData.summary?.transferCount || 0} transfers · largest first · click an account to see the transfers, provider charges and operating expenses behind its total · both costs are left out of the Income tab's totals so each peso is counted once
                   </p>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[920px]">
+                  <table className="w-full min-w-[1060px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
@@ -828,12 +833,13 @@ export default function Reports() {
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transfers</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Service Fees</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Provider Charges</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Operating Expenses</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total Expense</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
                       {reportData.rows.length === 0 ? (
-                        <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">No accounts for these filters.</td></tr>
+                        <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-gray-500">No accounts for these filters.</td></tr>
                       ) : reportData.rows.map((r: any) => {
                         const isOpen = !!expanded[r.accountId];
                         return (
@@ -856,11 +862,12 @@ export default function Reports() {
                               <td className="px-4 py-3.5 text-sm text-right text-gray-600">{r.transferCount}</td>
                               <td className="px-4 py-3.5 text-sm text-right font-mono">{r.serviceFees > 0 ? formatCurrency(r.serviceFees) : <span className="text-gray-400">—</span>}</td>
                               <td className={`px-4 py-3.5 text-sm text-right font-mono ${r.providerCharges > 0 ? 'text-red-600' : 'text-gray-400'}`}>{r.providerCharges > 0 ? formatCurrency(r.providerCharges) : '—'}</td>
+                              <td className={`px-4 py-3.5 text-sm text-right font-mono ${r.operatingExpenses > 0 ? 'text-red-600' : 'text-gray-400'}`}>{r.operatingExpenses > 0 ? formatCurrency(r.operatingExpenses) : '—'}</td>
                               <td className={`px-4 py-3.5 text-sm text-right font-mono font-semibold ${r.totalExpense > 0 ? 'text-red-600' : 'text-gray-400'}`}>{formatCurrency(r.totalExpense)}</td>
                             </tr>
                             {isOpen && (
                               <tr className="bg-gray-50 detail-row">
-                                <td colSpan={7} className="border-t border-gray-200 px-4 pb-5 pt-1">
+                                <td colSpan={8} className="border-t border-gray-200 px-4 pb-5 pt-1">
                                   {detailLoading[r.accountId] ? (
                                     <p className="py-4 text-center text-sm text-gray-500">Loading rows…</p>
                                   ) : details[r.accountId] ? (
@@ -884,6 +891,7 @@ export default function Reports() {
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{reportData.summary?.transferCount || 0}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.serviceFees || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-red-600">{formatCurrency(reportData.summary?.providerCharges || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-red-600">{formatCurrency(reportData.summary?.operatingExpenses || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-red-600">{formatCurrency(reportData.summary?.totalExpense || 0)}</td>
                         </tr>
                       </tfoot>

@@ -58,6 +58,7 @@ export interface ExpenseSourceRow {
   transfer_count?: number | string | null;
   transfer_service_fee?: number | string | null;
   provider_charges?: number | string | null;
+  operating_expenses?: number | string | null;
 }
 
 export interface ExpenseReportRow {
@@ -68,6 +69,7 @@ export interface ExpenseReportRow {
   transferCount: number;
   serviceFees: number;
   providerCharges: number;
+  operatingExpenses: number;
   totalExpense: number;
 }
 
@@ -77,6 +79,7 @@ export interface ExpenseSummary {
   transferCount: number;
   serviceFees: number;
   providerCharges: number;
+  operatingExpenses: number;
   totalExpense: number;
 }
 
@@ -89,21 +92,25 @@ export function buildExpenseReport(sourceRows: ExpenseSourceRow[]): ExpenseRepor
   let transferCount = 0;
   let serviceFeesCents = 0;
   let providerChargesCents = 0;
+  let operatingExpensesCents = 0;
   let payingAccounts = 0;
 
   const rows = sourceRows.map((row) => {
     const rowServiceCents = toCents(row.transfer_service_fee);
     const rowProviderCents = toCents(row.provider_charges);
-    // Both components are summed here rather than one arriving pre-totalled,
-    // so each can be checked against the list behind it — service fees against
-    // the transfers, provider charges against the expense rows — and a total
-    // that disagreed with its own components would show rather than reconcile
-    // with itself by construction.
-    const rowTotalCents = rowServiceCents + rowProviderCents;
+    const rowOperatingCents = toCents(row.operating_expenses);
+    // All three components are summed here rather than one arriving
+    // pre-totalled, so each can be checked against the list behind it — service
+    // fees against the transfers, provider charges against the expense rows,
+    // operating expenses against the cash they left — and a total that
+    // disagreed with its own components would show rather than reconcile with
+    // itself by construction.
+    const rowTotalCents = rowServiceCents + rowProviderCents + rowOperatingCents;
 
     transferCount += asCount(row.transfer_count);
     serviceFeesCents += rowServiceCents;
     providerChargesCents += rowProviderCents;
+    operatingExpensesCents += rowOperatingCents;
     if (rowTotalCents > 0) payingAccounts += 1;
 
     return {
@@ -114,6 +121,7 @@ export function buildExpenseReport(sourceRows: ExpenseSourceRow[]): ExpenseRepor
       transferCount: asCount(row.transfer_count),
       serviceFees: money(rowServiceCents),
       providerCharges: money(rowProviderCents),
+      operatingExpenses: money(rowOperatingCents),
       totalExpense: money(rowTotalCents),
     } satisfies ExpenseReportRow;
   });
@@ -130,7 +138,8 @@ export function buildExpenseReport(sourceRows: ExpenseSourceRow[]): ExpenseRepor
       transferCount,
       serviceFees: money(serviceFeesCents),
       providerCharges: money(providerChargesCents),
-      totalExpense: money(serviceFeesCents + providerChargesCents),
+      operatingExpenses: money(operatingExpensesCents),
+      totalExpense: money(serviceFeesCents + providerChargesCents + operatingExpensesCents),
     },
   };
 }
@@ -188,15 +197,36 @@ export interface ExpenseChargeRow {
   linkedTransactionNumber: number | null;
 }
 
+export interface ExpenseOperatingSourceRow {
+  id: string;
+  transaction_number?: number | string | null;
+  transaction_date?: string | Date | null;
+  description?: string | null;
+  payee?: string | null;
+  amount?: number | string | null;
+}
+
+export interface ExpenseOperatingRow {
+  id: string;
+  transactionNumber: number | null;
+  transactionDate: string | null;
+  description: string | null;
+  payee: string | null;
+  amount: number;
+}
+
 export interface ExpenseDetail {
   transfers: ExpenseDetailRow[];
   charges: ExpenseChargeRow[];
+  operating: ExpenseOperatingRow[];
   summary: {
     transferCount: number;
     transferAmount: number;
     serviceFees: number;
     chargeCount: number;
     providerCharges: number;
+    operatingCount: number;
+    operatingExpenses: number;
     totalExpense: number;
   };
 }
@@ -204,6 +234,7 @@ export interface ExpenseDetail {
 export interface ExpenseDetailSource {
   transfers: ExpenseDetailSourceRow[];
   charges: ExpenseChargeSourceRow[];
+  operating: ExpenseOperatingSourceRow[];
 }
 
 // The detail sums its own totals from the rows it was handed rather than
@@ -221,17 +252,18 @@ export interface ExpenseDetailSource {
 // from the account row, so the drill-down reconciles with the report row by
 // addition and not by mirroring it.
 //
-// Both source sets are required. A default of `[]` would let a missing
+// All three source sets are required. A default of `[]` would let a missing
 // argument quietly produce a drill-down that under-reports what the row above
 // it claims — the exact disagreement this function exists to detect.
 export function buildExpenseDetail(source: ExpenseDetailSource): ExpenseDetail {
   let transferAmountCents = 0;
   let serviceFeesCents = 0;
   let providerChargesCents = 0;
+  let operatingCents = 0;
 
-  // Left in the order the queries returned: both are ordered newest first, so
-  // the two panels sit in the same convention and neither can appear to
-  // disagree with the other because one happens to be ascending.
+  // Left in the order the queries returned: all are ordered newest first, so
+  // the panels sit in the same convention and none can appear to disagree with
+  // another because one happens to be ascending.
   const transfers: ExpenseDetailRow[] = source.transfers.map((row) => {
     const amountCents = toCents(row.transfer_amount);
     const feeCents = toCents(row.transfer_fee);
@@ -263,16 +295,33 @@ export function buildExpenseDetail(source: ExpenseDetailSource): ExpenseDetail {
     } satisfies ExpenseChargeRow;
   });
 
+  const operating: ExpenseOperatingRow[] = source.operating.map((row) => {
+    const amountCents = toCents(row.amount);
+    operatingCents += amountCents;
+
+    return {
+      id: row.id,
+      transactionNumber: asIdentifier(row.transaction_number),
+      transactionDate: asDate(row.transaction_date),
+      description: asText(row.description),
+      payee: asText(row.payee),
+      amount: money(amountCents),
+    } satisfies ExpenseOperatingRow;
+  });
+
   return {
     transfers,
     charges,
+    operating,
     summary: {
       transferCount: transfers.length,
       transferAmount: money(transferAmountCents),
       serviceFees: money(serviceFeesCents),
       chargeCount: charges.length,
       providerCharges: money(providerChargesCents),
-      totalExpense: money(serviceFeesCents + providerChargesCents),
+      operatingCount: operating.length,
+      operatingExpenses: money(operatingCents),
+      totalExpense: money(serviceFeesCents + providerChargesCents + operatingCents),
     },
   };
 }

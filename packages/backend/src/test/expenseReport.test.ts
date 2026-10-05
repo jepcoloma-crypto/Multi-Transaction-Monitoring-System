@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildExpenseReport, buildExpenseDetail, type ExpenseSourceRow, type ExpenseDetailSourceRow, type ExpenseChargeSourceRow } from '../services/expenseReport';
+import { buildExpenseReport, buildExpenseDetail, type ExpenseSourceRow, type ExpenseDetailSourceRow, type ExpenseChargeSourceRow, type ExpenseOperatingSourceRow } from '../services/expenseReport';
 import { buildIncomeReport, type IncomeSourceRow } from '../services/incomeReport';
 
 const row = (overrides: Partial<ExpenseSourceRow> = {}): ExpenseSourceRow => ({
@@ -216,6 +216,7 @@ test('the drill-down totals its own rows rather than repeating the account row',
       detailRow({ id: 'trf-3', transfer_number: 25, transfer_amount: '1500.00', transfer_fee: '20.00' }),
     ],
     charges: [],
+    operating: [],
   });
 
   // Summed from the three rows above, not read off the aggregate that produced
@@ -242,6 +243,7 @@ test('the drill-down reproduces the account row exactly', () => {
       chargeRow({ amount: '10.00' }),
       chargeRow({ id: 'exp-2', amount: '35.00' }),
     ],
+    operating: [],
   });
 
   // Both sides are built from the same rows by different code: the account row
@@ -265,6 +267,7 @@ test('a transfer with no fee still appears, because the row counts it', () => {
       detailRow({ id: 'trf-2', transfer_fee: '0.00' }),
     ],
     charges: [],
+    operating: [],
   });
 
   assert.equal(detail.transfers.length, 2);
@@ -274,7 +277,7 @@ test('a transfer with no fee still appears, because the row counts it', () => {
 });
 
 test('an account that spent nothing returns an empty drill-down, not a broken one', () => {
-  const detail = buildExpenseDetail({ transfers: [], charges: [] });
+  const detail = buildExpenseDetail({ transfers: [], charges: [], operating: [] });
 
   assert.deepEqual(detail.transfers, []);
   assert.deepEqual(detail.charges, []);
@@ -288,7 +291,7 @@ test('an account that spent nothing returns an empty drill-down, not a broken on
 });
 
 test('the drill-down keeps the reference, date and destination an auditor reads', () => {
-  const detail = buildExpenseDetail({ transfers: [detailRow()], charges: [] });
+  const detail = buildExpenseDetail({ transfers: [detailRow()], charges: [], operating: [] });
 
   assert.equal(detail.transfers[0].transferReference, 'TRF-2026-000028');
   assert.equal(detail.transfers[0].transferNumber, 28);
@@ -299,7 +302,7 @@ test('the drill-down keeps the reference, date and destination an auditor reads'
 });
 
 test('a column the database left out reads as empty rather than as a blank reference', () => {
-  const detail = buildExpenseDetail({ transfers: [{ id: 'trf-1', transfer_fee: '10.00' }], charges: [] });
+  const detail = buildExpenseDetail({ transfers: [{ id: 'trf-1', transfer_fee: '10.00' }], charges: [], operating: [] });
 
   assert.equal(detail.transfers[0].transferReference, null);
   assert.equal(detail.transfers[0].transferNumber, null);
@@ -313,6 +316,7 @@ test('a non-numeric fee is ignored rather than poisoning the drill-down total', 
   const detail = buildExpenseDetail({
     transfers: [detailRow(), detailRow({ id: 'trf-2', transfer_fee: 'not a number' })],
     charges: [],
+    operating: [],
   });
 
   assert.equal(detail.summary.serviceFees, 10);
@@ -323,6 +327,7 @@ test('provider charges are listed, linked to the cash movement that caused them'
   const detail = buildExpenseDetail({
     transfers: [],
     charges: [chargeRow(), chargeRow({ id: 'exp-2', transaction_number: 201, amount: '25.00' })],
+    operating: [],
   });
 
   assert.equal(detail.charges.length, 2);
@@ -340,6 +345,7 @@ test('a charge with no origin still stands on its own as a bare number', () => {
   const detail = buildExpenseDetail({
     transfers: [],
     charges: [{ id: 'exp-9', amount: '10.00' }],
+    operating: [],
   });
 
   assert.equal(detail.charges[0].transactionNumber, null);
@@ -353,9 +359,92 @@ test('a non-numeric charge amount is ignored rather than poisoning the total', (
   const detail = buildExpenseDetail({
     transfers: [detailRow()],
     charges: [{ id: 'exp-1', amount: 'not a number' }],
+    operating: [],
   });
 
   assert.equal(detail.summary.providerCharges, 0);
   assert.equal(detail.summary.totalExpense, 10);
   assert.equal(Number.isNaN(detail.summary.totalExpense), false);
+});
+
+// An operating expense paid out of the account (typed `operating_expense`,
+// migration 034) — a third component, deliberately separate from the provider
+// charge even though both arrive as ordinary transactions.
+const operatingRow = (overrides: Partial<ExpenseOperatingSourceRow> = {}): ExpenseOperatingSourceRow => ({
+  id: 'opx-1',
+  transaction_number: 300,
+  transaction_date: '2026-09-26T09:00:00.000Z',
+  description: 'Electrical bill - September',
+  payee: 'Meralco',
+  amount: '1500.00',
+  ...overrides,
+});
+
+test('operating expenses are a third component, never folded into provider charges', () => {
+  const report = buildExpenseReport([
+    row({
+      transfer_count: '0',
+      transfer_service_fee: '0.00',
+      provider_charges: '45.00',
+      operating_expenses: '1500.00',
+    }),
+  ]);
+  const accountRow = report.rows[0];
+
+  // The whole point of the separate type: rent must not land in the charge
+  // column, which only `tt.code = 'expense'` may populate.
+  assert.equal(accountRow.providerCharges, 45);
+  assert.equal(accountRow.operatingExpenses, 1500);
+  assert.equal(accountRow.totalExpense, 1545);
+  assert.equal(report.summary.operatingExpenses, 1500);
+  assert.equal(report.summary.totalExpense, 1545);
+});
+
+test('the drill-down lists operating expenses with payee and reproduces the account row', () => {
+  const accountRow = buildExpenseReport([
+    row({ transfer_count: '0', transfer_service_fee: '0.00', provider_charges: '0.00', operating_expenses: '1500.00' }),
+  ]).rows[0];
+
+  const detail = buildExpenseDetail({ transfers: [], charges: [], operating: [operatingRow()] });
+
+  assert.equal(detail.operating.length, 1);
+  assert.equal(detail.operating[0].payee, 'Meralco');
+  assert.equal(detail.operating[0].description, 'Electrical bill - September');
+  assert.equal(detail.operating[0].amount, 1500);
+  assert.equal(detail.summary.operatingCount, 1);
+  assert.equal(detail.summary.operatingExpenses, accountRow.operatingExpenses);
+  assert.equal(detail.summary.totalExpense, accountRow.totalExpense);
+});
+
+test('an account that paid no operating expenses reports a zero component, not a missing one', () => {
+  const detail = buildExpenseDetail({ transfers: [], charges: [], operating: [] });
+
+  assert.deepEqual(detail.operating, []);
+  assert.equal(detail.summary.operatingCount, 0);
+  assert.equal(detail.summary.operatingExpenses, 0);
+  assert.equal(detail.summary.totalExpense, 0);
+});
+
+test('a non-numeric operating amount is ignored rather than poisoning the total', () => {
+  const detail = buildExpenseDetail({
+    transfers: [],
+    charges: [],
+    operating: [operatingRow({ amount: 'not a number' })],
+  });
+
+  assert.equal(detail.summary.operatingExpenses, 0);
+  assert.equal(Number.isNaN(detail.summary.totalExpense), false);
+});
+
+test('an operating expense with no payee still stands on its own as a bare number', () => {
+  const detail = buildExpenseDetail({
+    transfers: [],
+    charges: [],
+    operating: [{ id: 'opx-9', amount: '250.00' }],
+  });
+
+  assert.equal(detail.operating[0].payee, null);
+  assert.equal(detail.operating[0].description, null);
+  assert.equal(detail.operating[0].transactionNumber, null);
+  assert.equal(detail.summary.totalExpense, 250);
 });

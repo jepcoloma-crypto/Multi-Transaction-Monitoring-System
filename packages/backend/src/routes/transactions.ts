@@ -305,7 +305,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       accountId, transactionTypeId, transactionCategoryId, feeRuleId, amount, fee, manualFee,
       referenceNumber, externalReference, transactionDate, description,
       customerName, customerContact, status, feeAddedToBalance, additionalCharges, notes, customerId,
-      paymentMethod, providerCharge,
+      paymentMethod, providerCharge, payee,
     } = req.body;
 
     let resolvedTypeId = transactionTypeId;
@@ -410,12 +410,19 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     const entryType = txType.direction === 'in' || txType.direction === 'adjustment' ? 'credit' : 'debit';
 
     const isOwnerFund = txType.code === 'owner_funding' || txType.code === 'owner_return';
+    const isOperatingExpense = txType.code === 'operating_expense';
+    const isControlled = isOwnerFund || isOperatingExpense;
     const isAdminCreator = (req.user!.roles || []).includes('administrator');
-    const requiresApproval = isOwnerFund && !isAdminCreator;
+    // An administrator who creates an owner fund settles it at once — that
+    // path's established behaviour, deliberately left alone. An operating
+    // expense does not inherit the bypass: the two-person rule was chosen for
+    // expenses specifically, so nobody, administrator included, may release
+    // their own request.
+    const requiresApproval = isControlled && (isOperatingExpense || !isAdminCreator);
     const finalStatus = requiresApproval ? 'pending' : (status || 'completed');
 
-    if (finalStatus !== 'completed' && !isOwnerFund) {
-      throw createError(400, 'Only owner fund movements can be created as pending');
+    if (finalStatus !== 'completed' && !isControlled) {
+      throw createError(400, 'Only owner fund movements and operating expenses can be created as pending');
     }
 
     // Rejected rather than silently dropped: a charge the operator typed in
@@ -424,7 +431,13 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       throw createError(400, 'A provider charge can only be recorded on a transaction that completes now');
     }
 
-    if (entryType === 'debit') {
+    // A pending row withdraws nothing yet, so there is nothing to fund: the
+    // balance belongs to approval, which checks it inside the same
+    // transaction that writes the debit. Checking here would refuse a
+    // proposal merely because owner funding has not arrived yet — and would
+    // make the float impossible to open with, since a new revolving fund
+    // starts at zero.
+    if (entryType === 'debit' && finalStatus !== 'pending') {
       const balance = await queryOne<{ current_balance: string }>(
         'SELECT current_balance FROM accounts WHERE id = $1 FOR UPDATE', [accountId]
       );
@@ -445,8 +458,8 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     const transaction = await queryOne(
       `INSERT INTO transactions (transaction_number, account_id, transaction_type_id, transaction_category_id,
        amount, fee, net_amount, reference_number, external_reference, transaction_date, description,
-       customer_name, customer_contact, status, created_by, fee_added_to_balance, additional_charges, notes, customer_id, payment_method)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+       customer_name, customer_contact, status, created_by, fee_added_to_balance, additional_charges, notes, customer_id, payment_method, payee)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
        RETURNING *`,
       [
         txNumber!.nextval, accountId, resolvedTypeId, resolvedCategoryId,
@@ -454,7 +467,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
         transactionDate || new Date(), description || null,
         customerName || null, customerContact || null, finalStatus, req.user!.userId,
         feeAddedToBalance !== false, JSON.stringify(additionalCharges || []), notes || null, customerId || null,
-        paymentMethod || null,
+        paymentMethod || null, payee || null,
       ]
     );
 
@@ -851,11 +864,14 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
   }
 });
 
-type OwnerFundCode = 'owner_funding' | 'owner_return';
+type ControlledCode = 'owner_funding' | 'owner_return' | 'operating_expense';
 
-function assertOwnerFundType(code: string): asserts code is OwnerFundCode {
-  if (code !== 'owner_funding' && code !== 'owner_return') {
-    throw createError(400, 'Only owner fund movements require approval');
+// The three movements that may only ever be created as `pending` and must be
+// settled by a second person. Everything else completes on creation or runs its
+// own workflow (transfers, reversals).
+function assertControlledType(code: string): asserts code is ControlledCode {
+  if (code !== 'owner_funding' && code !== 'owner_return' && code !== 'operating_expense') {
+    throw createError(400, 'Only owner fund movements and operating expenses require approval');
   }
 }
 
@@ -903,7 +919,15 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     // caller's. Checked before the status guard so a scoped caller cannot
     // probe for pending requests outside their branches.
     await assertBranch(req, row.account_id, 'transactions.write_all', 'Transaction not found');
-    assertOwnerFundType(row.code);
+    assertControlledType(row.code);
+    // Releasing an operating cost is a head-office decision, so expenses sit
+    // behind administrator-only on top of the two-person rule — the same bar
+    // reversals already clear. Owner funds keep their wider approver set
+    // untouched; changing it here would alter live behaviour unrelated to
+    // this feature.
+    if (row.code === 'operating_expense' && !req.user!.roles.includes('administrator')) {
+      throw createError(403, 'Only administrators can approve operating expenses');
+    }
     if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be approved');
     if (row.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own request');
 
@@ -940,7 +964,9 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
 
     await createAuditLog({
       userId: req.user!.userId,
-      action: 'transaction.owner_fund_approved',
+      action: row.code === 'operating_expense'
+        ? 'transaction.expense_approved'
+        : 'transaction.owner_fund_approved',
       entity: 'transaction',
       entityId: req.params.id,
       ipAddress: req.ip,
@@ -975,7 +1001,12 @@ router.post('/:id/reject', authorize('transactions.approve'), async (req: Reques
     );
     if (!row) throw createError(404, 'Transaction not found');
     await assertBranch(req, row.account_id, 'transactions.write_all', 'Transaction not found');
-    assertOwnerFundType(row.code);
+    assertControlledType(row.code);
+    // Same head-office gate as approval — declining an operating expense is
+    // the same decision as releasing one.
+    if (row.code === 'operating_expense' && !req.user!.roles.includes('administrator')) {
+      throw createError(403, 'Only administrators can reject operating expenses');
+    }
     if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be rejected');
     if (row.created_by === req.user!.userId) throw createError(400, 'You cannot reject your own request');
 
@@ -988,7 +1019,9 @@ router.post('/:id/reject', authorize('transactions.approve'), async (req: Reques
 
     await createAuditLog({
       userId: req.user!.userId,
-      action: 'transaction.owner_fund_rejected',
+      action: row.code === 'operating_expense'
+        ? 'transaction.expense_rejected'
+        : 'transaction.owner_fund_rejected',
       entity: 'transaction',
       entityId: req.params.id,
       ipAddress: req.ip,

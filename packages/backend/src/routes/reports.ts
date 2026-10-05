@@ -630,6 +630,16 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
   const pchgScope = branchClause(req, 't', 'transactions.read_all', pi);
   if (pchgScope.clause) { pchgConds.push(pchgScope.clause); params.push(...pchgScope.params); pi = pchgScope.paramIndex; }
 
+  // Operating expenses are ordinary transactions typed `operating_expense`
+  // (migration 034), so they take their own scope and window in the same
+  // order as the two components above. The placeholder numbering only lines up
+  // because conditions are built in the order the subqueries appear in the SQL.
+  const opexConds: string[] = [`tt.code = 'operating_expense'`, `t.status = 'completed'`];
+  if (startDate) { opexConds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
+  if (endDate) { opexConds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+  const opexScope = branchClause(req, 't', 'transactions.read_all', pi);
+  if (opexScope.clause) { opexConds.push(opexScope.clause); params.push(...opexScope.params); pi = opexScope.paramIndex; }
+
   const accountConds: string[] = [];
   if (accountId) { accountConds.push(`a.id = $${pi++}`); params.push(accountId); }
   const accountScope = branchClause(req, 'a', 'accounts.read_all', pi, 'self');
@@ -643,7 +653,8 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
             typ.name AS account_type,
             trf.cnt AS transfer_count,
             trf.fees AS transfer_service_fee,
-            pchg.charges AS provider_charges
+            pchg.charges AS provider_charges,
+            opex.expenses AS operating_expenses
      FROM accounts a
      LEFT JOIN providers p ON p.id = a.provider_id
      LEFT JOIN account_types typ ON typ.id = a.account_type_id
@@ -663,6 +674,14 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
        WHERE ${pchgConds.join(' AND ')}
        GROUP BY t.account_id
      ) pchg ON pchg.account_id = a.id
+     LEFT JOIN (
+       SELECT t.account_id,
+              COALESCE(SUM(t.amount), 0) AS expenses
+       FROM transactions t
+       JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       WHERE ${opexConds.join(' AND ')}
+       GROUP BY t.account_id
+     ) opex ON opex.account_id = a.id
      ${accountWhere}
      ORDER BY a.name`,
     params
@@ -769,6 +788,29 @@ const loadExpenseChargesDetail = async (
   );
 };
 
+// The third panel behind an expense total: operating expenses paid out of the
+// account, also ordinary transactions but typed `operating_expense` (migration
+// 034). Same account, same scope and same date window as the two loaders above
+// for the same reason — the panels are meant to add up to the figure they sit
+// under, and they cannot if each is filtered by different rules. `payee` is
+// selected because an expense is read as much by who was paid as by what for.
+const loadExpenseOperatingDetail = async (
+  req: Request,
+  accountId: unknown,
+  filters: IncomeFilters,
+): Promise<any[]> => {
+  const scope = detailScope(req, 't', 'transactions.read_all', 't.transaction_date', filters, 2);
+  const conds = ['t.account_id = $1', `t.status = 'completed'`, `tt.code = 'operating_expense'`, ...scope.conds];
+  return query(
+    `SELECT t.id, t.transaction_number, t.transaction_date, t.description, t.payee, t.amount
+     FROM transactions t
+     JOIN transaction_types tt ON tt.id = t.transaction_type_id
+     WHERE ${conds.join(' AND ')}
+     ORDER BY t.transaction_date DESC`,
+    [accountId, ...scope.params]
+  );
+};
+
 router.get('/income-detail', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { accountId, startDate, endDate } = req.query;
@@ -819,13 +861,13 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
   } catch (error) { next(error); }
 });
 
-// The transfers and provider charges behind one account's expense row. Two
-// queries rather than one because the two come from different tables and
-// different shapes, but both are fetched so the drill-down can account for the
-// whole of the total it sits under — a panel listing only transfers would
-// reconcile with the service-fees column while leaving provider charges
-// unexplained, and an unexplained remainder is indistinguishable from an
-// error.
+// The transfers, provider charges and operating expenses behind one account's
+// expense row. Three queries rather than one because the three come from
+// different tables and shapes, but all are fetched so the drill-down can
+// account for the whole of the total it sits under — a panel listing only
+// transfers would reconcile with the service-fees column while leaving the
+// other components unexplained, and an unexplained remainder is
+// indistinguishable from an error.
 router.get('/expense-detail', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { accountId, startDate, endDate } = req.query;
@@ -835,11 +877,12 @@ router.get('/expense-detail', authorize('reports.read'), async (req: Request, re
     await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
 
     const filters = { startDate, endDate };
-    const [transfers, charges] = await Promise.all([
+    const [transfers, charges, operating] = await Promise.all([
       loadTransfersDetail(req, accountId, filters),
       loadExpenseChargesDetail(req, accountId, filters),
+      loadExpenseOperatingDetail(req, accountId, filters),
     ]);
-    res.json({ success: true, data: buildExpenseDetail({ transfers, charges }) });
+    res.json({ success: true, data: buildExpenseDetail({ transfers, charges, operating }) });
   } catch (error) { next(error); }
 });
 
@@ -1006,6 +1049,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         transfer_count: r.transferCount,
         service_fees: r.serviceFees.toFixed(2),
         provider_charges: r.providerCharges.toFixed(2),
+        operating_expenses: r.operatingExpenses.toFixed(2),
         total_expense: r.totalExpense.toFixed(2),
       }));
       columns = [
@@ -1015,12 +1059,14 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Transfers', key: 'transfer_count' },
         { header: 'Service Fees', key: 'service_fees' },
         { header: 'Provider Charges', key: 'provider_charges' },
+        { header: 'Operating Expenses', key: 'operating_expenses' },
         { header: 'Total Expense', key: 'total_expense' },
       ];
       csvTotals = { account_name: `TOTAL (${report.summary.accounts} accounts)` };
       if (report.summary.transferCount) csvTotals.transfer_count = report.summary.transferCount;
       if (report.summary.serviceFees) csvTotals.service_fees = report.summary.serviceFees.toFixed(2);
       if (report.summary.providerCharges) csvTotals.provider_charges = report.summary.providerCharges.toFixed(2);
+      if (report.summary.operatingExpenses) csvTotals.operating_expenses = report.summary.operatingExpenses.toFixed(2);
       if (report.summary.totalExpense) csvTotals.total_expense = report.summary.totalExpense.toFixed(2);
     } else if (type === 'income') {
       const report = await loadIncomeReport(req, { startDate, endDate, accountId });
