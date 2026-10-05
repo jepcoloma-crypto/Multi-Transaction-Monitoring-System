@@ -17,7 +17,9 @@ type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report'
 // from costing the other side's three queries.
 type IncomeExpenseTab = 'income' | 'expense';
 
-interface Account { id: string; name: string; masked_account_number: string; }
+interface Account { id: string; name: string; masked_account_number: string; branch_id: string; }
+
+interface Branch { id: string; code: string; name: string; }
 
 // Both sides are read from the ledger rows the reversal wrote rather than
 // derived from the transaction's direction: an operator asking whether a figure
@@ -48,21 +50,30 @@ const INCOME_EXPENSE_TABS: { id: IncomeExpenseTab; label: string }[] = [
 
 export default function Reports() {
   const { user } = useAuth();
+  const [activeReport, setActiveReport] = useState<ReportType>('consolidated');
+  const [incomeExpenseTab, setIncomeExpenseTab] = useState<IncomeExpenseTab>('income');
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [reportData, setReportData] = useState<any>(null);
+  const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '', branchId: '' });
+
   // Stated on the printed sheet, because the header badge that normally says
   // it is inside a print:hidden region. A PDF filed without knowing which
   // branches it covers cannot later be told apart from the same report run
   // over a different branch, and both look identical once printed.
-  const branchScope = user?.canSeeAllBranches
-    ? 'All branches'
-    : (user?.branches ?? []).length === 0
-      ? null
-      : (user?.branches ?? []).map((b) => b.name).join(', ');
-  const [activeReport, setActiveReport] = useState<ReportType>('consolidated');
-  const [incomeExpenseTab, setIncomeExpenseTab] = useState<IncomeExpenseTab>('income');
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [reportData, setReportData] = useState<any>(null);
-  const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '' });
+  //
+  // A branch that was picked wins over the caller's own reach, because the
+  // figures were narrowed by the filter rather than by who is asking. On an
+  // unnameable branch the label is dropped rather than falling back to the
+  // caller's scope: an omitted scope can be noticed, a wrong one cannot.
+  const branchScope = filters.branchId
+    ? branches.find(b => b.id === filters.branchId)?.name ?? null
+    : user?.canSeeAllBranches
+      ? 'All branches'
+      : (user?.branches ?? []).length === 0
+        ? null
+        : (user?.branches ?? []).map((b) => b.name).join(', ');
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState('');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
@@ -72,7 +83,11 @@ export default function Reports() {
   const requestedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    api.get<{ data: Account[] }>('/accounts').then(res => setAccounts(res.data)).catch(() => {});
+    // The route pages at 20 for the Accounts table; a filter dropdown needs
+    // the whole list or an account past the first page simply never appears
+    // as a choice.
+    api.get<{ data: Account[] }>('/accounts?limit=500').then(res => setAccounts(res.data)).catch(() => {});
+    api.get<Branch[]>('/branches').then(setBranches).catch(() => {});
   }, []);
 
   // Cached detail rows are only meaningful under the filters they were fetched
@@ -97,6 +112,7 @@ export default function Reports() {
       if (filters.typeId) params.append('typeId', filters.typeId);
       if (filters.status) params.append('status', filters.status);
       if (filters.providerId) params.append('providerId', filters.providerId);
+      if (filters.branchId) params.append('branchId', filters.branchId);
       const qs = params.toString();
       // The merged module runs two endpoints rather than one payload split in
       // the browser. Only the side on screen is fetched, so switching tabs
@@ -120,6 +136,7 @@ export default function Reports() {
       params.append('accountId', accountId);
       if (filters.startDate) params.append('startDate', filters.startDate);
       if (filters.endDate) params.append('endDate', filters.endDate);
+      if (filters.branchId) params.append('branchId', filters.branchId);
       const endpoint = activeReport === 'income-expense' && incomeExpenseTab === 'expense'
         ? 'expense-detail'
         : 'income-detail';
@@ -131,7 +148,7 @@ export default function Reports() {
     } finally {
       setDetailLoading(prev => ({ ...prev, [accountId]: false }));
     }
-  }, [filters.startDate, filters.endDate, activeReport, incomeExpenseTab]);
+  }, [filters.startDate, filters.endDate, filters.branchId, activeReport, incomeExpenseTab]);
 
   const toggleDetail = useCallback((accountId: string) => {
     const opening = !expanded[accountId];
@@ -166,6 +183,10 @@ export default function Reports() {
       if (filters.typeId) params.append('typeId', filters.typeId);
       if (filters.status) params.append('status', filters.status);
       if (filters.providerId) params.append('providerId', filters.providerId);
+      // The export has to be narrowed exactly as the screen was: a CSV
+      // carrying every branch under a header that says one would be the
+      // printed-scope problem again, in a file nobody re-reads the settings on.
+      if (filters.branchId) params.append('branchId', filters.branchId);
       params.append('format', 'csv');
       const res = await fetch(`${API_BASE}/reports/export/${type}?${params.toString()}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
@@ -209,6 +230,25 @@ export default function Reports() {
     { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, in two tabs' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
   ];
+
+  // Picking a branch narrows the accounts offered beneath it. Left
+  // independent, the two selects can contradict each other, and a
+  // contradictory pair returns no rows -- which reads exactly like a report
+  // that genuinely has none.
+  const accountOptions = filters.branchId
+    ? accounts.filter(a => a.branch_id === filters.branchId)
+    : accounts;
+
+  // The chosen account has to belong to the chosen branch, so it is dropped
+  // rather than left pointing at a branch the row filter no longer admits.
+  const onBranchChange = (e: { target: { value: string } }) => {
+    const branchId = e.target.value;
+    const accountId = branchId
+      && accounts.find(a => a.id === filters.accountId)?.branch_id !== branchId
+      ? ''
+      : filters.accountId;
+    setFilters({ ...filters, branchId, accountId });
+  };
 
   return (
     <div className="space-y-6">
@@ -272,6 +312,18 @@ export default function Reports() {
             </div>
 
             <div className="flex flex-wrap gap-3 mb-4">
+              {/* Hidden on a single branch rather than on role: user to branch
+                  is many-to-many, and a one-branch user has nothing to choose
+                  -- their rows are already narrowed to it. */}
+              {branches.length > 1 && (
+                <div>
+                  <label className="text-xs text-gray-500">Branch</label>
+                  <select value={filters.branchId} onChange={onBranchChange} className="input-field text-sm">
+                    <option value="">All branches</option>
+                    {branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="text-xs text-gray-500">From</label>
                 <input type="date" value={filters.startDate} onChange={e => setFilters({ ...filters, startDate: e.target.value })} className="input-field text-sm" />
@@ -285,7 +337,7 @@ export default function Reports() {
                   <label className="text-xs text-gray-500">Account</label>
                   <select value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })} className="input-field text-sm">
                     <option value="">All Accounts</option>
-                    {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                    {accountOptions.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                   </select>
                 </div>
               )}
