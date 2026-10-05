@@ -4,8 +4,9 @@ import { authenticate, authorize } from '../middleware/auth';
 import { branchClause, assertBranch } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
-import { processTransaction, updateAccountBalance, createLedgerEntry } from '../services/balance';
-import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS } from '../services/cashManagement';
+import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
+import type { CounterpartyLeg } from '../services/balance';
+import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg } from '../services/cashManagement';
 import { calculateTieredFee } from '../services/feeCalc';
 import { PaginatedResponse } from '../types';
 
@@ -297,6 +298,62 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
   }
 });
 
+// The drawer's side of a movement settled in physical cash (design D12).
+//
+// The amount comes from drawerLeg rather than being restated here, so the rule
+// covering both directions and both fee modes lives in one tested place. The
+// account is the branch's own cash account; a movement already booked against
+// one — an expense paid straight out of the float — posts a single row rather
+// than two against the same balance.
+//
+// Nothing is locked here. queryOne runs through the pool rather than the open
+// transaction, so any lock it took would be released at statement end and would
+// only put this path out of order with processTransaction's sorted locking. The
+// balance read is advisory for the same reason the balance check above it is:
+// the authoritative check is the one updateAccountBalance makes inside the
+// transaction. This one exists only so an operator is told the drawer is short
+// rather than being left to infer it from "Insufficient balance".
+async function resolveDrawerLeg(
+  accountId: string,
+  paymentMethod: string | null,
+  signedAmount: number,
+  fee: number
+): Promise<CounterpartyLeg | null> {
+  if (paymentMethod !== 'cash') return null;
+
+  const drawer = await queryOne<{ id: string }>(
+    `SELECT a.id FROM accounts a
+     JOIN account_types t ON t.id = a.account_type_id
+     WHERE t.code = 'cash' AND a.status <> 'closed'
+       AND a.branch_id = (SELECT branch_id FROM accounts WHERE id = $1)
+     ORDER BY (a.name = 'Revolving Fund') DESC, a.created_at ASC
+     LIMIT 1`,
+    [accountId]
+  );
+  // Refused rather than skipped: a movement recorded as paid in cash whose
+  // branch has no drawer is one the system cannot account for, and posting one
+  // leg while quietly dropping the other is how a drawer drifts out of step with
+  // the statements meant to explain it.
+  if (!drawer) throw createError(400, 'This branch has no cash account to take the money from');
+  if (drawer.id === accountId) return null;
+
+  const leg = drawerLeg(signedAmount, fee);
+  if (!leg) return null;
+
+  if (leg.entryType === 'debit') {
+    const balance = await queryOne<{ current_balance: string }>(
+      'SELECT current_balance FROM accounts WHERE id = $1', [drawer.id]
+    );
+    const held = parseFloat(balance?.current_balance || '0');
+    if (held < leg.amount) {
+      throw createError(400,
+        `The branch's cash drawer holds ${held.toFixed(2)} but this movement hands out ${leg.amount.toFixed(2)}`);
+    }
+  }
+
+  return { accountId: drawer.id, amount: leg.amount, entryType: leg.entryType };
+}
+
 router.post('/', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
@@ -422,14 +479,22 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       }
     }
 
+    const entryType = txType.direction === 'in' || txType.direction === 'adjustment' ? 'credit' : 'debit';
     const deductFee = feeAddedToBalance === false && feeNum > 0;
     if (deductFee && amountNum < feeNum) {
       throw createError(400, 'Fee cannot exceed the transaction amount when deducted from transaction amount');
     }
-    const netAmount = deductFee ? Math.round((amountNum - feeNum) * 100) / 100 : amountNum;
+    // A deducted fee shrinks what a credit lands on, never what a debit removes.
+    // Taking it from a debit as well collected it from nobody: the balance would
+    // drop by amount − fee and the customer would be handed amount − fee, so the
+    // fee was booked as income and physically never taken. On a debit the whole
+    // amount leaves and the drawer is what retains the fee — which is also the
+    // only way drawerLeg's expression can hold (design D13).
+    const netAmount = deductFee && entryType === 'credit'
+      ? Math.round((amountNum - feeNum) * 100) / 100
+      : amountNum;
     const totalCharges = (additionalCharges || []).reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
     const totalAmount = netAmount + totalCharges;
-    const entryType = txType.direction === 'in' || txType.direction === 'adjustment' ? 'credit' : 'debit';
 
     const isOwnerFund = txType.code === 'owner_funding' || txType.code === 'owner_return';
     const isOperatingExpense = txType.code === 'operating_expense';
@@ -452,6 +517,16 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     if (providerChargeNum > 0 && finalStatus !== 'completed') {
       throw createError(400, 'A provider charge can only be recorded on a transaction that completes now');
     }
+
+    // Resolved before anything is written, so a branch with no drawer refuses
+    // the whole submission rather than leaving a row whose drawer leg never
+    // landed. A pending row moves nothing yet — its leg belongs to approval,
+    // which is where the money actually leaves (design D5).
+    const counterparty = finalStatus === 'completed'
+      ? await resolveDrawerLeg(
+          accountId, paymentMethodValue, entryType === 'credit' ? totalAmount : -totalAmount, feeNum
+        )
+      : null;
 
     // A pending row withdraws nothing yet, so there is nothing to fund: the
     // balance belongs to approval, which checks it inside the same
@@ -499,7 +574,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       ({ newBalance } = await processTransaction(
         accountId, resolvedTypeId, totalAmount, feeNum, entryType as 'debit' | 'credit',
         transaction!.id, referenceNumber, description, effectiveDate, client,
-        feeAddedToBalance !== false
+        feeAddedToBalance !== false, counterparty
       ));
     }
 
@@ -738,7 +813,12 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
     if (deductFee && amountInput < feeNum) {
       throw createError(400, 'Fee cannot exceed the transaction amount when deducted from transaction amount');
     }
-    const netAmount = deductFee ? round2(amountInput - feeNum) : amountInput;
+    // The same rule as creation: a deducted fee shrinks what a credit lands on,
+    // never what a debit removes (design D13). Editing must reproduce what the
+    // create path would have written, or correcting an amount would quietly
+    // re-price the movement.
+    const isCredit = row.direction === 'in' || row.direction === 'adjustment';
+    const netAmount = deductFee && isCredit ? round2(amountInput - feeNum) : amountInput;
 
     set('amount', round2(amountInput));
     set('fee', feeNum);
@@ -953,18 +1033,29 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be approved');
     if (row.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own request');
 
-    const account = (await client.query(
-      'SELECT id, name, current_balance, status FROM accounts WHERE id = $1 FOR UPDATE',
-      [row.account_id]
-    )).rows[0];
-    if (!account) throw createError(404, 'Account not found');
-    if (account.status !== 'active') throw createError(400, 'Account is not active');
-
     const charges = (row.additional_charges || [])
       .reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
     const totalAmount = parseFloat(row.net_amount || row.amount) + charges;
     const entryType: 'debit' | 'credit' =
       row.direction === 'in' || row.direction === 'adjustment' ? 'credit' : 'debit';
+
+    // Resolved before any account is locked, so this path and the creation path
+    // take the two locks in the same order. Locking the primary first here and
+    // letting processTransaction sort them afterwards would give the two paths
+    // opposite orders whenever the drawer sorts ahead of the wallet.
+    const counterparty = await resolveDrawerLeg(
+      row.account_id, row.payment_method,
+      entryType === 'credit' ? totalAmount : -totalAmount, parseFloat(row.fee || 0)
+    );
+
+    await lockAccounts(client, [row.account_id, ...(counterparty ? [counterparty.accountId] : [])]);
+
+    const account = (await client.query(
+      'SELECT id, name, current_balance, status FROM accounts WHERE id = $1',
+      [row.account_id]
+    )).rows[0];
+    if (!account) throw createError(404, 'Account not found');
+    if (account.status !== 'active') throw createError(400, 'Account is not active');
 
     if (entryType === 'debit' && parseFloat(account.current_balance) < totalAmount) {
       throw createError(400, 'Insufficient balance');
@@ -973,7 +1064,7 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     const { newBalance } = await processTransaction(
       row.account_id, row.transaction_type_id, totalAmount, parseFloat(row.fee || 0), entryType,
       row.id, row.reference_number, row.description, new Date(row.transaction_date), client,
-      row.fee_added_to_balance !== false
+      row.fee_added_to_balance !== false, counterparty
     );
 
     const updated = (await client.query(

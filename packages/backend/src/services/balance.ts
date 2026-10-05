@@ -124,11 +124,15 @@ export function planPostings(
 }
 
 /**
- * Both legs lock two accounts, so two concurrent movements could otherwise take the locks
- * in opposite orders and deadlock. Sorting the ids gives every caller the same order.
+ * Both legs lock two accounts, so two concurrent movements could otherwise take the
+ * locks in opposite orders and deadlock. Sorting the ids gives every caller the same
+ * order, and every place that needs more than one lock goes through here so the rule
+ * cannot drift between them.
  */
-function lockOrder(accountIds: string[]): string[] {
-  return [...accountIds].sort();
+export async function lockAccounts(client: any, accountIds: string[]): Promise<void> {
+  for (const id of [...new Set(accountIds)].sort()) {
+    await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [id]);
+  }
 }
 
 export async function processTransaction(
@@ -149,9 +153,7 @@ export async function processTransaction(
   const postings = planPostings(accountId, entryType, netAmount, counterparty);
 
   if (postings.length > 1) {
-    for (const id of lockOrder(postings.map((p) => p.accountId))) {
-      await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [id]);
-    }
+    await lockAccounts(client, postings.map((p) => p.accountId));
   }
 
   const newBalance = await updateAccountBalance(accountId, netAmount, entryType, client);

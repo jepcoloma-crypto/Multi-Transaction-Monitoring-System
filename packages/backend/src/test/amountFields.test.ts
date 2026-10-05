@@ -83,6 +83,17 @@ test('a fee larger than the amount it is deducted from is refused', () => {
   );
 });
 
+test('a deducted fee never shrinks what a debit removes', () => {
+  const record = transactionRecord({ fee_added_to_balance: false });
+  const result = plan('transaction', record, [debitRow()], { amount: 500 });
+
+  // The whole amount leaves the balance. Shrinking it as well would have taken
+  // the fee from nobody: the balance would drop by 480 and 480 would be handed
+  // over, so the fee was recorded as income and never physically collected.
+  assert.equal(result.columns.net_amount, 500);
+  assert.deepEqual(result.amounts, { a1: 525 });
+});
+
 test('charges are summed and an unreadable charge list is refused, never guessed', () => {
   const result = plan(
     'transaction',

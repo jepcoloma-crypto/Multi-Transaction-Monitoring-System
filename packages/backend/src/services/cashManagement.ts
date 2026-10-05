@@ -84,6 +84,38 @@ export function isMovementPaymentMethod(value: unknown): value is MovementPaymen
   return typeof value === 'string' && (MOVEMENT_PAYMENT_METHODS as readonly string[]).includes(value);
 }
 
+export interface DrawerLeg {
+  amount: number;
+  entryType: 'debit' | 'credit';
+}
+
+// What the drawer does when a movement is settled in physical cash.
+//
+// It moves by what the wallet leg moved plus the fee, in both directions, and
+// that one expression covers every combination of direction and fee mode:
+//
+//   cash-in,  deducted   wallet +490   cash received 500   drawer +500
+//   cash-in,  separate   wallet +500   cash received 510   drawer +510
+//   cash-out, separate   wallet -500   cash handed out 490 drawer -490
+//   cash-out, deducted   wallet -500   cash handed out 490 drawer -490
+//
+// The fee is charged in cash on top of an inflow and retained from an outflow,
+// which is why it adds in both directions rather than being signed with the
+// movement. The last row is the reason a debit may not be shrunk by a deducted
+// fee: had the wallet dropped 490 there, this expression would have produced
+// -480 and 10 would have vanished from the drawer while the income report still
+// counted it as earned.
+//
+// `signedAmount` is the signed wallet leg; `fee` is always positive. Null means
+// nothing physically changed hands and no ledger row should be written.
+export function drawerLeg(signedAmount: number, fee: number): DrawerLeg | null {
+  const delta = Math.round((signedAmount + fee) * 100) / 100;
+  if (delta === 0) return null;
+  return delta > 0
+    ? { amount: delta, entryType: 'credit' }
+    : { amount: -delta, entryType: 'debit' };
+}
+
 // The drawer participates only when the money is physically handed over. A
 // GCash or bank movement lands in the wallet without passing through it, and
 // giving those a drawer leg would double-count the same peso.

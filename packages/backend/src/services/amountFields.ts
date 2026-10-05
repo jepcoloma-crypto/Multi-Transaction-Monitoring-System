@@ -150,7 +150,12 @@ function planTransaction(
     throw createError(400, 'Fee cannot exceed the transaction amount when deducted from the transaction amount');
   }
 
-  const netAmount = deductFee ? round2(amount - fee) : amount;
+  // A deducted fee shrinks what a credit lands on, never what a debit removes
+  // (design D13). The direction comes from the same row the plan already takes
+  // the account from, so a correction reproduces exactly what creation would
+  // have written instead of quietly re-pricing the movement.
+  const isCredit = rows[0]?.entry_type === 'credit';
+  const netAmount = deductFee && isCredit ? round2(amount - fee) : amount;
   const charges = sumCharges(record.additional_charges);
 
   return {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, touchesDrawer } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, touchesDrawer, drawerLeg } from '../services/cashManagement';
 import type { BranchBalance, LedgerFlowRow } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
@@ -218,4 +218,37 @@ test('only physical cash touches the drawer', () => {
   // defaulting to the drawer.
   assert.equal(touchesDrawer(null), false);
   assert.equal(touchesDrawer(undefined), false);
+});
+
+test('the drawer receives the fee on top of an inflow', () => {
+  // Deducted: ₱490 lands in the wallet, ₱500 of physical cash is received.
+  assert.deepEqual(drawerLeg(490, 10), { amount: 500, entryType: 'credit' });
+  // Separate: ₱500 lands and the ₱10 fee is paid in cash on top.
+  assert.deepEqual(drawerLeg(500, 10), { amount: 510, entryType: 'credit' });
+});
+
+test('the drawer keeps the fee on an outflow', () => {
+  // Both fee modes land on the same figure: ₱500 comes out of the wallet and
+  // ₱490 is physically handed over.
+  assert.deepEqual(drawerLeg(-500, 10), { amount: 490, entryType: 'debit' });
+  assert.deepEqual(drawerLeg(-500, 0), { amount: 500, entryType: 'debit' });
+});
+
+test('a deducted fee stays in the drawer instead of disappearing', () => {
+  // The wallet loses ₱500 and ₱490 is handed over, so ₱10 of the withdrawal is
+  // the company's fee and it is still in the drawer. Had the debit been posted
+  // as ₱490, this same expression would have returned −480 and the ₱10 would
+  // have existed nowhere at all while the income report counted it as earned.
+  const leg = drawerLeg(-500, 10)!;
+  assert.equal(leg.amount, 490);
+  assert.equal(Math.abs(-500) - leg.amount, 10);
+});
+
+test('a movement that changes nothing physical writes no drawer row', () => {
+  assert.equal(drawerLeg(0, 0), null);
+});
+
+test('the drawer figure is rounded to centavos rather than left to float error', () => {
+  assert.deepEqual(drawerLeg(0.1 + 0.2, 0), { amount: 0.3, entryType: 'credit' });
+  assert.deepEqual(drawerLeg(-(0.1 + 0.2), 0.01), { amount: 0.29, entryType: 'debit' });
 });
