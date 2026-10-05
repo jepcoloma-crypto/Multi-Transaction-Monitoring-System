@@ -149,8 +149,6 @@ export default function CashManagement() {
   const isApprover = isAdmin || user?.roles?.includes('manager');
   const canWrite = true;
 
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
   const [branchId, setBranchId] = useState('');
 
   const [statement, setStatement] = useState<Statement | null>(null);
@@ -187,9 +185,9 @@ export default function CashManagement() {
     setLoading(true);
     setDrill(null);
     try {
+      // No period here: this screen is a live position and a window belongs to
+      // Reports, not to a drawer count (D18). Only the branch narrows it.
       const params = new URLSearchParams();
-      if (startDate) params.set('startDate', startDate);
-      if (endDate) params.set('endDate', endDate);
       if (branchId) params.set('branchId', branchId);
       const qs = params.toString();
       const result = await api.get<Statement>(`/cash-management/statement${qs ? `?${qs}` : ''}`);
@@ -200,7 +198,7 @@ export default function CashManagement() {
     } finally {
       setLoading(false);
     }
-  }, [startDate, endDate, branchId]);
+  }, [branchId]);
 
   const loadExpenses = useCallback(async () => {
     if (!isApprover) return;
@@ -339,8 +337,6 @@ export default function CashManagement() {
     setDrillLoading(true);
     try {
       const params = new URLSearchParams({ bucket: line.bucket, direction });
-      if (startDate) params.set('startDate', startDate);
-      if (endDate) params.set('endDate', endDate);
       if (branchId) params.set('branchId', branchId);
       const result = await api.get<Drill>(`/cash-management/statement/drill?${params.toString()}`);
       setDrill(result);
@@ -476,33 +472,15 @@ export default function CashManagement() {
         </div>
       </div>
 
-      <div className="card">
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div>
-            <label className="form-label">From</label>
-            <input
-              type="date"
-              className="form-input"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="form-label">To</label>
-            <input
-              type="date"
-              className="form-input"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-            />
-          </div>
+      {branches.length > 1 && (
+        <div className="card">
           {/* Only when there is more than one branch to choose between. With a
               single assigned branch, "All branches I can see" and that branch
               issue the same query, so the control would be two ways of saying
               one thing. Counted rather than keyed on role: an operator may hold
               several branches and a head-office user one, and hiding it by role
               would strand the former with no way to choose. */}
-          {branches.length > 1 && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="form-label">Branch</label>
               <select className="form-input" value={branchId} onChange={(e) => setBranchId(e.target.value)}>
@@ -512,14 +490,9 @@ export default function CashManagement() {
                 ))}
               </select>
             </div>
-          )}
-          <div className="flex items-end">
-            <p className="text-xs text-gray-500">
-              Leave both dates empty to cover all recorded history.
-            </p>
           </div>
         </div>
-      </div>
+      )}
 
       {loadError && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-4">{loadError}</div>
@@ -787,7 +760,7 @@ export default function CashManagement() {
               <table className="w-full mt-2">
                 <tbody className="divide-y divide-gray-100">
                   {statement.sources.length === 0 ? (
-                    <tr><td className="px-4 py-6 text-center text-sm text-gray-500">No inflows in this period.</td></tr>
+                    <tr><td className="px-4 py-6 text-center text-sm text-gray-500">No inflows recorded.</td></tr>
                   ) : statement.sources.map((line) => (
                     <tr key={line.bucket} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm">
@@ -816,7 +789,7 @@ export default function CashManagement() {
               <table className="w-full mt-2">
                 <tbody className="divide-y divide-gray-100">
                   {statement.uses.length === 0 ? (
-                    <tr><td className="px-4 py-6 text-center text-sm text-gray-500">No outflows in this period.</td></tr>
+                    <tr><td className="px-4 py-6 text-center text-sm text-gray-500">No outflows recorded.</td></tr>
                   ) : statement.uses.map((line) => (
                     <tr key={line.bucket} className="hover:bg-gray-50">
                       <td className="px-4 py-3 text-sm">
@@ -868,7 +841,7 @@ export default function CashManagement() {
                   </thead>
                   <tbody className="divide-y divide-gray-100">
                     {drill.rows.length === 0 ? (
-                      <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500">No rows in this period.</td></tr>
+                      <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500">No rows recorded.</td></tr>
                     ) : drill.rows.map((row) => (
                       <tr key={row.id}>
                         <td className="px-4 py-3 text-sm whitespace-nowrap">
