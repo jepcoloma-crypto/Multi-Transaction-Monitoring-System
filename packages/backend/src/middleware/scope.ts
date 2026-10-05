@@ -64,12 +64,43 @@ function accountScope(placeholder: string): string {
   return `(SELECT id FROM accounts WHERE branch_id = ANY(${placeholder}))`;
 }
 
+function accountsInBranch(placeholder: string): string {
+  return `(SELECT id FROM accounts WHERE branch_id = ${placeholder})`;
+}
+
+function scopePredicate(alias: string, link: AccountLink, placeholder: string): string {
+  if (link === 'self') return `${alias}.branch_id = ANY(${placeholder})`;
+  if (link === 'transfer') {
+    const scope = accountScope(placeholder);
+    // Either side, because each branch must reconcile its own half of a
+    // transfer that crosses between them.
+    return `(${alias}.source_account_id IN ${scope} OR ${alias}.destination_account_id IN ${scope})`;
+  }
+  return `${alias}.account_id IN ${accountScope(placeholder)}`;
+}
+
+function filterPredicate(alias: string, link: AccountLink, placeholder: string): string {
+  if (link === 'self') return `${alias}.branch_id = ${placeholder}`;
+  // Source only. A transfer belongs to the branch that funded it, which is
+  // also the branch charged its fee, and one row has to resolve to exactly
+  // one branch or the per-branch subtotals it is grouped into would count
+  // every cross-branch transfer twice.
+  if (link === 'transfer') return `${alias}.source_account_id IN ${accountsInBranch(placeholder)}`;
+  return `${alias}.account_id IN ${accountsInBranch(placeholder)}`;
+}
+
 /**
  * Builds the row-level branch predicate for a query.
  *
  * The branch is resolved from `accounts` rather than stored on child tables
  * so that a transaction can never disagree with its account about which
  * branch it belongs to.
+ *
+ * Two predicates can be returned, and they are not interchangeable. The first
+ * answers "which branches may this caller see" and binds an array; the second
+ * (`branchFilter`) answers "which branch did this caller name" and binds a
+ * scalar. Head office sees every branch, so without the second the filter
+ * would vanish for exactly the callers who use it.
  */
 export function branchClause(
   req: Request,
@@ -77,27 +108,55 @@ export function branchClause(
   permission: string,
   paramIndex: number,
   link: AccountLink = 'account',
+  branchFilter: string | null = null,
 ): { clause: string | null; params: any[]; paramIndex: number } {
-  if (canSeeEveryBranch(req, permission)) {
-    return { clause: null, params: [], paramIndex };
+  const clauses: string[] = [];
+  const params: any[] = [];
+  let pi = paramIndex;
+
+  if (!canSeeEveryBranch(req, permission)) {
+    clauses.push(scopePredicate(alias, link, `$${pi++}`));
+    params.push(requireBranches(req));
   }
 
-  const branchIds = requireBranches(req);
-  const placeholder = `$${paramIndex}`;
-
-  let clause: string;
-  if (link === 'self') {
-    clause = `${alias}.branch_id = ANY(${placeholder})`;
-  } else if (link === 'transfer') {
-    const scope = accountScope(placeholder);
-    // Either side, because each branch must reconcile its own half of a
-    // transfer that crosses between them.
-    clause = `(${alias}.source_account_id IN ${scope} OR ${alias}.destination_account_id IN ${scope})`;
-  } else {
-    clause = `${alias}.account_id IN ${accountScope(placeholder)}`;
+  if (branchFilter) {
+    clauses.push(filterPredicate(alias, link, `$${pi++}`));
+    params.push(branchFilter);
   }
 
-  return { clause, params: [branchIds], paramIndex: paramIndex + 1 };
+  if (clauses.length === 0) return { clause: null, params: [], paramIndex: pi };
+  return { clause: clauses.join(' AND '), params, paramIndex: pi };
+}
+
+/**
+ * Resolves the branch a report was asked to show, or null for "no filter".
+ *
+ * The predicate this feeds into `branchClause` is ANDed with the row scope
+ * every report already applies, so it can only ever remove rows: this is a
+ * report-shaping decision, not an access decision. It answers 404 rather than
+ * letting an unknown or foreign branch fall through as an empty result,
+ * because an empty report and one scoped past what the caller may see must
+ * not be the same sentence -- and because a scoped caller should not be able
+ * to confirm a branch exists either way.
+ *
+ * Scoped with `accounts.read_all` because that is the dimension the filter
+ * acts on: it constrains `accounts.branch_id`, which is where every report
+ * resolves a row's branch from.
+ */
+export async function resolveBranchFilter(req: Request, requested: unknown): Promise<string | null> {
+  const value = typeof requested === 'string' ? requested.trim() : '';
+  if (!value) return null;
+
+  if (!canSeeEveryBranch(req, 'accounts.read_all')) {
+    if (!requireBranches(req).includes(value)) {
+      throw createError(404, 'Branch not found');
+    }
+    return value;
+  }
+
+  const exists = await queryOne<{ id: string }>('SELECT id FROM branches WHERE id = $1', [value]);
+  if (!exists) throw createError(404, 'Branch not found');
+  return value;
 }
 
 /**

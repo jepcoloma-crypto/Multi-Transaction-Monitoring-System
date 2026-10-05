@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { Request } from 'express';
-import { branchClause, canSeeAll } from '../middleware/scope';
+import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
 
 const asRequest = (user: Record<string, unknown>): Request => ({ user } as unknown as Request);
 
@@ -135,4 +135,103 @@ test('a branch user is filtered on every entity they lack read_all for', () => {
     assert.notEqual(scope.clause, null, `${permission} should still be scoped`);
     assert.deepEqual(scope.params, [['br-a', 'br-b']]);
   }
+});
+
+// --- The report branch filter -------------------------------------------
+//
+// A second predicate, not a narrower form of the first: the scope binds an
+// array of every branch the caller may see and disappears entirely for head
+// office, while the filter binds one named branch and is the only thing that
+// still narrows a caller who already sees everything.
+
+test('a named branch binds a scalar beside the scope, in order', () => {
+  const scope = branchClause(branchUser, 't', 'transactions.read_all', 3, 'account', 'br-b');
+
+  assert.equal(
+    scope.clause,
+    't.account_id IN (SELECT id FROM accounts WHERE branch_id = ANY($3)) '
+    + 'AND t.account_id IN (SELECT id FROM accounts WHERE branch_id = $4)',
+  );
+  assert.deepEqual(scope.params, [['br-a', 'br-b'], 'br-b']);
+  assert.equal(scope.paramIndex, 5);
+});
+
+test('a named branch still narrows head office, who has no row scope', () => {
+  // The whole reason this is a separate predicate. Read as part of the scope
+  // it would vanish for exactly the callers who use it, and the picker would
+  // do nothing for the people who can see every branch.
+  const scope = branchClause(headOffice, 't', 'accounts.read_all', 4, 'account', 'br-b');
+
+  assert.equal(scope.clause, 't.account_id IN (SELECT id FROM accounts WHERE branch_id = $4)');
+  assert.deepEqual(scope.params, ['br-b']);
+  assert.equal(scope.paramIndex, 5);
+});
+
+test('an accounts row compares the branch directly rather than ANY', () => {
+  const scope = branchClause(headOffice, 'a', 'accounts.read_all', 1, 'self', 'br-a');
+
+  assert.equal(scope.clause, 'a.branch_id = $1');
+  assert.deepEqual(scope.params, ['br-a']);
+});
+
+test('a named transfer branch is the source side only', () => {
+  // Deliberately not the either-side predicate the scope uses. One row has to
+  // resolve to exactly one branch, or the per-branch subtotals it is grouped
+  // into would count every cross-branch transfer twice.
+  const scope = branchClause(branchUser, 't', 'transfers.read_all', 1, 'transfer', 'br-b');
+
+  assert.equal(
+    scope.clause,
+    '(t.source_account_id IN (SELECT id FROM accounts WHERE branch_id = ANY($1)) '
+    + 'OR t.destination_account_id IN (SELECT id FROM accounts WHERE branch_id = ANY($1))) '
+    + 'AND t.source_account_id IN (SELECT id FROM accounts WHERE branch_id = $2)',
+  );
+  assert.deepEqual(scope.params, [['br-a', 'br-b'], 'br-b']);
+  assert.equal(scope.paramIndex, 3);
+});
+
+test('no named branch leaves the scope byte-for-byte as it was', () => {
+  // The filter is optional, so every existing call site must be unaffected --
+  // including the ones that pass nothing at all.
+  const left = branchClause(branchUser, 't', 'transactions.read_all', 1, 'account', null);
+  const right = branchClause(branchUser, 't', 'transactions.read_all', 1);
+
+  assert.deepEqual(left, right);
+});
+
+test('resolveBranchFilter returns null when no branch was named', async () => {
+  // Emptiness belongs to the resolver, which every route calls before
+  // branchClause does: a whitespace value reaching the SQL builder would
+  // bind `branch_id = '   '` and report an empty page rather than no filter.
+  assert.equal(await resolveBranchFilter(branchUser, undefined), null);
+  assert.equal(await resolveBranchFilter(branchUser, ''), null);
+  assert.equal(await resolveBranchFilter(branchUser, '   '), null);
+});
+
+test('resolveBranchFilter accepts one of the caller own branches without asking the database', async () => {
+  assert.equal(await resolveBranchFilter(branchUser, 'br-b'), 'br-b');
+});
+
+test('resolveBranchFilter refuses a branch outside the caller scope with 404', async () => {
+  // 404 and not 403, matching assertBranch: an empty result and a branch the
+  // caller may not see must not look alike, and the caller must not be able
+  // to tell an existing foreign branch from one that was never created.
+  await assert.rejects(
+    () => resolveBranchFilter(branchUser, 'br-elsewhere'),
+    (err: any) => err.statusCode === 404 && err.message === 'Branch not found',
+  );
+});
+
+test('resolveBranchFilter does not soften a caller with no branches', async () => {
+  const noBranch = asRequest({
+    userId: 'u-none',
+    roles: ['operator'],
+    permissions: ['transactions.read'],
+    branchIds: [],
+  });
+
+  await assert.rejects(
+    () => resolveBranchFilter(noBranch, 'br-a'),
+    (err: any) => err.statusCode === 403,
+  );
 });

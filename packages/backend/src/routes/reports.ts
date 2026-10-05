@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import type { AccountLink } from '../middleware/scope';
-import { branchClause, assertBranch } from '../middleware/scope';
+import { branchClause, assertBranch, resolveBranchFilter } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
 import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../services/incomeReport';
@@ -54,6 +54,10 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
   try {
     const { accountId, startDate, endDate } = req.query;
     if (!accountId) return res.status(400).json({ success: false, error: { message: 'accountId is required' } });
+    // Here the account is the filter, so a branch narrows the account lookup
+    // rather than the entry query: a branch/account pair that contradicts
+    // itself must be an error, never a statement with no rows in it.
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
 
     const conds: string[] = ['le.account_id = $1'];
     const params: any[] = [accountId];
@@ -62,7 +66,10 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
     if (endDate) { conds.push(`le.entry_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
-    const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
+    const account = await queryOne(
+      `SELECT * FROM accounts WHERE id = $1${branchId ? ' AND branch_id = $2' : ''}`,
+      branchId ? [accountId, branchId] : [accountId],
+    );
     await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
     const entries = await query(
       `SELECT le.id, le.entry_type, le.amount, le.balance_after, le.reference_number,
@@ -197,7 +204,8 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
 
 router.get('/balance-reconciliation', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const scope = branchClause(req, 'a', 'accounts.read_all', 1, 'self');
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+    const scope = branchClause(req, 'a', 'accounts.read_all', 1, 'self', branchId);
     const { accounts, entries } = await loadScopedLedger(scope);
 
     res.json({ success: true, data: auditLedger(accounts, entries) });
@@ -207,6 +215,7 @@ router.get('/balance-reconciliation', authorize('reports.read'), async (req: Req
 router.get('/transaction-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { startDate, endDate, accountId, typeId } = req.query;
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
     const conds: string[] = [`t.status NOT IN ($1, 'pending', 'rejected')`];
     const params: any[] = ['reversed'];
     let pi = 2;
@@ -214,7 +223,7 @@ router.get('/transaction-report', authorize('reports.read'), async (req: Request
     if (endDate) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (accountId) { conds.push(`t.account_id = $${pi++}`); params.push(accountId); }
     if (typeId) { conds.push(`t.transaction_type_id = $${pi++}`); params.push(typeId); }
-    const scope = branchClause(req, 't', 'transactions.read_all', pi);
+    const scope = branchClause(req, 't', 'transactions.read_all', pi, 'account', branchId);
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
@@ -250,13 +259,14 @@ router.get('/transaction-report', authorize('reports.read'), async (req: Request
 router.get('/transfer-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { startDate, endDate, status } = req.query;
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
     const conds: string[] = [];
     const params: any[] = [];
     let pi = 1;
     if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
     if (endDate) { conds.push(`t.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (status) { conds.push(`t.status = $${pi++}`); params.push(status); }
-    const scope = branchClause(req, 't', 'transfers.read_all', pi, 'transfer');
+    const scope = branchClause(req, 't', 'transfers.read_all', pi, 'transfer', branchId);
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
     const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
 
@@ -279,13 +289,14 @@ router.get('/transfer-report', authorize('reports.read'), async (req: Request, r
 router.get('/loading-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { startDate, endDate, providerId } = req.query;
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
     const conds: string[] = ["lt.status = 'completed'"];
     const params: any[] = [];
     let pi = 1;
     if (startDate) { conds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
     if (endDate) { conds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (providerId) { conds.push(`lp.provider_id = $${pi++}`); params.push(providerId); }
-    const scope = branchClause(req, 'lt', 'loading.read_all', pi);
+    const scope = branchClause(req, 'lt', 'loading.read_all', pi, 'account', branchId);
     if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); pi = scope.paramIndex; }
     const wc = `WHERE ${conds.join(' AND ')}`;
 
@@ -321,11 +332,14 @@ router.get('/loading-report', authorize('reports.read'), async (req: Request, re
 
 router.get('/consolidated', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const accountScope = branchClause(req, 'accounts', 'accounts.read_all', 1, 'self');
-    const txScope = branchClause(req, 't', 'transactions.read_all', 1);
-    const transferScope = branchClause(req, 'transfers', 'transfers.read_all', 1, 'transfer');
-    const loadingScope = branchClause(req, 'loading_transactions', 'loading.read_all', 1);
-    const reconScope = branchClause(req, 'reconciliations', 'accounts.read_all', 1);
+    // Five independent queries, each with its own param list, so each binds
+    // the same branch at $1 rather than sharing one placeholder across them.
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+    const accountScope = branchClause(req, 'accounts', 'accounts.read_all', 1, 'self', branchId);
+    const txScope = branchClause(req, 't', 'transactions.read_all', 1, 'account', branchId);
+    const transferScope = branchClause(req, 'transfers', 'transfers.read_all', 1, 'transfer', branchId);
+    const loadingScope = branchClause(req, 'loading_transactions', 'loading.read_all', 1, 'account', branchId);
+    const reconScope = branchClause(req, 'reconciliations', 'accounts.read_all', 1, 'account', branchId);
 
     const accountSummary = await queryOne(
       `SELECT COUNT(*) as count, COALESCE(SUM(current_balance), 0) as total_balance FROM accounts WHERE status = 'active'${accountScope.clause ? ` AND ${accountScope.clause}` : ''}`,
@@ -397,16 +411,16 @@ router.get('/balance-trends', authorize('reports.read'), async (req: Request, re
   } catch (error) { next(error); }
 });
 
-type ReversalFilters = { startDate?: unknown; endDate?: unknown; accountId?: unknown };
+type ReversalFilters = { startDate?: unknown; endDate?: unknown; accountId?: unknown; branchId?: string | null };
 
-const reversalScope = (req: Request, { startDate, endDate, accountId }: ReversalFilters) => {
+const reversalScope = (req: Request, { startDate, endDate, accountId, branchId }: ReversalFilters) => {
   const reversals: string[] = [`t.status = 'reversed'`];
   const reversalParams: any[] = [];
   let ri = 1;
   if (startDate) { reversals.push(`rev.created_at >= $${ri++}`); reversalParams.push(startDate); }
   if (endDate) { reversals.push(`rev.created_at < ($${ri++}::date + INTERVAL '1 day')`); reversalParams.push(endDate); }
   if (accountId) { reversals.push(`t.account_id = $${ri++}`); reversalParams.push(accountId); }
-  const reversalScopeClause = branchClause(req, 't', 'transactions.read_all', ri);
+  const reversalScopeClause = branchClause(req, 't', 'transactions.read_all', ri, 'account', branchId ?? null);
   if (reversalScopeClause.clause) { reversals.push(reversalScopeClause.clause); reversalParams.push(...reversalScopeClause.params); }
 
   const requests: string[] = [`pr.entity_type = 'transaction'`];
@@ -415,7 +429,7 @@ const reversalScope = (req: Request, { startDate, endDate, accountId }: Reversal
   if (startDate) { requests.push(`pr.created_at >= $${qi++}`); requestParams.push(startDate); }
   if (endDate) { requests.push(`pr.created_at < ($${qi++}::date + INTERVAL '1 day')`); requestParams.push(endDate); }
   if (accountId) { requests.push(`t.account_id = $${qi++}`); requestParams.push(accountId); }
-  const requestScopeClause = branchClause(req, 't', 'transactions.read_all', qi);
+  const requestScopeClause = branchClause(req, 't', 'transactions.read_all', qi, 'account', branchId ?? null);
   if (requestScopeClause.clause) { requests.push(requestScopeClause.clause); requestParams.push(...requestScopeClause.params); }
 
   return {
@@ -495,12 +509,13 @@ router.get('/reversal-report', authorize('reports.read'), async (req: Request, r
       startDate: req.query.startDate,
       endDate: req.query.endDate,
       accountId: req.query.accountId,
+      branchId: await resolveBranchFilter(req, req.query.branchId),
     });
     res.json({ success: true, data: report });
   } catch (error) { next(error); }
 });
 
-type IncomeFilters = { startDate?: unknown; endDate?: unknown; accountId?: unknown };
+type IncomeFilters = { startDate?: unknown; endDate?: unknown; accountId?: unknown; branchId?: string | null };
 
 // Three income sources on three tables, each with its own date column and its
 // own read scope, so each is aggregated inside the join it belongs to. Accounts
@@ -509,7 +524,7 @@ type IncomeFilters = { startDate?: unknown; endDate?: unknown; accountId?: unkno
 // data loss. Every subquery scopes on its own permission, so this can never
 // reveal more than the individual reports already would.
 const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<IncomeReport> => {
-  const { startDate, endDate, accountId } = filters;
+  const { startDate, endDate, accountId, branchId } = filters;
   const params: any[] = [];
   let pi = 1;
 
@@ -538,7 +553,12 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
 
   const accountConds: string[] = [];
   if (accountId) { accountConds.push(`a.id = $${pi++}`); params.push(accountId); }
-  const accountScope = branchClause(req, 'a', 'accounts.read_all', pi, 'self');
+  // The branch belongs on the account condition alone. The three subqueries
+  // above are uncorrelated aggregates keyed by account and joined to `a`, so
+  // they only ever reach a row the account scope has already admitted; adding
+  // the branch to them as well would filter the same rows twice under two
+  // different placeholder sequences for no change in the result.
+  const accountScope = branchClause(req, 'a', 'accounts.read_all', pi, 'self', branchId ?? null);
   if (accountScope.clause) { accountConds.push(accountScope.clause); params.push(...accountScope.params); pi = accountScope.paramIndex; }
   const accountWhere = accountConds.length > 0 ? `WHERE ${accountConds.join(' AND ')}` : '';
 
@@ -610,7 +630,7 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
 // transfer in the period appears with zeros rather than vanishing, because a
 // per-account report that silently drops accounts reads as data loss.
 const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<ExpenseReport> => {
-  const { startDate, endDate, accountId } = filters;
+  const { startDate, endDate, accountId, branchId } = filters;
   const params: any[] = [];
   let pi = 1;
 
@@ -642,7 +662,10 @@ const loadExpenseReport = async (req: Request, filters: IncomeFilters): Promise<
 
   const accountConds: string[] = [];
   if (accountId) { accountConds.push(`a.id = $${pi++}`); params.push(accountId); }
-  const accountScope = branchClause(req, 'a', 'accounts.read_all', pi, 'self');
+  // Same as loadIncomeReport: the account condition is where the branch
+  // belongs, because the components above are uncorrelated aggregates that
+  // only reach accounts this condition admits.
+  const accountScope = branchClause(req, 'a', 'accounts.read_all', pi, 'self', branchId ?? null);
   if (accountScope.clause) { accountConds.push(accountScope.clause); params.push(...accountScope.params); pi = accountScope.paramIndex; }
   const accountWhere = accountConds.length > 0 ? `WHERE ${accountConds.join(' AND ')}` : '';
 
@@ -696,6 +719,7 @@ router.get('/expense-report', authorize('reports.read'), async (req: Request, re
       startDate: req.query.startDate,
       endDate: req.query.endDate,
       accountId: req.query.accountId,
+      branchId: await resolveBranchFilter(req, req.query.branchId),
     });
     res.json({ success: true, data: report });
   } catch (error) { next(error); }
@@ -707,6 +731,7 @@ router.get('/income-report', authorize('reports.read'), async (req: Request, res
       startDate: req.query.startDate,
       endDate: req.query.endDate,
       accountId: req.query.accountId,
+      branchId: await resolveBranchFilter(req, req.query.branchId),
     });
     res.json({ success: true, data: report });
   } catch (error) { next(error); }
@@ -816,7 +841,11 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
     const { accountId, startDate, endDate } = req.query;
     if (!accountId) return res.status(400).json({ success: false, error: { message: 'accountId is required' } });
 
-    const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+    const account = await queryOne(
+      `SELECT * FROM accounts WHERE id = $1${branchId ? ' AND branch_id = $2' : ''}`,
+      branchId ? [accountId, branchId] : [accountId],
+    );
     await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
 
     const filters = { startDate, endDate };
@@ -873,7 +902,11 @@ router.get('/expense-detail', authorize('reports.read'), async (req: Request, re
     const { accountId, startDate, endDate } = req.query;
     if (!accountId) return res.status(400).json({ success: false, error: { message: 'accountId is required' } });
 
-    const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+    const account = await queryOne(
+      `SELECT * FROM accounts WHERE id = $1${branchId ? ' AND branch_id = $2' : ''}`,
+      branchId ? [accountId, branchId] : [accountId],
+    );
     await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
 
     const filters = { startDate, endDate };
@@ -897,6 +930,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
   try {
     const { type } = req.params;
     const { startDate, endDate, format, accountId, typeId, status, providerId } = req.query;
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
     const fmt = format === 'csv' ? 'csv' : 'json';
 
     let data: any[] = [];
@@ -904,7 +938,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
     let csvTotals: Record<string, unknown> | null = null;
 
     if (type === 'reversal' || type === 'reversals') {
-      const report = await loadReversalReport(req, { startDate, endDate, accountId });
+      const report = await loadReversalReport(req, { startDate, endDate, accountId, branchId });
       data = report.reversals.map((r) => ({
         transaction_number: r.transactionNumber,
         type_name: r.typeName,
@@ -956,7 +990,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (endDate) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
       if (accountId) { conds.push(`t.account_id = $${pi++}`); params.push(accountId); }
       if (typeId) { conds.push(`t.transaction_type_id = $${pi++}`); params.push(typeId); }
-      const scope = branchClause(req, 't', 'transactions.read_all', pi);
+      const scope = branchClause(req, 't', 'transactions.read_all', pi, 'account', branchId);
       if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
       const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
@@ -990,7 +1024,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (startDate) { conds.push(`t.transfer_date >= $${pi++}`); params.push(startDate); }
       if (endDate) { conds.push(`t.transfer_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
       if (status) { conds.push(`t.status = $${pi++}`); params.push(status); }
-      const scope = branchClause(req, 't', 'transfers.read_all', pi, 'transfer');
+      const scope = branchClause(req, 't', 'transfers.read_all', pi, 'transfer', branchId);
       if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
       const wc = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : '';
       data = await query(
@@ -1018,7 +1052,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (startDate) { conds.push(`lt.created_at >= $${pi++}`); params.push(startDate); }
       if (endDate) { conds.push(`lt.created_at < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
       if (providerId) { conds.push(`lp.provider_id = $${pi++}`); params.push(providerId); }
-      const scope = branchClause(req, 'lt', 'loading.read_all', pi);
+      const scope = branchClause(req, 'lt', 'loading.read_all', pi, 'account', branchId);
       if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
       const wc = `WHERE ${conds.join(' AND ')}`;
       data = await query(
@@ -1041,7 +1075,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Date', key: 'created_at' },
       ];
     } else if (type === 'expense') {
-      const report = await loadExpenseReport(req, { startDate, endDate, accountId });
+      const report = await loadExpenseReport(req, { startDate, endDate, accountId, branchId });
       data = report.rows.map((r) => ({
         account_name: r.accountName,
         provider_name: r.providerName ?? '',
@@ -1069,7 +1103,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (report.summary.operatingExpenses) csvTotals.operating_expenses = report.summary.operatingExpenses.toFixed(2);
       if (report.summary.totalExpense) csvTotals.total_expense = report.summary.totalExpense.toFixed(2);
     } else if (type === 'income') {
-      const report = await loadIncomeReport(req, { startDate, endDate, accountId });
+      const report = await loadIncomeReport(req, { startDate, endDate, accountId, branchId });
       data = report.rows.map((r) => ({
         account_name: r.accountName,
         provider_name: r.providerName ?? '',
@@ -1122,7 +1156,10 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       if (!accountId) {
         return res.status(400).json({ success: false, error: { message: 'Select an account to export the account statement.' } });
       }
-      const account = await queryOne('SELECT * FROM accounts WHERE id = $1', [accountId]);
+      const account = await queryOne(
+        `SELECT * FROM accounts WHERE id = $1${branchId ? ' AND branch_id = $2' : ''}`,
+        branchId ? [accountId, branchId] : [accountId],
+      );
       await assertBranch(req, account?.id, 'accounts.read_all', 'Account not found');
       const conds: string[] = ['le.account_id = $1'];
       const params: any[] = [accountId];
