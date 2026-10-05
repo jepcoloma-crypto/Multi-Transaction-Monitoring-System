@@ -577,11 +577,10 @@ required by the repository conventions.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /cash-management/shifts/current?branchId=` | The branch's open shift, or `null` |
+| `GET /cash-management/shifts?status=&branchId=` | Open shifts — each carrying a live expected figure, the drawer's book balance and the gap between them — or closed history. Branch-scoped. |
 | `POST /cash-management/shifts/open` | `{ branchId, openingFloat, notes? }` → creates `open` |
-| `POST /cash-management/shifts/:id/close` | `{ countedClosing, notes? }` → computes expected + variance |
-| `GET /cash-management/shifts/:id/movements` | The cash movements inside the shift window |
-| `GET /cash-management/shifts?status=` | History, branch-scoped |
+| `POST /cash-management/shifts/:id/close` | `{ countedClosing, notes? }` → computes expected and variance, returns both readings |
+| `GET /cash-management/shifts/:id/movements` | The drawer's cash movements inside the shift window |
 
 Permissions reuse the existing vocabulary — `reports.read` to view, `transactions.write` to
 open and close. **No new permission rows.** Opening and closing move no money, so they need

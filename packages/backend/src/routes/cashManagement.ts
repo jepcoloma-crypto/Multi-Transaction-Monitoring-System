@@ -1,10 +1,12 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { query } from '../database/connection';
+import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
-import { branchClause } from '../middleware/scope';
+import { branchClause, canSeeAll } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS } from '../services/cashManagement';
+import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS } from '../services/shifts';
 import type { BranchBalance, CashBucket, LedgerFlowRow } from '../services/cashManagement';
+import type { ShiftMovement } from '../services/shifts';
 
 const router = Router();
 
@@ -259,6 +261,246 @@ router.get('/expenses/pending', authorize('transactions.approve'), async (req: R
     );
 
     res.json({ success: true, data: { data: rows } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// --- Shifts ---------------------------------------------------------------
+//
+// Opening and closing record what was counted. Neither writes a balance and
+// neither writes a ledger row: the expected figure is arithmetic over movements
+// that already exist, so a discrepancy stays an event to investigate instead of
+// a balance somebody adjusted away (design D14).
+//
+// Permissions are the existing vocabulary — reports.read to look, transactions
+// to open and close — so no new permission row is needed. Neither endpoint
+// moves money, so neither carries an approval gate of its own.
+
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+// A shift belongs to a branch directly rather than reaching it through an
+// account, so assertBranch — which resolves a branch from account ids — cannot
+// be used for it. Head office may act on any branch; anyone else only on one of
+// their own, and 404 rather than 403 so a caller cannot use the response to
+// prove a branch exists outside their own.
+async function assertShiftBranch(req: Request, branchId: string, notFoundMessage: string): Promise<void> {
+  if (!branchId) throw createError(400, 'Branch is required');
+  if (!canSeeAll(req, 'branches.read_all')) {
+    const branchIds = req.user?.branchIds ?? [];
+    if (branchIds.length === 0) throw createError(403, 'No branch is assigned to your account');
+    if (!branchIds.includes(branchId)) throw createError(404, notFoundMessage);
+  }
+  const exists = await queryOne<{ id: string }>('SELECT id FROM branches WHERE id = $1', [branchId]);
+  if (!exists) throw createError(404, notFoundMessage);
+}
+
+// The drawer's own movements inside a window. Keyed on the branch's cash-type
+// accounts rather than on one named account, because the drawer is the branch's
+// physical cash whether or not it happens to be split across two of them — and
+// anything that touched physical cash has to be in the count.
+async function drawerMovements(branchId: string, from: Date, to: Date): Promise<ShiftMovement[]> {
+  return query<ShiftMovement>(
+    `SELECT l.entry_type, l.amount
+     FROM ledger_entries l
+     JOIN accounts a ON a.id = l.account_id
+     JOIN account_types ct ON ct.id = a.account_type_id
+     WHERE ct.code = 'cash' AND a.branch_id = $1
+       AND l.entry_date >= $2 AND l.entry_date < $3`,
+    [branchId, from.toISOString(), to.toISOString()],
+  );
+}
+
+async function drawerBalance(branchId: string): Promise<number> {
+  const row = await queryOne<{ balance: string }>(
+    `SELECT COALESCE(SUM(a.current_balance), 0) AS balance
+     FROM accounts a
+     JOIN account_types t ON t.id = a.account_type_id
+     WHERE t.code = 'cash' AND a.branch_id = $1`,
+    [branchId],
+  );
+  return num(row?.balance);
+}
+
+router.get('/shifts', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = req.query.status === 'open' || req.query.status === 'closed' ? req.query.status : null;
+    const branchFilter = req.query.branchId ? String(req.query.branchId) : null;
+
+    const params: any[] = [];
+    const conds: string[] = [];
+    const scope = branchClause(req, 's', 'reports.read', 1, 'self');
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+    }
+    if (status) {
+      conds.push(`s.status = $${params.length + 1}`);
+      params.push(status);
+    }
+    if (branchFilter) {
+      conds.push(`s.branch_id = $${params.length + 1}`);
+      params.push(branchFilter);
+    }
+
+    const rows = await query<any>(
+      `SELECT s.*, b.code AS branch_code, b.name AS branch_name,
+              ou.username AS opened_by_username, cu.username AS closed_by_username
+       FROM shifts s
+       JOIN branches b ON b.id = s.branch_id
+       LEFT JOIN users ou ON ou.id = s.opened_by
+       LEFT JOIN users cu ON cu.id = s.closed_by
+       ${conds.length ? `WHERE ${conds.join(' AND ')}` : ''}
+       ORDER BY s.opened_at DESC
+       LIMIT 200`,
+      params,
+    );
+
+    // An open shift's expected figure is not known until it closes, so it is
+    // computed live for the banner. A closed one carries its own.
+    const now = new Date();
+    const data = [];
+    for (const row of rows) {
+      if (row.status !== 'open') {
+        data.push({ ...row, live: null });
+        continue;
+      }
+      const movements = await drawerMovements(row.branch_id, new Date(row.opened_at), now);
+      const expected = expectedClosing(row.opening_float, movements);
+      const balance = await drawerBalance(row.branch_id);
+      data.push({
+        ...row,
+        live: {
+          movementCount: movements.length,
+          netMovement: netMovement(movements),
+          expected,
+          drawerBalance: balance,
+          drawerDifference: round2(expected - balance),
+        },
+      });
+    }
+
+    res.json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/shifts/open', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = req.body || {};
+    const branchId = String(body.branchId || '');
+    await assertShiftBranch(req, branchId, 'Branch not found');
+
+    const openingFloat = parseFloat(String(body.openingFloat ?? ''));
+    if (!Number.isFinite(openingFloat)) throw createError(400, 'Opening float must be a number');
+    if (openingFloat < 0) throw createError(400, 'Opening float cannot be negative');
+
+    let shift;
+    try {
+      shift = await queryOne(
+        `INSERT INTO shifts (branch_id, opening_float, opened_by, notes)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [branchId, round2(openingFloat), req.user!.userId, body.notes ? String(body.notes).trim() || null : null],
+      );
+    } catch (err: any) {
+      // The partial unique index is the real guard. Checked here as well so the
+      // refusal is a sentence instead of a foreign-key style error, but the
+      // index is what makes it hold when two terminals open at once.
+      if (err?.code === '23505') throw createError(409, 'This branch already has an open shift');
+      throw err;
+    }
+
+    res.status(201).json({ success: true, data: shift });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const shift = await queryOne<any>('SELECT * FROM shifts WHERE id = $1', [req.params.id]);
+    if (!shift) throw createError(404, 'Shift not found');
+    await assertShiftBranch(req, shift.branch_id, 'Shift not found');
+    if (shift.status !== 'open') throw createError(400, 'This shift is already closed');
+
+    const body = req.body || {};
+    const countedClosing = parseFloat(String(body.countedClosing ?? ''));
+    if (!Number.isFinite(countedClosing)) throw createError(400, 'Counted closing cash must be a number');
+    if (countedClosing < 0) throw createError(400, 'Counted closing cash cannot be negative');
+
+    const movements = await drawerMovements(shift.branch_id, new Date(shift.opened_at), new Date());
+    const report = classifyVariance(shift.opening_float, movements, countedClosing);
+    const balance = await drawerBalance(shift.branch_id);
+
+    // Guarded on status so two people closing at once cannot both write: the
+    // second finds no open row and is refused.
+    const updated = await queryOne<any>(
+      `UPDATE shifts
+       SET status = 'closed', counted_closing = $1, expected_closing = $2, variance = $3,
+           closed_at = NOW(), closed_by = $4, notes = COALESCE($5, notes), updated_at = NOW()
+       WHERE id = $6 AND status = 'open'
+       RETURNING *`,
+      [
+        report.counted, report.expected, report.variance,
+        req.user!.userId, body.notes ? String(body.notes).trim() || null : null, shift.id,
+      ],
+    );
+    if (!updated) throw createError(409, 'This shift was already closed by someone else');
+
+    res.json({
+      success: true,
+      data: {
+        ...updated,
+        varianceLabel: VARIANCE_LABELS[report.status],
+        // The second reading. Expected comes from the counted float plus
+        // movements; this is what the books say the drawer holds. They are
+        // derived from different things precisely so they can disagree, and a
+        // non-zero difference is the signal that the float or the movements are
+        // wrong (design D16).
+        drawerBalance: balance,
+        drawerDifference: round2(report.expected - balance),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/shifts/:id/movements', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const shift = await queryOne<any>('SELECT * FROM shifts WHERE id = $1', [req.params.id]);
+    if (!shift) throw createError(404, 'Shift not found');
+    await assertShiftBranch(req, shift.branch_id, 'Shift not found');
+
+    const from = new Date(shift.opened_at);
+    const to = shift.closed_at ? new Date(shift.closed_at) : new Date();
+
+    const rows = await query<any>(
+      `SELECT l.id, l.entry_date, l.entry_type, l.amount, l.balance_after, l.source_type,
+              l.reference_number, l.description, a.name AS account_name,
+              t.transaction_number, t.payee, tt.code AS txn_code
+       FROM ledger_entries l
+       JOIN accounts a ON a.id = l.account_id
+       JOIN account_types ct ON ct.id = a.account_type_id
+       LEFT JOIN transactions t ON t.id = l.transaction_id
+       LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       WHERE ct.code = 'cash' AND a.branch_id = $1
+         AND l.entry_date >= $2 AND l.entry_date < $3
+       ORDER BY l.entry_date, l.id`,
+      [shift.branch_id, from.toISOString(), to.toISOString()],
+    );
+
+    res.json({
+      success: true,
+      data: {
+        shift,
+        netMovement: netMovement(rows),
+        expected: expectedClosing(shift.opening_float, rows),
+        rows,
+      },
+    });
   } catch (error) {
     next(error);
   }
