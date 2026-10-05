@@ -2,8 +2,23 @@
 
 Status: **Phases A–E implemented and deployed** (migrations 034/035 applied to production,
 engine, endpoints, Cash Management page, Expense report component — commits `b3d8faf`,
-`3a5005e`, `8a0f176`). Sections 10 onward specify the **next** piece: drawer participation
-and shifts, approved but not yet written.
+`3a5005e`, `8a0f176`).
+
+Sections 10 onward — drawer participation and shifts — are **written and implemented but not
+deployed**: six local commits (`5f7c310`, `8ad0a9f`, `923395c`, `24bab3c`, `53c6b6c`,
+`fbfe733`), migrations 036 and 037 written but **not applied**, nothing pushed. The order
+they go live in is forced, not preferred:
+
+1. **Fund the revolving funds first**, using the code as it runs today. F3 gives the drawer
+   a ledger leg, and a leg that cannot be paid is refused: with both drawers at ₱0 every
+   cash movement reaching them would fail the moment it is deployed. Owner funding does not
+   need this code — it posts straight to the cash account.
+2. **Apply migrations 036 and 037** before the backend restarts, or the shift screen finds
+   no `shifts` table. It reports that gracefully, but it is a wasted deployment.
+3. **Frontend before backend.** The New Transaction form only gained the payment-method
+   field in `fbfe733`; the running backend does not require one. Reverse that order and
+   every cash-in and cash-out is refused with *"needs a payment method"* until the frontend
+   follows — this is the one ordering that breaks production rather than degrading it.
 
 Scope: model the company's funds flow — sources, uses, revolving-fund reconciliation and
 per-branch cash position — and add the one flow the system cannot record today: operating
