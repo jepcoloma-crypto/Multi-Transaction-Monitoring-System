@@ -20,6 +20,24 @@ they go live in is forced, not preferred:
    every cash-in and cash-out is refused with *"needs a payment method"* until the frontend
    follows — this is the one ordering that breaks production rather than degrading it.
 
+**How production loads backend code** (established the hard way, and the reason the steps
+above read differently from how they were first written): `ecosystem.config.js` runs
+`node_modules/ts-node/dist/bin.js packages/backend/src/index.ts` with `watch: false`. PM2
+compiles `packages/backend/src` **in the running process**. `npm run build` writes
+`packages/backend/dist`, and that is what `npm test` executes — it is not what serves
+traffic. So:
+
+- There is no build step between editing a file and production. The next process start
+  serves whatever is in the working tree, and starts are not rare: `max_memory_restart`
+  is `256M` and this backend sits close to it, so the process recycles on its own.
+- Correcting `dist` protects the test suite, not the API. Unshipped source reached
+  production during the first build of this piece and stayed there until it was noticed;
+  nothing had failed yet only because no cash movement had been attempted since, which
+  is luck rather than safety.
+
+Read the order above as: apply the migrations while the working tree still holds the old
+source, then let the tree change.
+
 Scope: model the company's funds flow — sources, uses, revolving-fund reconciliation and
 per-branch cash position — and add the one flow the system cannot record today: operating
 expenses paid from actual cash on hand.
