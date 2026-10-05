@@ -1,6 +1,9 @@
 # Cash Management Module — Design
 
-Status: **proposed, not implemented.** No code in this document has been written.
+Status: **Phases A–E implemented and deployed** (migrations 034/035 applied to production,
+engine, endpoints, Cash Management page, Expense report component — commits `b3d8faf`,
+`3a5005e`, `8a0f176`). Sections 10 onward specify the **next** piece: drawer participation
+and shifts, approved but not yet written.
 
 Scope: model the company's funds flow — sources, uses, revolving-fund reconciliation and
 per-branch cash position — and add the one flow the system cannot record today: operating
@@ -354,3 +357,313 @@ move money** and should be built and reviewed on its own.
    reversal approval. Confirm a company wallet should never legitimately go negative.
 5. **`expense` (provider charge) is declared but has 0 rows.** Is that path actually in use,
    or dead code that should be reconciled separately?
+
+---
+
+## 10. The drawer gap
+
+Everything in sections 1–9 shipped. Section 9's question 1 (the float's opening figure) is
+still open, and it is the reason the next piece exists: **the `cash` accounts hold ₱0 and
+have never held anything.**
+
+Measured against production, 5 Oct 2026:
+
+```
+ledger rows on cash-type accounts      0      ← ever
+Revolving Fund — MAIN / RM        ₱0.00 / ₱0.00
+```
+
+`processTransaction` — the single choke point every transaction already passes through —
+posts **one row, to one account**:
+
+```ts
+const netAmount = amount;                                     // fee: accepted, never read
+const newBalance = await updateAccountBalance(accountId, netAmount, entryType, client);
+await createLedgerEntry(accountId, entryType, netAmount, newBalance, ...);
+```
+
+Consequences, all measured:
+
+| | Count | Gross |
+|---|---:|---:|
+| `cash_in` | 60 | ₱124,055 |
+| `cash_out` | 48 | ₱105,940 |
+| **net physical cash** | | **₱18,115** |
+| transactions carrying a fee | 114 | ₱2,950 recorded, **₱0 ever posted** |
+
+The drawer is not merely unstocked — **its leg of every cash movement was never written.**
+`payment_method` is `NULL` on all 108 of those rows, so history cannot be classified.
+
+Two terms also collide, and the collision must be resolved before anything counts against
+it: the page headline *"Cash on hand now ₱122,372"* is `Σ` of all 17 balances (bank +
+e-wallet + cash), while *cash on hand* in the business means **the drawer**. Different
+numbers, same words.
+
+---
+
+## 11. Design decisions
+
+### D9 — The drawer gets a counterparty leg, not a rewrite
+
+`processTransaction` gains an **optional counterparty account**. When present it posts a
+second `ledger_entries` row and updates the second balance, inside the same client
+transaction as the first.
+
+**Why a second row rather than a new table:** the drawer must appear in the Statement of
+Account with a reconstructible `balance_after`, and must be reachable by branch scoping,
+reconciliation and reversal. All four already work for ledger rows. A side table would get
+none of them.
+
+The tie-out survives by construction — every balance change still has a matching row — so
+`opening + Σsources − Σuses = current` continues to hold per branch and in total.
+
+### D10 — The leg is gated by payment method
+
+`paymentMethodOptions` already distinguishes the four ways money arrives:
+
+| Method | Drawer participates? |
+|---|---|
+| `cash` | **yes** — the operator physically takes from or receives into the drawer |
+| `gcash`, `bank`, `maya` | no — the money lands in the e-wallet or bank account directly |
+
+This is the business rule verbatim: *if a customer cashes out, the operator takes the money
+from the cash on hand.* It only applies when the movement is physical cash.
+
+### D11 — `payment_method` becomes mandatory; history is never backfilled
+
+Going forward `payment_method` is `NOT NULL` on cash movements, because the drawer leg
+cannot be decided without it. The 108 historical rows stay `NULL` and stay single-leg.
+
+**Why not backfill:** classifying them would mean *deciding* which of them were physical
+cash, and the system has no record of it. Inferring it would be fabricated data, which this
+system does not do. All existing statements, reports and balances are therefore unchanged.
+
+### D12 — The fee lands in the drawer *and* stays report income
+
+Business answer, recorded: **"report as income and add the charge in cash drawer."**
+
+The fee does two things and never one at the expense of the other:
+
+- **Income report unchanged** — it reads `t.fee` and reports `₱2,950` exactly as before.
+- **The peso is physically retained in the drawer** — it now has a ledger leg.
+
+Both existing modes collapse to one formula:
+
+```
+drawer_delta = wallet_delta + fee
+```
+
+| Mode | Wallet | Physical cash | Drawer | Fee |
+|---|---:|---:|---:|---:|
+| Cash-in, deducted | +490 | 500 | **+500** | 10 retained |
+| Cash-in, separate | +500 | 510 | **+510** | 10 retained |
+| Cash-out, separate | −500 | 490 | **−490** | 10 retained |
+| Cash-out, deducted | −500 | 490 | **−490** | 10 retained |
+
+> ⚠️ A peso now appears in *both* the Income report and the cash statement. That is
+> correct — they answer different questions, as section 1 states — but **the two must
+> never be added together.** Recorded here so no future report does so by accident.
+
+### D13 — Deducted mode must not shrink a debit
+
+Today `netAmount = amount − fee` is posted for **both** directions. For a cash-out that
+means the wallet drops ₱490 and ₱490 is handed over: **the ₱10 fee is collected from
+nobody**, while the Income report books it as earned. A recorded income that was never
+physically collected is a hole in the books.
+
+Corrected, and it is the only change to existing posting behaviour in this section:
+
+| Direction | Posted to wallet |
+|---|---|
+| credit | `amount − fee` — *already correct* |
+| debit | **`amount`** — *corrected*; customer receives `amount − fee`, `fee` stays in the drawer |
+
+Without this, `drawer_delta = wallet_delta + fee` cannot hold for cash-outs.
+
+### D14 — A shift is a count, never a movement
+
+Opening and closing record **what was counted**. Neither writes a balance and neither writes
+a ledger row. The expected figure is arithmetic over movements that already exist:
+
+```
+expected closing = counted opening float + Σ cash in during shift − Σ cash out during shift
+variance         = counted closing − expected closing
+```
+
+**Why a count must not move money:** a discrepancy is an event needing investigation, not a
+balance to be adjusted. This is the same shape `reconciliations` already uses
+(`expected_balance`, `actual_balance`, `variance`, `status`), at branch granularity instead
+of per account.
+
+### D15 — One open shift per branch
+
+A branch's drawer has one physical state, so it can have exactly one open shift — enforced
+by a partial unique index, not by application code alone. Anyone working the branch operates
+under it; `opened_by` is accountable for the close.
+
+### D16 — Two readings, deliberately cross-checked
+
+The shift's expected figure comes from **its own counted opening float plus movements**.
+The drawer's `current_balance` is a **separate** reading that must converge on it. When they
+disagree, that is the signal the drawer leg or the counting is wrong — so both are shown,
+and neither is derived from the other.
+
+This is why the drawer must be real before the first shift opens: counting against a ₱0
+drawer would report a false variance on every single shift, and a reconciliation that is
+always wrong is one operators learn to ignore.
+
+---
+
+## 12. Data model changes (migration 036)
+
+1. **`payment_method`** — a value check on `transactions`:
+   `CHECK (payment_method IS NULL OR payment_method IN ('cash','gcash','bank','maya','provider_interest'))`.
+   Every value already stored satisfies it (`bank` 2, `provider_interest` 1, `gcash` 1,
+   `NULL` 125), so it validates the existing rows without a rewrite.
+
+   **A `NOT NULL` check scoped to the cash-movement codes was specified here and is now
+   rejected.** It would have been declared `NOT VALID` to spare the 108 historical `NULL`
+   rows, but `NOT VALID` still constrains *updates*, and reversing or editing a transaction
+   rewrites the original row (`transactions.ts` lines 798, 1095 and 728). Every historical
+   cash movement would have become un-reversible the moment the migration ran. Presence is
+   instead enforced where the row is created, and the column-level constraint guarantees
+   only that a stored value is one the system understands — which is what stops the drawer
+   gate from silently skipping an unrecognised code.
+
+2. **Application-level presence** — `cash_in`, `cash_out`, `customer_payment`,
+   `customer_withdrawal` require `paymentMethod` on create, restricted to `cash` / `gcash` /
+   `bank` / `maya`. On those types a stored payment method may be edited but not cleared.
+
+3. **`shifts`** table:
+
+   ```sql
+   id               UUID PK DEFAULT gen_random_uuid()
+   branch_id        UUID NOT NULL REFERENCES branches(id)
+   status           TEXT NOT NULL CHECK (status IN ('open','closed'))
+   opening_float    NUMERIC(15,2) NOT NULL CHECK (opening_float >= 0)
+   opened_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+   opened_by        UUID NOT NULL REFERENCES users(id)
+   counted_closing  NUMERIC(15,2)           -- NULL while open
+   expected_closing NUMERIC(15,2)           -- computed at close
+   variance         NUMERIC(15,2)           -- counted − expected
+   closed_at        TIMESTAMPTZ
+   closed_by        UUID REFERENCES users(id)
+   notes            TEXT
+   created_at / updated_at
+   ```
+
+   **Partial unique index:** `UNIQUE (branch_id) WHERE status = 'open'`.
+
+4. **Down migration** reverses exactly: drop `shifts`, drop the value check. No
+   `accounts`, `transactions` or `ledger_entries` column changes.
+
+`TIMESTAMPTZ` throughout, `NUMERIC` for all money, UUID PK, `createdAt`/`updatedAt` — as
+required by the repository conventions.
+
+---
+
+## 13. API surface
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /cash-management/shifts/current?branchId=` | The branch's open shift, or `null` |
+| `POST /cash-management/shifts/open` | `{ branchId, openingFloat, notes? }` → creates `open` |
+| `POST /cash-management/shifts/:id/close` | `{ countedClosing, notes? }` → computes expected + variance |
+| `GET /cash-management/shifts/:id/movements` | The cash movements inside the shift window |
+| `GET /cash-management/shifts?status=` | History, branch-scoped |
+
+Permissions reuse the existing vocabulary — `reports.read` to view, `transactions.write` to
+open and close. **No new permission rows.** Opening and closing move no money, so they need
+no approval gate of their own; the variance they produce is what gets investigated.
+
+---
+
+## 14. UI surface
+
+On the existing **Cash Management** page:
+
+1. **Headline split** — `Cash on hand now ₱122,372` is renamed to *Total funds on the
+   books*; the drawer gets its own figure: *Cash in branch*. The two are never summed.
+2. **Shift banner** — closed → an **Open shift** form (float + date + notes); open → the
+   current shift with elapsed time and a **Close shift** action.
+3. **Close dialog** — enter counted cash, and show **before confirming**:
+   ```
+   counted opening    ₱10,000.00
+   + cash in          ₱ 2,400.00
+   − cash out         ₱   900.00
+   = expected         ₱11,500.00
+   counted            ₱11,450.00
+   variance           ₱   −50.00   ← SHORT
+   ```
+4. **Variance badge** — `BALANCED` / `OVER` / `SHORT`, echoing the reconciliation badge
+   vocabulary already in use.
+
+---
+
+## 15. Acceptance criteria
+
+- **GIVEN** a cash-out of ₱500 with a ₱10 deducted fee **WHEN** it completes **THEN** the
+  wallet drops ₱500, the drawer drops ₱490, and one ledger row exists for each
+- **GIVEN** a cash-out with `payment_method='gcash'` **WHEN** it completes **THEN** only the
+  wallet row is written — no drawer row
+- **GIVEN** a cash movement with `payment_method` absent **WHEN** submitted **THEN** `400`
+  naming the field, with nothing written
+- **GIVEN** a completed cash movement **WHEN** either edit or delete is attempted **THEN**
+  refused; correction remains an appended reversal
+- **GIVEN** any branch and any period **WHEN** the statement is computed **THEN**
+  `opening + Σsources − Σuses = current` to the centavo, per branch and in total
+- **GIVEN** historical transactions **WHEN** the statement is recomputed for a past period
+  **THEN** every figure is byte-identical to its value before this work
+- **GIVEN** a second shift opened at the same branch **WHEN** submitted **THEN** refused by
+  the partial unique index, not merely by a UI check
+- **GIVEN** a shift opened at ₱10,000 with ₱2,400 in and ₱900 out **WHEN** closed counting
+  ₱11,450 **THEN** expected is ₱11,500 and variance is −₱50.00, reported as `SHORT`
+- **GIVEN** a shift close **WHEN** it completes **THEN** no balance and no ledger row has
+  changed — the count wrote only `shifts`
+- **GIVEN** the Income tab **WHEN** fees have drawer legs **THEN** `totalIncome` is
+  unchanged at its pre-existing figure
+
+---
+
+## 16. Phasing — one piece, fixed internal order
+
+| Phase | Deliverable | Moves money? |
+|---|---|---|
+| **F1** | Counterparty leg in `processTransaction` + unit tests on the pure aggregation | **yes** — reviewed alone |
+| **F2** | `payment_method` mandatory, gating the leg | no (constraint only) |
+| **F3** | Fee retained in the drawer; D13 debit correction | **yes** — reviewed alone |
+| **G1** | Migration 036 — `shifts` table | no (schema only) |
+| **G2** | Shift endpoints + pure expected/variance engine + tests | no (read + count) |
+| **G3** | Shift UI, headline split, close dialog | no |
+
+**The order is the safety property.** Shifts are a reconciliation, and a reconciliation
+against a drawer that reads ₱0 produces only a false variance. The first shift must not open
+until F1–F3 have made the drawer real.
+
+Phases F1 and F3 are the only two that can move money. Each is built and reviewed on its
+own, exactly as Phase B was.
+
+---
+
+## 17. Questions resolved since §9
+
+| # | Question | Resolution |
+|---|---|---|
+| 1 | Opening balance for the float | **Shift opening float** is the mechanism — the operator enters the physical count when opening the first shift. No manual balance edit. |
+| 2 | Expense categories | Reuse the nine existing codes; nothing seeded. *(delivered)* |
+| 3 | May an expense debit any wallet? | Any visible wallet, revolving fund preselected — matching this user's branch. *(delivered)* |
+| 4 | Overdraft | Blocked by the existing guard. *(delivered)* |
+| 5 | `expense` provider-charge path, 0 rows | **Still open** — worth a separate look; it also has no fee-rule guard. |
+
+New, carried into implementation:
+
+1. **Is `Σ account balances` still a meaningful figure once both legs post?** The accounts
+   were confirmed company-owned in §1. Posting both legs makes the statement report *gross*
+   movement rather than net, which is correct for *"where did cash move"* but inflates
+   Sources and Uses. **Accept, and label the headline accordingly** — or, if the figure is
+   meant to be net company funds, the statement needs a netting view. Flagged rather than
+   assumed: the tie-out holds either way, so this is a reporting question, not a
+   correctness one.
+2. **`payment_method` on operating expenses** — an expense paid from the drawer is
+   physical by definition. Confirm it should be forced to `cash` when the account is
+   `cash`-typed, rather than left to the operator.
