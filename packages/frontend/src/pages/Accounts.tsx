@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, localDateValue, paymentMethodLabel, paymentMethodOptions } from '../lib/format';
+import { formatCurrency, manilaDateValue, manilaDateTimeValue, paymentMethodLabel, paymentMethodOptions } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign, Trash2, Undo2 } from 'lucide-react';
 
@@ -65,7 +65,7 @@ export default function Accounts() {
   const [fundsMode, setFundsMode] = useState<'in' | 'out'>('in');
   const [addFundsAccount, setAddFundsAccount] = useState<Account | null>(null);
   const [addFundsForm, setAddFundsForm] = useState({
-    amount: '', description: '', date: localDateValue(), method: 'cash', reference: '',
+    amount: '', description: '', date: manilaDateValue(), method: 'cash', reference: '',
   });
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
@@ -244,7 +244,9 @@ export default function Accounts() {
         feeAddedToBalance: true,
         referenceNumber: addFundsForm.reference || null,
         description,
-        transactionDate: `${addFundsForm.date}T${new Date().toTimeString().slice(0, 8)}`,
+        // The day the operator picked, stamped with Manila's clock rather than
+        // the browser's — this host runs UTC+3 and would record 11:00 for 14:00.
+        transactionDate: `${addFundsForm.date}T${manilaDateTimeValue().slice(11)}`,
         paymentMethod: addFundsForm.method,
         feeRuleId: null,
       });
@@ -264,7 +266,7 @@ export default function Accounts() {
   };
 
   const resetFundsForm = () => setAddFundsForm({
-    amount: '', description: '', date: localDateValue(), method: 'cash', reference: '',
+    amount: '', description: '', date: manilaDateValue(), method: 'cash', reference: '',
   });
 
   const openFunds = (account: Account, mode: 'in' | 'out') => {

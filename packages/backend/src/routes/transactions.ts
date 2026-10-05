@@ -9,6 +9,7 @@ import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccoun
 import type { CounterpartyLeg } from '../services/balance';
 import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg } from '../services/cashManagement';
 import { calculateTieredFee } from '../services/feeCalc';
+import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -164,9 +165,12 @@ router.get('/summary', authorize('transactions.read'), async (req: Request, res:
 
 router.get('/today', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const today = new Date().toISOString().slice(0, 10);
+    // Manila's day, stated the same way the query below states it. One side a
+    // UTC slice and the other Manila would disagree for eight hours every night.
+    const today = manilaDateKey();
     const scope = branchClause(req, 't', 'transactions.read_all', 2);
-    const todayWhere = `WHERE DATE(t.transaction_date) = $1${scope.clause ? ` AND ${scope.clause}` : ''}`;
+    const todayWhere =
+      `WHERE (t.transaction_date AT TIME ZONE 'Asia/Manila')::date = $1${scope.clause ? ` AND ${scope.clause}` : ''}`;
     const todayParams: any[] = [today, ...scope.params];
     const summary = await queryOne(
       `SELECT
@@ -367,6 +371,14 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       paymentMethod, providerCharge, payee,
     } = req.body;
 
+    // Parsed once and reused three times — the shift gate, the row and the
+    // ledger entry have to agree on the instant, or a movement can pass the
+    // gate for one day and be recorded on another. Read in Manila rather than
+    // in this host's UTC+3: an entry typed for 00:30 would otherwise land five
+    // hours early, in the previous operator's day.
+    const bookedAt = transactionDate ? parseManilaDateTime(String(transactionDate)) : null;
+    if (transactionDate && !bookedAt) throw createError(400, 'Invalid transaction date');
+
     let resolvedTypeId = transactionTypeId;
     let resolvedCategoryId = transactionCategoryId || null;
 
@@ -439,8 +451,10 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // Before anything is written, and before the payment-method question: if the
     // branch is shut there is nothing an operator can fix by filling in a field
     // (D17). Owner funding is exempt inside the guard — it is how the drawer
-    // gets funded in the first place.
-    await assertOpenShift(accountId, txType.code);
+    // gets funded in the first place. The date the row will carry is checked
+    // against the shift's date here, so a mistyped day is caught before any of
+    // the balance work below rather than after it.
+    await assertOpenShift(accountId, txType.code, { eventDate: bookedAt });
 
     // A cash movement is not recorded until the operator says how the money
     // actually changed hands, because that is what decides whether the drawer
@@ -568,7 +582,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       [
         txNumber!.nextval, accountId, resolvedTypeId, resolvedCategoryId,
         amountNum, feeNum, netAmount, referenceNumber || null, externalReference || null,
-        transactionDate || new Date(), description || null,
+        bookedAt ?? new Date(), description || null,
         customerName || null, customerContact || null, finalStatus, req.user!.userId,
         feeAddedToBalance !== false, JSON.stringify(additionalCharges || []), notes || null, customerId || null,
         paymentMethodValue, payee || null,
@@ -576,7 +590,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     );
 
     let newBalance: number | undefined;
-    const effectiveDate = new Date(transactionDate || Date.now());
+    const effectiveDate = bookedAt ?? new Date();
     if (finalStatus === 'completed') {
       ({ newBalance } = await processTransaction(
         accountId, resolvedTypeId, totalAmount, feeNum, entryType as 'debit' | 'credit',
@@ -655,7 +669,7 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
     await client.query('BEGIN');
 
     const originalRes = await client.query(
-      `SELECT t.id, t.created_by, t.account_id, t.additional_charges, t.status, t.reference_number, tt.direction, tt.code
+      `SELECT t.id, t.created_by, t.account_id, t.additional_charges, t.status, t.reference_number, t.transaction_date, tt.direction, tt.code
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        WHERE t.id = $1
@@ -684,6 +698,11 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
       // Money changes hands only on a non-zero delta against a settled row, so
       // only then is the branch's open shift a precondition. A zero-delta edit
       // rewrites the row's figures and is left alone (D17).
+      //
+      // Held to today, not to the date the row carries: the row is not re-dated,
+      // but the entry written below is stamped now, so it is the shift covering
+      // now that must account for it. Checking the row's date instead would let
+      // an entry land on a day no shift was ever open for.
       await assertOpenShift(original.account_id, original.code);
       const creditLike = original.direction === 'in' || original.direction === 'adjustment';
       const entryType: 'debit' | 'credit' = delta > 0
@@ -799,8 +818,13 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
       updates.push(`${column} = $${params.length}`);
     };
 
-    const transactionDate = provided('transactionDate') ? new Date(body.transactionDate) : null;
-    if (transactionDate && Number.isNaN(transactionDate.getTime())) throw createError(400, 'Invalid transaction date');
+    // Read as Manila, the same way creation reads it: this value arrives exactly
+    // as the operator typed it, and the browser that typed it did not choose the
+    // server's zone. Taken as local, a 09:00 entry would be written 14:00.
+    const transactionDate = provided('transactionDate')
+      ? parseManilaDateTime(String(body.transactionDate))
+      : null;
+    if (provided('transactionDate') && !transactionDate) throw createError(400, 'Invalid transaction date');
 
     if (transactionDate) set('transaction_date', transactionDate.toISOString());
     if (provided('referenceNumber')) set('reference_number', String(body.referenceNumber).trim() || null);
@@ -1040,7 +1064,12 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     // Settling is where a pending row finally moves money (D5), so the shift has
     // to be open here as well as at creation: the approver may be looking at a
     // branch that shut in between (D17).
-    await assertOpenShift(row.account_id, row.code);
+    //
+    // Held to the row's own date, because that is the date the settlement
+    // entry below carries. It has to fall inside the window of the shift that
+    // authorised it — checked against approval time instead, the entry would
+    // count towards a shift that never gated it.
+    await assertOpenShift(row.account_id, row.code, { eventDate: row.transaction_date });
     assertControlledType(row.code);
     // Releasing an operating cost is a head-office decision, so expenses sit
     // behind administrator-only on top of the two-person rule — the same bar

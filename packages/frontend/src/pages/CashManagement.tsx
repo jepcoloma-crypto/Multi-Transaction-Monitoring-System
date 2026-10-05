@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency, localDateValue } from '../lib/format';
+import { formatCurrency, manilaDateValue, dateKeyLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect, { type AccountOption } from '../components/AccountSelect';
 import {
@@ -51,6 +51,7 @@ interface Shift {
   branch_code: string;
   branch_name: string;
   status: 'open' | 'closed';
+  shift_date: string;
   opening_float: number | string;
   counted_closing: number | string | null;
   expected_closing: number | string | null;
@@ -138,7 +139,7 @@ const emptyForm = {
   payee: '',
   description: '',
   referenceNumber: '',
-  transactionDate: localDateValue(),
+  transactionDate: manilaDateValue(),
   paymentMethod: 'cash',
 };
 
@@ -171,7 +172,7 @@ export default function CashManagement() {
   const [drawers, setDrawers] = useState<{ branchId: string; balance: number }[]>([]);
   const [loadingShifts, setLoadingShifts] = useState(false);
   const [shiftError, setShiftError] = useState('');
-  const [shiftOpen, setShiftOpen] = useState<{ branchId: string; openingFloat: string; booksBalance: number } | null>(null);
+  const [shiftOpen, setShiftOpen] = useState<{ branchId: string; openingFloat: string; booksBalance: number; shiftDate: string } | null>(null);
   const [shiftClose, setShiftClose] = useState<{ shift: Shift; countedClosing: string; notes: string } | null>(null);
   const [lastClose, setLastClose] = useState<ShiftResult | null>(null);
   const [savingShift, setSavingShift] = useState(false);
@@ -280,12 +281,25 @@ export default function CashManagement() {
       setShiftError('Enter the cash you actually counted in the drawer');
       return;
     }
+    // Manila's today rather than the browser's — this host and the browser on
+    // it run UTC+3, so a local-clock check would refuse a shift the operator has
+    // every right to open at 01:00 Manila. The server checks the same way.
+    const today = manilaDateValue();
+    if (!shiftOpen.shiftDate) {
+      setShiftError('Choose the date this shift covers');
+      return;
+    }
+    if (shiftOpen.shiftDate > today) {
+      setShiftError(`A shift cannot be dated ahead of today — today is ${today}`);
+      return;
+    }
     setSavingShift(true);
     setShiftError('');
     try {
       await api.post('/cash-management/shifts/open', {
         branchId: shiftOpen.branchId,
         openingFloat,
+        shiftDate: shiftOpen.shiftDate,
       });
       setShiftOpen(null);
       await loadShifts();
@@ -338,7 +352,7 @@ export default function CashManagement() {
   };
 
   const openForm = () => {
-    setForm({ ...emptyForm, transactionDate: localDateValue() });
+    setForm({ ...emptyForm, transactionDate: manilaDateValue() });
     setFormError('');
     // The revolving fund is where cash-on-hand expenses belong, so it is
     // preselected rather than made the operator hunt for it among the wallets.
@@ -643,6 +657,12 @@ export default function CashManagement() {
                         <>
                           <dl className="mt-3 space-y-1 text-sm">
                             <div className="flex justify-between gap-3">
+                              <dt className="text-gray-500">Shift date</dt>
+                              <dd className="font-medium" title="Transactions recorded under this shift must carry this date.">
+                                {dateKeyLabel(open.shift_date)}
+                              </dd>
+                            </div>
+                            <div className="flex justify-between gap-3">
                               <dt className="text-gray-500">Opening count</dt>
                               <dd className="font-medium">{formatCurrency(money(open.opening_float))}</dd>
                             </div>
@@ -687,7 +707,7 @@ export default function CashManagement() {
                           <button
                             type="button"
                             className="btn-primary mt-3 w-full"
-                            onClick={() => { setLastClose(null); setShiftClose(null); setShiftOpen({ branchId: b.id, openingFloat: '', booksBalance: books }); }}
+                            onClick={() => { setLastClose(null); setShiftClose(null); setShiftOpen({ branchId: b.id, openingFloat: '', booksBalance: books, shiftDate: manilaDateValue() }); }}
                           >
                             Open shift
                           </button>
@@ -1147,6 +1167,24 @@ export default function CashManagement() {
                       <option key={b.id} value={b.id}>{b.name} ({b.code})</option>
                     ))}
                 </select>
+              </div>
+
+              <div>
+                <label className="form-label">Shift date</label>
+                <input
+                  type="date"
+                  className="form-input"
+                  required
+                  max={manilaDateValue()}
+                  value={shiftOpen.shiftDate}
+                  onChange={(e) => setShiftOpen((s) => s && { ...s, shiftDate: e.target.value })}
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  The day this drawer covers, in Manila time. Every transaction recorded under this
+                  shift has to carry the same date — one dated otherwise is refused. Today is{' '}
+                  {manilaDateValue()}; an earlier date is allowed so a missed day can still be
+                  recorded, a later one is not.
+                </p>
               </div>
 
               <div>

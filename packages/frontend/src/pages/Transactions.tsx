@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, localDateTimeValue, paymentMethodLabel, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode } from '../lib/format';
+import { formatCurrency, manilaDateTimeValue, paymentMethodLabel, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
@@ -96,7 +96,7 @@ export default function Transactions() {
   const [chargeTypes, setChargeTypes] = useState<{ id: string; name: string; default_amount: number }[]>([]);
   const [formData, setFormData] = useState({
     accountId: '', feeRuleId: '', amount: '',
-    fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(),
+    fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(),
     feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select' as 'select' | 'manual', customerPhone: '',
     providerCharge: '', paymentMethod: '',
   });
@@ -148,7 +148,7 @@ export default function Transactions() {
 
   const canEdit = (tx: Transaction) => isAdmin && tx.status === 'pending';
 
-  const toInputDateTime = (iso: string) => localDateTimeValue(new Date(iso));
+  const toInputDateTime = (iso: string) => manilaDateTimeValue(new Date(iso));
 
   const openEdit = (tx: Transaction) => {
     setEditError('');
@@ -173,8 +173,12 @@ export default function Transactions() {
 
     const amount = Number(editForm.amount);
     const fee = Number(editForm.fee);
-    const parsedDate = new Date(editForm.transactionDate);
-    if (!editForm.transactionDate || Number.isNaN(parsedDate.getTime())) return setEditError('Transaction date is required');
+    // Sent exactly as typed. Resolving it against the browser's clock here
+    // would disagree with the server, which reads it as Manila: on a UTC+3 host
+    // a 09:00 entry would arrive as 14:00.
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(editForm.transactionDate)) {
+      return setEditError('Transaction date is required');
+    }
     if (!Number.isFinite(amount) || amount < 0) return setEditError('Amount cannot be negative');
     if (!Number.isFinite(fee) || fee < 0) return setEditError('Fee cannot be negative');
 
@@ -182,7 +186,7 @@ export default function Transactions() {
     setEditSaving(true);
     try {
       const updated = await api.patch<Transaction>(`/transactions/${editTx.id}`, {
-        transactionDate: parsedDate.toISOString(),
+        transactionDate: editForm.transactionDate,
         referenceNumber: editForm.referenceNumber,
         description: editForm.description,
         customerName: editForm.customerName,
@@ -340,7 +344,7 @@ export default function Transactions() {
     setFormData({
       accountId: accounts.find(a => a.status === 'active')?.id || '', feeRuleId: '',
       amount: '', fee: '0', referenceNumber: '', description: '', customerName: '',
-      transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
+      transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
       providerCharge: '', paymentMethod: '',
     });
     setCreateCharges([]);
@@ -377,7 +381,7 @@ export default function Transactions() {
         paymentMethod: formData.paymentMethod || undefined,
       });
       setShowModal(false);
-      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: localDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: '' });
+      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: '' });
       fetchTransactions(pagination.page);
       fetchSummary();
     } catch (err: any) { setError(err.message); }

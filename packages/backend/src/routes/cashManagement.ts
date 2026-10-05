@@ -5,6 +5,7 @@ import { createError } from '../middleware/error';
 import { branchClause, canSeeAll } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS } from '../services/cashManagement';
 import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS } from '../services/shifts';
+import { parseManilaDateTime, parseDateKey, manilaDateKey } from '../services/manilaTime';
 import type { BranchBalance, CashBucket, LedgerFlowRow } from '../services/cashManagement';
 import type { ShiftMovement } from '../services/shifts';
 
@@ -14,8 +15,11 @@ router.use(authenticate);
 
 const parseDate = (value: unknown, field: string): Date | null => {
   if (value === undefined || value === null || value === '') return null;
-  const parsed = new Date(String(value));
-  if (Number.isNaN(parsed.getTime())) throw createError(400, `${field} must be a valid date`);
+  // A calendar day the operator picked, read in Manila rather than in this
+  // host's UTC+3 — taken locally, the window would open five hours before the
+  // day it names and quietly drop the last transactions of the day.
+  const parsed = parseManilaDateTime(String(value));
+  if (!parsed) throw createError(400, `${field} must be a valid date`);
   return parsed;
 };
 
@@ -362,8 +366,11 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
       params.push(branchFilter);
     }
 
+    // shift_date is re-cast after `s.*` so node-postgres's parsed DATE — local
+    // midnight in this host's UTC+3 — is replaced by the day it names. The
+    // later column wins in the row object, which is why it is written last.
     const rows = await query<any>(
-      `SELECT s.*, b.code AS branch_code, b.name AS branch_name,
+      `SELECT s.*, s.shift_date::text AS shift_date, b.code AS branch_code, b.name AS branch_name,
               ou.username AS opened_by_username, cu.username AS closed_by_username
        FROM shifts s
        JOIN branches b ON b.id = s.branch_id
@@ -444,13 +451,30 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
     if (!Number.isFinite(openingFloat)) throw createError(400, 'Opening float must be a number');
     if (openingFloat < 0) throw createError(400, 'Opening float cannot be negative');
 
+    // The day the shift covers is the operator's to state, so every movement
+    // recorded under it has a date to be held to (D17). Refused if it is not a
+    // real calendar day, and refused if it is ahead of Manila's today: a shift
+    // for tomorrow would accept tomorrow's transactions today, which is the
+    // drawer counting money before it exists.
+    const shiftDate = String(body.shiftDate ?? '').trim();
+    if (!parseDateKey(shiftDate)) {
+      throw createError(400, 'Shift date is required, as a valid date (YYYY-MM-DD)');
+    }
+    const today = manilaDateKey();
+    if (shiftDate > today) {
+      throw createError(400, `Shift date cannot be in the future — today is ${today}`);
+    }
+
     let shift;
     try {
       shift = await queryOne(
-        `INSERT INTO shifts (branch_id, opening_float, opened_by, notes)
-         VALUES ($1, $2, $3, $4)
-         RETURNING *`,
-        [branchId, round2(openingFloat), req.user!.userId, body.notes ? String(body.notes).trim() || null : null],
+        `INSERT INTO shifts (branch_id, shift_date, opening_float, opened_by, notes)
+         VALUES ($1, $2::date, $3, $4, $5)
+         RETURNING *, shift_date::text AS shift_date`,
+        [
+          branchId, shiftDate, round2(openingFloat), req.user!.userId,
+          body.notes ? String(body.notes).trim() || null : null,
+        ],
       );
     } catch (err: any) {
       // The partial unique index is the real guard. Checked here as well so the
@@ -468,7 +492,7 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
 
 router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const shift = await queryOne<any>('SELECT * FROM shifts WHERE id = $1', [req.params.id]);
+    const shift = await queryOne<any>('SELECT *, shift_date::text AS shift_date FROM shifts WHERE id = $1', [req.params.id]);
     if (!shift) throw createError(404, 'Shift not found');
     await assertShiftBranch(req, shift.branch_id, 'Shift not found');
     if (shift.status !== 'open') throw createError(400, 'This shift is already closed');
@@ -489,7 +513,7 @@ router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Re
        SET status = 'closed', counted_closing = $1, expected_closing = $2, variance = $3,
            closed_at = NOW(), closed_by = $4, notes = COALESCE($5, notes), updated_at = NOW()
        WHERE id = $6 AND status = 'open'
-       RETURNING *`,
+       RETURNING *, shift_date::text AS shift_date`,
       [
         report.counted, report.expected, report.variance,
         req.user!.userId, body.notes ? String(body.notes).trim() || null : null, shift.id,
@@ -518,7 +542,7 @@ router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Re
 
 router.get('/shifts/:id/movements', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const shift = await queryOne<any>('SELECT * FROM shifts WHERE id = $1', [req.params.id]);
+    const shift = await queryOne<any>('SELECT *, shift_date::text AS shift_date FROM shifts WHERE id = $1', [req.params.id]);
     if (!shift) throw createError(404, 'Shift not found');
     await assertShiftBranch(req, shift.branch_id, 'Shift not found');
 

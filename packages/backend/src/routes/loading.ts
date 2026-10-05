@@ -3,6 +3,7 @@ import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { branchClause, assertBranch } from '../middleware/scope';
 import { assertOpenShift } from '../middleware/shiftGate';
+import { manilaDayAtCurrentTime } from '../services/manilaTime';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -147,6 +148,13 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     const { accountId, productId, customerNumber, quantity, paymentMethod, referenceNumber, notes, transactionDate } = req.body;
     if (!accountId || !productId || !customerNumber) throw createError(400, 'Account, product, and customer number are required');
 
+    // The day asked for, carrying the time it is recorded at — read from
+    // Manila's clock rather than this host's UTC+3. One value feeds both the
+    // row and the shift gate, so the date stored and the date checked cannot
+    // drift apart.
+    const bookedAt = transactionDate ? manilaDayAtCurrentTime(String(transactionDate)) : null;
+    if (transactionDate && !bookedAt) throw createError(400, 'Invalid transaction date');
+
     const product = await client.query('SELECT * FROM loading_products WHERE id = $1 AND is_active = true', [productId]);
     if (!product.rows[0]) throw createError(404, 'Product not found');
 
@@ -156,8 +164,9 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     await assertBranch(req, accountId, 'loading.write_all', 'Account not found');
     if (acct.rows[0].status !== 'active') throw createError(400, 'Account is not active');
     // Loading deducts from the account at once — there is no pending state to
-    // defer the shift check to (D17).
-    await assertOpenShift(accountId);
+    // defer the shift check to (D17). It carries no type, so it is always
+    // gated, and on the day being booked below.
+    await assertOpenShift(accountId, undefined, { eventDate: bookedAt });
 
     const qty = parseInt(quantity || '1');
     const unitCost = parseFloat(product.rows[0].cost_price);
@@ -173,7 +182,7 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     if (parseFloat(acct.rows[0].current_balance) < totalBalanceDeduction) throw createError(400, 'Insufficient balance for loading purchase');
 
     const txNum = await client.query("SELECT nextval('loading_transactions_transaction_number_seq') as nextval");
-    const txDate = transactionDate ? `${transactionDate} ${new Date().toTimeString().slice(0, 8)}` : null;
+    const txDate = bookedAt;
     const loadingTx = (await client.query(
       `INSERT INTO loading_transactions (transaction_number, account_id, product_id, customer_number, quantity,
        unit_cost, unit_price, total_cost, total_revenue, profit, provider_convenience_fee, company_additional_charge,
@@ -241,7 +250,11 @@ router.delete('/:id', authorize('loading.delete'), async (req: Request, res: Res
     if (loadingTx.status === 'completed') {
       // Unwinding a settled loading transaction puts money back, so it is
       // gated like the sale it undoes; a draft restores nothing (D17).
-      await assertOpenShift(loadingTx.account_id);
+      //
+      // Held to the date the sale carries, because the ledger row removed
+      // below is stamped with it — a shift open for another day would never
+      // see that removal in its expected closing.
+      await assertOpenShift(loadingTx.account_id, undefined, { eventDate: loadingTx.created_at });
       await client.query(
         `UPDATE accounts SET current_balance = current_balance + $1, updated_at = NOW() WHERE id = $2`,
         [entryAmount, loadingTx.account_id]

@@ -3,6 +3,7 @@ import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { branchClause, assertBranch } from '../middleware/scope';
 import { assertOpenShift } from '../middleware/shiftGate';
+import { parseManilaDateTime } from '../services/manilaTime';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { lookupProviderCharge } from '../services/providerCharge';
@@ -147,6 +148,12 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
 
     const { sourceAccountId, destinationAccountId, transferAmount, serviceCharge, transferFee, manualCharge, purpose, notes, transferDate } = req.body;
 
+    // Read in Manila, the same way a transaction date is: this is the day the
+    // transfer is booked to, and the shift gate below holds it to the shift's
+    // own day rather than to whenever the request happened to arrive.
+    const bookedAt = transferDate ? parseManilaDateTime(String(transferDate)) : null;
+    if (transferDate && !bookedAt) throw createError(400, 'Invalid transfer date');
+
     if (!sourceAccountId || !destinationAccountId) throw createError(400, 'Source and destination accounts are required');
     if (sourceAccountId === destinationAccountId) throw createError(400, 'Source and destination must be different');
 
@@ -175,7 +182,9 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
     // Gated on the source branch only: the destination is deliberately outside
     // write authorization (above), and letting it gate too would let an
     // unrelated branch block an outgoing transfer by simply being shut (D17).
-    await assertOpenShift(sourceAccountId);
+    // A transfer carries no type, so it is always gated — and on the date it is
+    // booked to, which is the one stored below.
+    await assertOpenShift(sourceAccountId, undefined, { eventDate: bookedAt });
 
     let charge = clientCharge;
     if (manualCharge !== true) {
@@ -198,7 +207,7 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
        total_source_deduction, destination_amount, purpose, status, transfer_date, created_by, notes, completed_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING *`,
       [transferNumber, transferReference, sourceAccountId, destinationAccountId, srcAmount, charge, totalDeduction, destinationAmount, purpose || null,
-       isAdminCreator ? 'completed' : 'pending', transferDate || new Date(), req.user!.userId, notes || null, isAdminCreator ? new Date() : null]
+       isAdminCreator ? 'completed' : 'pending', bookedAt ?? new Date(), req.user!.userId, notes || null, isAdminCreator ? new Date() : null]
     )).rows[0];
 
     if (isAdminCreator) {
@@ -229,8 +238,12 @@ router.post('/:id/approve', authorize('transfers.approve'), async (req: Request,
     // about a transfer they cannot act on.
     await assertBranch(req, transfer.source_account_id, 'transfers.write_all', 'Transfer not found');
     // Approving is where a pending transfer actually debits the source, so the
-    // source branch has to be open now, not merely when it was proposed (D17).
-    await assertOpenShift(transfer.source_account_id);
+    // source branch has to be open for it (D17).
+    //
+    // Held to the transfer's own date rather than to approval time:
+    // moveTransferFunds stamps both ledger legs with transfer_date, so it is
+    // the shift covering that day whose expected closing must account for them.
+    await assertOpenShift(transfer.source_account_id, undefined, { eventDate: transfer.transfer_date });
     if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be approved');
     if (transfer.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own transfer');
 
@@ -311,7 +324,10 @@ router.delete('/:id', authorize('transfers.delete'), async (req: Request, res: R
       // Only a settled transfer unwinds real money — deleting a draft or a
       // pending one moves nothing and stays available with the branch shut.
       // Gated on the source branch for the same reason creation is (D17).
-      await assertOpenShift(transfer.source_account_id);
+      //
+      // Held to the transfer's date: that is when the legs removed below were
+      // written, so only the shift covering that day can release them.
+      await assertOpenShift(transfer.source_account_id, undefined, { eventDate: transfer.transfer_date });
       const accounts = (await client.query(
         `SELECT id, current_balance FROM accounts WHERE id IN ($1, $2) ORDER BY id FOR UPDATE`,
         [transfer.source_account_id, transfer.destination_account_id]
