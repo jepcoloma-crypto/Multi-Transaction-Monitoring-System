@@ -4,39 +4,36 @@ Status: **Phases A–E implemented and deployed** (migrations 034/035 applied to
 engine, endpoints, Cash Management page, Expense report component — commits `b3d8faf`,
 `3a5005e`, `8a0f176`).
 
-Sections 10 onward — drawer participation and shifts — are **written and implemented but not
-deployed**: six local commits (`5f7c310`, `8ad0a9f`, `923395c`, `24bab3c`, `53c6b6c`,
-`fbfe733`), migrations 036 and 037 written but **not applied**, nothing pushed. The order
-they go live in is forced, not preferred:
+Sections 10 onward — drawer participation, shifts, and the open-shift precondition of §18 —
+are **written and implemented but not deployed**. Nothing is pushed: the authoritative list
+of what is pending is `git log origin/main..HEAD`. Migrations 036 and 037 are written but
+**not applied**. The order they go live in is forced, not preferred:
 
 1. **Fund the revolving funds first**, using the code as it runs today. F3 gives the drawer
    a ledger leg, and a leg that cannot be paid is refused: with both drawers at ₱0 every
    cash movement reaching them would fail the moment it is deployed. Owner funding does not
    need this code — it posts straight to the cash account.
-2. **Apply migrations 036 and 037** before the backend restarts, or the shift screen finds
-   no `shifts` table. It reports that gracefully, but it is a wasted deployment.
+2. **Apply migrations 036 and 037** before the backend that reads them goes live, or the
+   shift screen finds no `shifts` table. It reports that gracefully, but it is a wasted
+   deployment.
 3. **Frontend before backend.** The New Transaction form only gained the payment-method
    field in `fbfe733`; the running backend does not require one. Reverse that order and
    every cash-in and cash-out is refused with *"needs a payment method"* until the frontend
    follows — this is the one ordering that breaks production rather than degrading it.
+4. **§18's gate last**, and only once operators can open a shift: on the day it lands every
+   branch is blocked until someone opens one (end of §18).
 
-**How production loads backend code** (established the hard way, and the reason the steps
-above read differently from how they were first written): `ecosystem.config.js` runs
-`node_modules/ts-node/dist/bin.js packages/backend/src/index.ts` with `watch: false`. PM2
-compiles `packages/backend/src` **in the running process**. `npm run build` writes
-`packages/backend/dist`, and that is what `npm test` executes — it is not what serves
-traffic. So:
+**How production loads backend code.** `ecosystem.config.js` runs
+`packages/backend/dist/index.js` with `watch: false`, so production serves a *build* —
+editing `packages/backend/src` changes nothing until someone runs `npm run build` and
+restarts PM2. That was not always true: it previously ran ts-node straight on the working
+tree, so every memory restart shipped whatever was mid-edit, and unshipped source sat live
+during the first build of this piece. Nothing failed only because no cash movement had been
+attempted since — luck, not safety. Two consequences now hold:
 
-- There is no build step between editing a file and production. The next process start
-  serves whatever is in the working tree, and starts are not rare: `max_memory_restart`
-  is `256M` and this backend sits close to it, so the process recycles on its own.
-- Correcting `dist` protects the test suite, not the API. Unshipped source reached
-  production during the first build of this piece and stayed there until it was noticed;
-  nothing had failed yet only because no cash movement had been attempted since, which
-  is luck rather than safety.
-
-Read the order above as: apply the migrations while the working tree still holds the old
-source, then let the tree change.
+- **`npm run build` is the deploy step.** Treat it as production-facing.
+- **Tests never write to `dist`.** They compile to `packages/backend/dist-test`
+  (`tsconfig.test.json`), so running the suite cannot overwrite what PM2 serves.
 
 Scope: model the company's funds flow — sources, uses, revolving-fund reconciliation and
 per-branch cash position — and add the one flow the system cannot record today: operating
@@ -710,3 +707,104 @@ New, carried into implementation:
 2. **`payment_method` on operating expenses** — an expense paid from the drawer is
    physical by definition. Confirm it should be forced to `cash` when the account is
    `cash`-typed, rather than left to the operator.
+
+---
+
+## 18. No open shift, no money movement
+
+Requirement, added after §10–§17 were built:
+
+> The system cannot transact cash transactions, fund transfers, and loading without an
+> open shift.
+
+This is a **precondition**, not a reconciliation: it compares nothing, it refuses.
+
+### D17 — An open shift is a precondition for moving a branch's money
+
+**The rule.** A branch with no open shift may not move money. The check is on the *branch*,
+never on the user: an administrator holding `*_write_all` is refused exactly like a teller,
+because the drawer's physical state is not a permission.
+
+**There is no override.** A bypass permission would make the rule advisory — the first
+person to find it would use it, and the record would show the movement happened anyway. If
+something genuinely must be recorded with no shift open, the answer is to open a shift and
+record it there.
+
+**Where the check does not go.** Three candidates were rejected:
+
+- **Not in the database.** The precondition is temporal — *a row with `status='open'` exists
+  now* — not relational, and it would have to be evaluated inside every write path anyway,
+  including the raw-SQL ones.
+- **Not inside `processTransaction`.** §11 calls it the single choke point and for
+  transactions it is one. But transfers post through `moveTransferFunds`
+  (`routes/transfers.ts:99`) and loading through inline SQL (`routes/loading.ts:183`), so a
+  gate there would exempt two of the three flows this requirement names — *silently*, since
+  those two would keep working.
+- **Not folded into `assertBranch`.** It returns early for `*_write_all` holders
+  (`middleware/scope.ts:128`), which is precisely the population that must still be refused;
+  and it is called by `POST /:id/reject`, which moves no money and must not be gated.
+
+**Therefore:** a standalone guard, called explicitly wherever an account id is already in
+hand — one indexed lookup, deliberately uncached, so a shift closed a second ago reads as
+closed now. The message names the branch, because "open a shift" is useless advice if you
+do not know which one.
+
+**The line that decides scope: a branch *operation* is gated; owner funding and back-office
+record-keeping are not.**
+
+| Gated | When money moves |
+|---|---|
+| `POST /transactions` — every type **except** `owner_funding` / `owner_return` | at create unless forced `pending`, else at approve |
+| `POST /transactions/:id/approve`, `/:id/reverse`, `POST /transactions/reversals/:id/approve` | at settle |
+| `PATCH /transactions/:id/charges` when the delta is non-zero | at patch |
+| `POST /transfers`, `POST /transfers/:id/approve`, `DELETE /transfers/:id` on a completed transfer | at create (admin) / approve / unwind |
+| `POST /loading`, `DELETE /loading/:id` | at create / unwind |
+| Corrections: `apply`, `re-enter`, `gap-fixes/:id/approve` | at apply |
+
+| Exempt | Why |
+|---|---|
+| `owner_funding`, `owner_return` | This is how the drawer *gets* its float. Gating it would make §16's "fund the revolving funds first" impossible, and it is owner activity rather than branch traffic. |
+| CSV import (`/import/transactions`, `/import/loading`) | Backfill of activity that already happened. Import carries no branch scoping at all today, so gating it here would block history rather than live trading. **Known bypass — flagged, not hidden.** |
+| Admin balance edit, reconciliation adjust | Correcting a *record*, not operating the branch. |
+| reject / notes / status routes, loading product CRUD | No money moves. |
+
+**Which branch.** Transfers gate on the **source** branch only. Cross-branch transfers are
+explicitly allowed (§1) and the destination sits outside write authorization by design
+(`routes/transfers.ts:165-171` — an incoming credit needs no permission from the branch
+receiving it). Gating the destination too would let an unrelated branch block an outgoing
+transfer by simply going home. Transactions and loading involve one account, hence one
+branch.
+
+**Both create and settle.** Gating only settlement would let an operator build a queue of
+pending rows that nobody can complete; gating only creation would let money move after
+close through the approval button. Both are the same one check at two points the code
+already reaches.
+
+**Unwinds are gated too**, and the consequence is deliberate: a mistake made under a closed
+shift can only be corrected while the *current* shift is open. History is forward-only, so
+the correction is recorded under today's count rather than by reopening yesterday's.
+
+**Response: 409**, carrying the remedy —
+`No open shift for branch <code> — open a shift before recording money movements.` 409
+rather than 400 because the request is well-formed and authorized and it is the *world*
+that disagrees; 403 is wrong because nothing was forbidden.
+
+**Accepted limitation.** The guard runs as its own statement rather than inside the
+movement's transaction: `POST /transactions` performs its insert on the pool while its
+`BEGIN`/`COMMIT` run on a separate client, so there is no single place all three flows
+share. The window is one query wide against an operator action taking seconds. A shift that
+closes inside it leaves a correctly-recorded movement against a closed count — which is
+what variance exists to catch.
+
+**Phasing — this piece is last.**
+
+| Phase | Deliverable | Moves money? |
+|---|---|---|
+| **H1** | Guard + the three named flows (create, settle, unwind) + tests | no |
+| **H2** | Corrections and `PATCH /:id/charges` join the gate + tests | no |
+| **H3** | UI reads shift state and refuses early instead of on submit | no |
+
+Deploy order is unchanged from §16 and this lands at the end of it: migrations 036/037 →
+fund the drawers → frontend, so operators *can* open a shift → open a shift → then this.
+**On the day it lands every branch starts blocked until someone opens a shift.** That is the
+intended first action of the day, but it should be chosen rather than discovered.
