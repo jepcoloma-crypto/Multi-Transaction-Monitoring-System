@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { branchClause, assertBranch } from '../middleware/scope';
+import { assertOpenShift } from '../middleware/shiftGate';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { PaginatedResponse } from '../types';
@@ -154,6 +155,9 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     // Loading deducts cost from this account, so it must be the caller's.
     await assertBranch(req, accountId, 'loading.write_all', 'Account not found');
     if (acct.rows[0].status !== 'active') throw createError(400, 'Account is not active');
+    // Loading deducts from the account at once — there is no pending state to
+    // defer the shift check to (D17).
+    await assertOpenShift(accountId);
 
     const qty = parseInt(quantity || '1');
     const unitCost = parseFloat(product.rows[0].cost_price);
@@ -235,6 +239,9 @@ router.delete('/:id', authorize('loading.delete'), async (req: Request, res: Res
 
     // Restore account balance for completed loading transactions
     if (loadingTx.status === 'completed') {
+      // Unwinding a settled loading transaction puts money back, so it is
+      // gated like the sale it undoes; a draft restores nothing (D17).
+      await assertOpenShift(loadingTx.account_id);
       await client.query(
         `UPDATE accounts SET current_balance = current_balance + $1, updated_at = NOW() WHERE id = $2`,
         [entryAmount, loadingTx.account_id]

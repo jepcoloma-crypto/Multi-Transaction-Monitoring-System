@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { branchClause } from '../middleware/scope';
+import { assertOpenShift } from '../middleware/shiftGate';
 import { createError } from '../middleware/error';
 import { auditLedger } from '../services/ledgerAudit';
 import { loadScopedLedger, loadLedgerRowsBySource } from '../services/ledgerQuery';
@@ -198,6 +199,11 @@ router.post('/gap-fixes/:fixId/approve', authorize('transactions.correct'), asyn
     if (fix.proposed_by === req.user!.userId) {
       throw createError(403, 'You cannot approve your own gap fix proposal');
     }
+
+    // A gap fix either changes current_balance or asserts that money moved on
+    // a date it was never recorded — both are the branch's business, so the
+    // drawer has to be open (D17).
+    await assertOpenShift(fix.account_id);
 
     await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [fix.account_id]);
 
@@ -452,6 +458,10 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     if (!shape.ok) throw createError(409, `Cannot correct: ${shape.problems.join('; ')}`);
 
     const accountIds = observed.accountIds;
+    // Every account this rewrites must be open — unlike a transfer, whose two
+    // branches act independently, a correction is one atomic rewrite across
+    // them, so partial availability would leave the record half undone (D17).
+    for (const id of accountIds) await assertOpenShift(id);
     await client.query('SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE', [accountIds]);
 
     const { accounts, entries } = await loadAccountsAndEntries(accountIds, client);
@@ -791,6 +801,10 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
     const plan = planReEntry(sourceType, rows, originalAccounts(sourceType, original), requested as ReEntryAccounts, sourceId, newRecordId);
 
     const involved = [...new Set([...observed.accountIds, ...plan.newAccountIds])];
+    // Same rule as apply, and for the same reason: this is one atomic rewrite,
+    // so every account it touches — including the one being moved to — has to
+    // be open (D17).
+    for (const id of involved) await assertOpenShift(id);
     await client.query('SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE', [involved]);
 
     const { accounts, entries } = await loadAccountsAndEntries(involved, client);

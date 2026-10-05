@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { branchClause, assertBranch } from '../middleware/scope';
+import { assertOpenShift } from '../middleware/shiftGate';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { lookupProviderCharge } from '../services/providerCharge';
@@ -171,6 +172,11 @@ router.post('/', authorize('transfers.write'), async (req: Request, res: Respons
     // response to discover that an account outside their branches exists.
     await assertBranch(req, sourceAccountId, 'transfers.write_all', 'Source account not found');
 
+    // Gated on the source branch only: the destination is deliberately outside
+    // write authorization (above), and letting it gate too would let an
+    // unrelated branch block an outgoing transfer by simply being shut (D17).
+    await assertOpenShift(sourceAccountId);
+
     let charge = clientCharge;
     if (manualCharge !== true) {
       const rule = await lookupProviderCharge(srcAcct.rows[0].provider_id, dstAcct.rows[0].provider_id);
@@ -222,6 +228,9 @@ router.post('/:id/approve', authorize('transfers.approve'), async (req: Request,
     // Asserted before the status check so a scoped caller learns nothing
     // about a transfer they cannot act on.
     await assertBranch(req, transfer.source_account_id, 'transfers.write_all', 'Transfer not found');
+    // Approving is where a pending transfer actually debits the source, so the
+    // source branch has to be open now, not merely when it was proposed (D17).
+    await assertOpenShift(transfer.source_account_id);
     if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be approved');
     if (transfer.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own transfer');
 
@@ -299,6 +308,10 @@ router.delete('/:id', authorize('transfers.delete'), async (req: Request, res: R
     const movesFunds = !['draft', 'pending', 'failed', 'rejected'].includes(transfer.status);
 
     if (movesFunds) {
+      // Only a settled transfer unwinds real money — deleting a draft or a
+      // pending one moves nothing and stays available with the branch shut.
+      // Gated on the source branch for the same reason creation is (D17).
+      await assertOpenShift(transfer.source_account_id);
       const accounts = (await client.query(
         `SELECT id, current_balance FROM accounts WHERE id IN ($1, $2) ORDER BY id FOR UPDATE`,
         [transfer.source_account_id, transfer.destination_account_id]

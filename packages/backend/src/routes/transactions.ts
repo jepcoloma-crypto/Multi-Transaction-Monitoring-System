@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { branchClause, assertBranch } from '../middleware/scope';
+import { assertOpenShift } from '../middleware/shiftGate';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
@@ -435,6 +436,12 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     );
     if (!txType) throw createError(404, 'Transaction type not found');
 
+    // Before anything is written, and before the payment-method question: if the
+    // branch is shut there is nothing an operator can fix by filling in a field
+    // (D17). Owner funding is exempt inside the guard — it is how the drawer
+    // gets funded in the first place.
+    await assertOpenShift(accountId, txType.code);
+
     // A cash movement is not recorded until the operator says how the money
     // actually changed hands, because that is what decides whether the drawer
     // takes part. Presence is enforced here rather than as a NOT NULL column
@@ -648,7 +655,7 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
     await client.query('BEGIN');
 
     const originalRes = await client.query(
-      `SELECT t.id, t.created_by, t.account_id, t.additional_charges, t.status, t.reference_number, tt.direction
+      `SELECT t.id, t.created_by, t.account_id, t.additional_charges, t.status, t.reference_number, tt.direction, tt.code
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        WHERE t.id = $1
@@ -674,6 +681,10 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
     const delta = Math.round((newTotal - oldTotal) * 100) / 100;
 
     if (delta !== 0 && original.status === 'completed') {
+      // Money changes hands only on a non-zero delta against a settled row, so
+      // only then is the branch's open shift a precondition. A zero-delta edit
+      // rewrites the row's figures and is left alone (D17).
+      await assertOpenShift(original.account_id, original.code);
       const creditLike = original.direction === 'in' || original.direction === 'adjustment';
       const entryType: 'debit' | 'credit' = delta > 0
         ? (creditLike ? 'credit' : 'debit')
@@ -886,6 +897,11 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
       throw createError(400, 'Adjustment transactions cannot be reversed');
     }
 
+    // Unwinding moves money back, so it is gated like the movement it undoes —
+    // which means a mistake made under a closed shift waits for the next open
+    // one instead of reopening yesterday's count (D17).
+    await assertOpenShift(original.account_id, txType?.code);
+
     const isAdmin = req.user!.roles.includes('administrator');
     const { reason } = req.body;
 
@@ -1021,6 +1037,10 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     // caller's. Checked before the status guard so a scoped caller cannot
     // probe for pending requests outside their branches.
     await assertBranch(req, row.account_id, 'transactions.write_all', 'Transaction not found');
+    // Settling is where a pending row finally moves money (D5), so the shift has
+    // to be open here as well as at creation: the approver may be looking at a
+    // branch that shut in between (D17).
+    await assertOpenShift(row.account_id, row.code);
     assertControlledType(row.code);
     // Releasing an operating cost is a head-office decision, so expenses sit
     // behind administrator-only on top of the two-person rule — the same bar
@@ -1192,13 +1212,18 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     }
 
     const original = (await client.query(
-      `SELECT t.*, tt.direction FROM transactions t
+      `SELECT t.*, tt.direction, tt.code FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        WHERE t.id = $1`,
       [pending.entity_id]
     )).rows[0];
     if (!original) throw createError(404, 'Original transaction not found');
     if (original.status === 'reversed') throw createError(400, 'Transaction already reversed');
+
+    // Approving a reversal executes it, so the branch has to be open for it —
+    // the request may have been raised under one shift and approved under a
+    // closed branch (D17).
+    await assertOpenShift(original.account_id, original.code);
 
     // Execute the reversal
     const originalCharges = original.additional_charges || [];
