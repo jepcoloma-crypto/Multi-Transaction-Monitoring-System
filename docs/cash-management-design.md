@@ -808,3 +808,70 @@ Deploy order is unchanged from §16 and this lands at the end of it: migrations 
 fund the drawers → frontend, so operators *can* open a shift → open a shift → then this.
 **On the day it lands every branch starts blocked until someone opens a shift.** That is the
 intended first action of the day, but it should be chosen rather than discovered.
+
+---
+
+## 19. Live on Cash Management, periods in Reports
+
+The From/To pair on the Cash Management page was only ever half-applied. The two headline
+cards read `current_balance` and ignored the period entirely, so changing the date moved the
+middle of the page and not the top; and the amber *"closing ≠ live balance"* state existed
+only because a period can end before today. None of the page's actual job — what is in the
+drawer, is a shift open, what needs approval — is a period question at all.
+
+### D18 — the period belongs to Reports
+
+**Cash Management** keeps the headline (books and drawer as two separate figures), the shift
+section, Record expense and Awaiting approval, and shows a **live** per-branch position. No
+date filter. Its figures are always *now*, which removes the half-applied asymmetry and the
+amber state with it.
+
+**Reports** takes the Sources & Uses statement and its drill-down as a report type. It is
+period analysis, and Reports already owns eight period-filtered reports with print and CSV.
+
+The statement is *moved*, not rebuilt: `buildCashStatement`, its buckets and its drill-down
+are unchanged.
+
+### D19 — Reports gets one branch picker, validated like every other scope
+
+1. `branchId` joins the shared `filters` state and renders for **every** report type — From
+   and To already render unconditionally, and every report's rows derive from accounts, which
+   all have a branch.
+2. Options come from `GET /branches`, which is already scoped, so an operator is offered
+   their own and head office all of them.
+3. Choosing a branch **narrows the Account dropdown** to that branch's accounts and clears an
+   `accountId` that does not belong to it. A contradictory pair returns nothing, and nothing
+   reads exactly like a report with no data — the worst possible failure for a report.
+4. The server validates once per endpoint and answers **404 when the branch is outside the
+   caller's scope** — the same convention as `assertBranch` and `assertShiftBranch`. Answering
+   with an empty result instead would be indistinguishable from a genuine empty report, and
+   would let a scoped caller probe for branches.
+5. The printed `Scope:` follows **the filter, not merely the caller's identity**. Today it is
+   derived from `user.branches`, so without this an RM-only PDF would be stamped *"Scope: All
+   branches"* — precisely the failure the comment at `Reports.tsx:51-54` was written to
+   prevent.
+6. Branch is the **account's** branch. For the transfer report that is the *source* account's
+   branch, matching how authorization already treats a transfer.
+
+### D20 — every row names its branch; aggregates subtotal per branch
+
+- Row-level reports (transaction, transfer, loading, reversal) gain a **Branch** column.
+- Aggregate reports (Income, Expense, Consolidated) show a **subtotal per branch** above the
+  grand total whenever the view spans more than one branch — the same shape the position
+  statement already uses.
+
+Implemented by adding `branch_id` and `branch_name` to each report's row payload and grouping
+in the renderer, rather than by re-deriving any report's SQL. A report's numbers must not be
+recomputed by a second implementation just to slice them differently; the same rows, grouped
+differently, cannot disagree with the total they sit under.
+
+**Phasing**
+
+| Phase | Deliverable | Moves money? |
+|---|---|---|
+| **R1** | Branch picker, server validation, account narrowing, print scope | no |
+| **R2** | Branch column + per-branch subtotals | no |
+| **R3** | Statement moves to Reports; From/To leaves Cash Management | no |
+
+R1 first because it shapes the other two: R2 needs the branch on the row, and R3's statement
+is per-branch by construction.
