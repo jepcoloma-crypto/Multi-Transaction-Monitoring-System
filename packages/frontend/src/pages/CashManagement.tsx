@@ -224,7 +224,17 @@ export default function CashManagement() {
       setDrawers(value.drawers || []);
       setShiftError('');
     } catch (err) {
-      setShiftError(err instanceof Error ? err.message : 'Could not load shift status');
+      const message = err instanceof Error ? err.message : 'Could not load shift status';
+      // A backend that predates this feature answers the endpoint with an HTML
+      // error page, and the client falls over while parsing it. The parser's
+      // complaint reads like a broken screen when the server simply being older
+      // is what happened — so report that, without asserting it is the only
+      // possible cause.
+      setShiftError(
+        /<!DOCTYPE|not valid JSON/i.test(message)
+          ? 'The server did not return shift data — it may still be running an older build.'
+          : message,
+      );
       setShifts([]);
       setDrawers([]);
     } finally {
