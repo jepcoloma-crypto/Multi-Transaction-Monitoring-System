@@ -482,15 +482,23 @@ export default function CashManagement() {
               onChange={(e) => setEndDate(e.target.value)}
             />
           </div>
-          <div>
-            <label className="form-label">Branch</label>
-            <select className="form-input" value={branchId} onChange={(e) => setBranchId(e.target.value)}>
-              <option value="">All branches I can see</option>
-              {branches.map((b) => (
-                <option key={b.id} value={b.id}>{b.name} ({b.code})</option>
-              ))}
-            </select>
-          </div>
+          {/* Only when there is more than one branch to choose between. With a
+              single assigned branch, "All branches I can see" and that branch
+              issue the same query, so the control would be two ways of saying
+              one thing. Counted rather than keyed on role: an operator may hold
+              several branches and a head-office user one, and hiding it by role
+              would strand the former with no way to choose. */}
+          {branches.length > 1 && (
+            <div>
+              <label className="form-label">Branch</label>
+              <select className="form-input" value={branchId} onChange={(e) => setBranchId(e.target.value)}>
+                <option value="">All branches I can see</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name} ({b.code})</option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="flex items-end">
             <p className="text-xs text-gray-500">
               Leave both dates empty to cover all recorded history.
