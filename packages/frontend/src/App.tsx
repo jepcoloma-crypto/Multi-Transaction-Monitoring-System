@@ -20,6 +20,7 @@ import ProviderCharges from './pages/ProviderCharges';
 import Users from './pages/Users';
 import Roles from './pages/Roles';
 import Branches from './pages/Branches';
+import CashManagement from './pages/CashManagement';
 import Profile from './pages/Profile';
 import ImportData from './pages/ImportData';
 import Customers from './pages/Customers';
@@ -77,6 +78,7 @@ function AppRoutes() {
         <Route path="users" element={<Users />} />
         <Route path="roles" element={<Roles />} />
         <Route path="branches" element={<Branches />} />
+        <Route path="cash-management" element={<CashManagement />} />
         <Route path="profile" element={<Profile />} />
         <Route path="import" element={<ImportData />} />
         <Route path="customers" element={<Customers />} />

@@ -37,6 +37,7 @@ const navigation = [
   { name: 'Loading', href: '/loading', icon: Smartphone },
   { name: 'Customers', href: '/customers', icon: UserCircle },
   { name: 'Reconciliation', href: '/reconciliation', icon: CheckSquare },
+  { name: 'Cash Management', href: '/cash-management', icon: Wallet },
   { name: 'Reports', href: '/reports', icon: BarChart3 },
   { name: 'Alerts', href: '/alerts', icon: Bell },
 ];
