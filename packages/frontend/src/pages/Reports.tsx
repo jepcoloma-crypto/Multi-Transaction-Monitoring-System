@@ -1,14 +1,14 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, dateKeyLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 import { ExpenseDetailPanel } from '../components/ExpenseDetail';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report';
 
 // One report module, two tabs. They are separate queries with separate
 // endpoints rather than one payload split in the browser: the income side
@@ -56,7 +56,7 @@ export default function Reports() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
-  const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '', branchId: '' });
+  const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '', branchId: '', shiftStatus: '', varianceOnly: false });
 
   // Stated on the printed sheet, because the header badge that normally says
   // it is inside a print:hidden region. A PDF filed without knowing which
@@ -113,6 +113,10 @@ export default function Reports() {
       if (filters.status) params.append('status', filters.status);
       if (filters.providerId) params.append('providerId', filters.providerId);
       if (filters.branchId) params.append('branchId', filters.branchId);
+      if (activeReport === 'shift-report') {
+        if (filters.shiftStatus) params.append('status', filters.shiftStatus);
+        if (filters.varianceOnly) params.append('varianceOnly', '1');
+      }
       const qs = params.toString();
       // The merged module runs two endpoints rather than one payload split in
       // the browser. Only the side on screen is fetched, so switching tabs
@@ -165,6 +169,7 @@ export default function Reports() {
       case 'transfer-report': return 'transfers';
       case 'loading-report': return 'loading';
       case 'reversal-report': return 'reversals';
+      case 'shift-report': return 'shifts';
       case 'income-expense': return incomeExpenseTab === 'income' ? 'income' : 'expense';
       default: return null;
     }
@@ -187,6 +192,10 @@ export default function Reports() {
       // carrying every branch under a header that says one would be the
       // printed-scope problem again, in a file nobody re-reads the settings on.
       if (filters.branchId) params.append('branchId', filters.branchId);
+      if (activeReport === 'shift-report') {
+        if (filters.shiftStatus) params.append('status', filters.shiftStatus);
+        if (filters.varianceOnly) params.append('varianceOnly', '1');
+      }
       params.append('format', 'csv');
       const res = await fetch(`${API_BASE}/reports/export/${type}?${params.toString()}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
@@ -227,6 +236,7 @@ export default function Reports() {
     { id: 'transfer-report' as ReportType, name: 'Transfer Report', icon: ArrowLeftRight, desc: 'Fund transfer history' },
     { id: 'loading-report' as ReportType, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
     { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
+  { id: 'shift-report' as ReportType, name: 'Shift & Cash Count', icon: Coins, desc: 'Drawer counts per shift: float, expected vs counted, and variance' },
     { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, in two tabs' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
   ];
@@ -351,6 +361,34 @@ export default function Reports() {
                     <option value="failed">Failed</option>
                   </select>
                 </div>
+              )}
+              {activeReport === 'shift-report' && (
+                <>
+                  <div>
+                    <label className="text-xs text-gray-500">Status</label>
+                    <select value={filters.shiftStatus} onChange={e => setFilters({ ...filters, shiftStatus: e.target.value })} className="input-field text-sm">
+                      <option value="">All</option>
+                      <option value="open">Open</option>
+                      <option value="closed">Closed</option>
+                    </select>
+                  </div>
+                  {/* An unchecked drawer is not a variance, so the two filters
+                      are independent: this one narrows to counts that did not
+                      balance, the one above to shifts that have not been
+                      counted. Choosing both returns nothing, which is the
+                      honest answer to that question. */}
+                  <div className="flex items-end pb-1.5">
+                    <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={filters.varianceOnly}
+                        onChange={e => setFilters({ ...filters, varianceOnly: e.target.checked })}
+                        className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      />
+                      Variances only
+                    </label>
+                  </div>
+                </>
               )}
             </div>
           </div>
@@ -948,6 +986,102 @@ export default function Reports() {
                         </tr>
                       </tfoot>
                     )}
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'shift-report' && reportData.shifts ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+                <div className="card">
+                  <p className="text-gray-500">Shifts</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.totalShifts || 0}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.openShifts || 0} open · {reportData.summary?.closedShifts || 0} closed</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Cash Through Drawers</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.summary?.totalCashIn || 0)}</p>
+                  <p className="text-sm text-gray-500">paid out {formatCurrency(reportData.summary?.totalCashOut || 0)}</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Counted Closing</p>
+                  <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.totalCounted || 0)}</p>
+                  <p className="text-sm text-gray-500">expected {formatCurrency(reportData.summary?.totalExpected || 0)}</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Net Variance</p>
+                  <p className={`text-2xl font-bold mt-1 ${(reportData.summary?.totalVariance || 0) < 0 ? 'text-finance-red' : (reportData.summary?.totalVariance || 0) > 0 ? 'text-amber-600' : ''}`}>
+                    {formatCurrency(reportData.summary?.totalVariance || 0)}
+                  </p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.shortCount || 0} short · {reportData.summary?.overCount || 0} over · {reportData.summary?.balancedCount || 0} balanced</p>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Shifts &amp; Cash Counts</h4>
+                  <p className="text-xs text-gray-500">Closed rows carry the figures settled when the drawer was counted; open rows show live movements with no count yet</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1250px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Shift Date</th>
+                        {branches.length > 1 && (
+                          <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
+                        )}
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Opened By</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Opening Float</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Cash In</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Cash Out</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Expected</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Counted</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Variance</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Closed By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.shifts.length === 0 ? (
+                        <tr><td colSpan={branches.length > 1 ? 12 : 11} className="px-4 py-8 text-center text-sm text-gray-500">No shifts for these filters.</td></tr>
+                      ) : reportData.shifts.map((s: any) => (
+                        <tr key={s.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{s.shiftDate ? dateKeyLabel(s.shiftDate) : '—'}</td>
+                          {branches.length > 1 && (
+                            <td className="px-4 py-3.5 text-sm whitespace-nowrap">{s.branchName} <span className="text-gray-400">({s.branchCode})</span></td>
+                          )}
+                          <td className="px-4 py-3.5">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${s.status === 'open' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-600'}`}>
+                              {s.status === 'open' ? 'Open' : 'Closed'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{s.openedByUsername || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">{formatCurrency(s.openingFloat)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap text-finance-green">{formatCurrency(s.cashIn)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap text-finance-red">{formatCurrency(s.cashOut)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">
+                            {s.expectedClosing === null
+                              ? <span className="text-gray-400">—</span>
+                              : formatCurrency(s.expectedClosing)}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">
+                            {s.countedClosing === null
+                              ? <span className="text-gray-400">—</span>
+                              : formatCurrency(s.countedClosing)}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">
+                            {s.variance === null
+                              ? <span className="text-gray-400">—</span>
+                              : <span className={`font-medium ${s.variance < 0 ? 'text-finance-red' : s.variance > 0 ? 'text-amber-600' : 'text-gray-500'}`}>
+                                  {formatCurrency(s.variance)}
+                                </span>}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{s.closedByUsername || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-700 max-w-[16rem] truncate" title={s.notes || undefined}>{s.notes || <span className="text-gray-400">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
                   </table>
                 </div>
               </div>

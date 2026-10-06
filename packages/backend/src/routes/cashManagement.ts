@@ -4,10 +4,10 @@ import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
 import { branchClause, canSeeAll } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS } from '../services/cashManagement';
+import { drawerMovements, drawerBalance, drawerWindow } from '../services/drawerQuery';
 import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey } from '../services/manilaTime';
 import type { BranchBalance, CashBucket, LedgerFlowRow } from '../services/cashManagement';
-import type { ShiftMovement } from '../services/shifts';
 
 const router = Router();
 
@@ -318,33 +318,6 @@ async function assertShiftBranch(req: Request, branchId: string, notFoundMessage
   if (!exists) throw createError(404, notFoundMessage);
 }
 
-// The drawer's own movements inside a window. Keyed on the branch's cash-type
-// accounts rather than on one named account, because the drawer is the branch's
-// physical cash whether or not it happens to be split across two of them — and
-// anything that touched physical cash has to be in the count.
-async function drawerMovements(branchId: string, from: Date, to: Date): Promise<ShiftMovement[]> {
-  return query<ShiftMovement>(
-    `SELECT l.entry_type, l.amount
-     FROM ledger_entries l
-     JOIN accounts a ON a.id = l.account_id
-     JOIN account_types ct ON ct.id = a.account_type_id
-     WHERE ct.code = 'cash' AND a.branch_id = $1
-       AND l.entry_date >= $2 AND l.entry_date < $3`,
-    [branchId, from.toISOString(), to.toISOString()],
-  );
-}
-
-async function drawerBalance(branchId: string): Promise<number> {
-  const row = await queryOne<{ balance: string }>(
-    `SELECT COALESCE(SUM(a.current_balance), 0) AS balance
-     FROM accounts a
-     JOIN account_types t ON t.id = a.account_type_id
-     WHERE t.code = 'cash' AND a.branch_id = $1`,
-    [branchId],
-  );
-  return num(row?.balance);
-}
-
 router.get('/shifts', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = req.query.status === 'open' || req.query.status === 'closed' ? req.query.status : null;
@@ -391,7 +364,7 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
         data.push({ ...row, live: null });
         continue;
       }
-      const movements = await drawerMovements(row.branch_id, new Date(row.opened_at), now);
+      const movements = await drawerMovements(row.branch_id, row.opened_at, now);
       const expected = expectedClosing(row.opening_float, movements);
       const balance = await drawerBalance(row.branch_id);
       data.push({
@@ -399,7 +372,9 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
         live: {
           movementCount: movements.length,
           cashIn: netMovement(movements.filter((m) => m.entry_type === 'credit')),
-          cashOut: netMovement(movements.filter((m) => m.entry_type === 'debit')),
+          // Magnitude, not the signed net: the banner prints its own "−" and
+          // formatCurrency adds another for a negative, giving "−-₱1,500".
+          cashOut: Math.abs(netMovement(movements.filter((m) => m.entry_type === 'debit'))),
           netMovement: netMovement(movements),
           expected,
           drawerBalance: balance,
@@ -502,7 +477,7 @@ router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Re
     if (!Number.isFinite(countedClosing)) throw createError(400, 'Counted closing cash must be a number');
     if (countedClosing < 0) throw createError(400, 'Counted closing cash cannot be negative');
 
-    const movements = await drawerMovements(shift.branch_id, new Date(shift.opened_at), new Date());
+    const movements = await drawerMovements(shift.branch_id, shift.opened_at, new Date());
     const report = classifyVariance(shift.opening_float, movements, countedClosing);
     const balance = await drawerBalance(shift.branch_id);
 
@@ -546,8 +521,7 @@ router.get('/shifts/:id/movements', authorize('reports.read'), async (req: Reque
     if (!shift) throw createError(404, 'Shift not found');
     await assertShiftBranch(req, shift.branch_id, 'Shift not found');
 
-    const from = new Date(shift.opened_at);
-    const to = shift.closed_at ? new Date(shift.closed_at) : new Date();
+    const { from, to } = drawerWindow(shift.opened_at, shift.closed_at);
 
     const rows = await query<any>(
       `SELECT l.id, l.entry_date, l.entry_type, l.amount, l.balance_after, l.source_type,

@@ -9,6 +9,9 @@ import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../serv
 import { buildExpenseReport, buildExpenseDetail, type ExpenseReport, type ExpenseDetail } from '../services/expenseReport';
 import { statementReversal } from '../services/statementReversal';
 import { loadScopedLedger } from '../services/ledgerQuery';
+import { drawerMovements } from '../services/drawerQuery';
+import { netMovement } from '../services/shifts';
+import { buildShiftReport } from '../services/shiftReport';
 
 const router = Router();
 router.use(authenticate);
@@ -524,6 +527,92 @@ router.get('/reversal-report', authorize('reports.read'), async (req: Request, r
     res.json({ success: true, data: report });
   } catch (error) { next(error); }
 });
+
+type ShiftFilters = { startDate?: unknown; endDate?: unknown; branchId?: string | null; status?: unknown; varianceOnly?: boolean };
+
+// One row per shift with the drawer's own movements inside its window. The
+// window is the shift's opened_at to its closed_at — never the report's date
+// range — because a shift's expected figure is arithmetic over what moved while
+// it was open, and widening the window to the period would fold the next shift's
+// takings into the count.
+//
+// Scopes on `branches.read_all` rather than the transaction-level scopes: a
+// shift belongs to a branch directly, so there is no account to resolve it
+// through, and the branch predicate is the only thing standing between a query
+// string and every branch's drawer.
+const loadShiftReport = async (req: Request, filters: ShiftFilters) => {
+  const { startDate, endDate, branchId, varianceOnly } = filters;
+  const conds: string[] = [];
+  const params: any[] = [];
+  let pi = 1;
+  if (startDate) { conds.push(`s.shift_date >= $${pi++}`); params.push(startDate); }
+  if (endDate) { conds.push(`s.shift_date <= $${pi++}`); params.push(endDate); }
+  // `open` and `closed` are the report's own shape; anything else is left
+  // unfiltered rather than treated as a wildcard, so a mistyped value returns
+  // every shift instead of silently none.
+  if (filters.status === 'open' || filters.status === 'closed') {
+    conds.push(`s.status = $${pi++}`);
+    params.push(filters.status);
+  }
+  const scope = branchClause(req, 's', 'branches.read_all', pi, 'self', branchId ?? null);
+  if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
+
+  const rows = await query<any>(
+    `SELECT s.id, s.branch_id, s.shift_date::text AS shift_date, s.status,
+            s.opening_float, s.counted_closing, s.expected_closing, s.variance,
+            s.opened_at, s.closed_at, s.notes,
+            b.code AS branch_code, b.name AS branch_name,
+            ou.username AS opened_by_username, cu.username AS closed_by_username
+     FROM shifts s
+     JOIN branches b ON b.id = s.branch_id
+     LEFT JOIN users ou ON ou.id = s.opened_by
+     LEFT JOIN users cu ON cu.id = s.closed_by
+     ${conds.length ? `WHERE ${conds.join(' AND ')}` : ''}
+     ORDER BY s.shift_date DESC, s.opened_at DESC`,
+    params,
+  );
+
+  // A shift's cash in and out is the only figure this report computes rather
+  // than reads off the row, and it is computed per shift because the window is
+  // the shift's own. The settled closing figures stay untouched.
+  const sources = await Promise.all(rows.map(async (row) => {
+    const movements = await drawerMovements(row.branch_id, row.opened_at, row.closed_at);
+    return {
+      ...row,
+      cash_in: movements.filter((m) => m.entry_type === 'credit').reduce((sum, m) => sum + netMovement([m]), 0),
+      // `netMovement` is a net and so signed: a debit nets negative. Cash out
+      // is reported as a magnitude instead, because every renderer prints its
+      // own sign — the summary card reads "paid out …", the table colours the
+      // cell red — and -1500 would reach them as "paid out -₱1,500".
+      cash_out: Math.abs(
+        movements.filter((m) => m.entry_type === 'debit').reduce((sum, m) => sum + netMovement([m]), 0),
+      ),
+    };
+  }));
+
+  // Filtered before the summary is built, so a variance-only run's totals
+  // describe the shifts on screen rather than every shift in the period.
+  const filtered = varianceOnly
+    ? sources.filter((s) => s.status === 'closed' && Math.abs(round2(Number(s.variance ?? 0))) > 0)
+    : sources;
+
+  return buildShiftReport(filtered);
+};
+
+router.get('/shift-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const report = await loadShiftReport(req, {
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      branchId: await resolveBranchFilter(req, req.query.branchId),
+      status: req.query.status,
+      varianceOnly: req.query.varianceOnly === '1' || req.query.varianceOnly === 'true',
+    });
+    res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
+
 
 type IncomeFilters = { startDate?: unknown; endDate?: unknown; accountId?: unknown; branchId?: string | null };
 
@@ -1216,8 +1305,59 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Description', key: 'description' },
         { header: 'Date', key: 'entry_date' },
       ];
+    } else if (type === 'shift' || type === 'shifts') {
+      const report = await loadShiftReport(req, {
+        startDate,
+        endDate,
+        branchId,
+        status: req.query.status,
+        varianceOnly: req.query.varianceOnly === '1' || req.query.varianceOnly === 'true',
+      });
+      data = report.shifts.map((s) => ({
+        shift_date: s.shiftDate,
+        branch: s.branchName ? `${s.branchName} (${s.branchCode})` : '',
+        status: s.status,
+        opened_by: s.openedByUsername,
+        opened_at: s.openedAt,
+        closed_by: s.closedByUsername,
+        closed_at: s.closedAt,
+        opening_float: s.openingFloat.toFixed(2),
+        cash_in: s.cashIn.toFixed(2),
+        cash_out: s.cashOut.toFixed(2),
+        expected_closing: s.expectedClosing === null ? '' : s.expectedClosing.toFixed(2),
+        counted_closing: s.countedClosing === null ? '' : s.countedClosing.toFixed(2),
+        variance: s.variance === null ? '' : s.variance.toFixed(2),
+        notes: s.notes ?? '',
+      }));
+      columns = [
+        { header: 'Shift Date', key: 'shift_date' },
+        { header: 'Branch', key: 'branch' },
+        { header: 'Status', key: 'status' },
+        { header: 'Opened By', key: 'opened_by' },
+        { header: 'Opened At', key: 'opened_at' },
+        { header: 'Closed By', key: 'closed_by' },
+        { header: 'Closed At', key: 'closed_at' },
+        { header: 'Opening Float', key: 'opening_float' },
+        { header: 'Cash In', key: 'cash_in' },
+        { header: 'Cash Out', key: 'cash_out' },
+        { header: 'Expected Closing', key: 'expected_closing' },
+        { header: 'Counted Closing', key: 'counted_closing' },
+        { header: 'Variance', key: 'variance' },
+        { header: 'Notes', key: 'notes' },
+      ];
+      if (data.length > 0) {
+        csvTotals = {
+          shift_date: 'TOTAL',
+          opening_float: report.summary.totalOpeningFloat.toFixed(2),
+          cash_in: report.summary.totalCashIn.toFixed(2),
+          cash_out: report.summary.totalCashOut.toFixed(2),
+          expected_closing: report.summary.totalExpected.toFixed(2),
+          counted_closing: report.summary.totalCounted.toFixed(2),
+          variance: report.summary.totalVariance.toFixed(2),
+        };
+      }
     } else {
-      return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger, reversals' } });
+      return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger, reversals, shifts' } });
     }
 
     if (fmt === 'csv') {
