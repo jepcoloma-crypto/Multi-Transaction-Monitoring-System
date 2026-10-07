@@ -923,3 +923,49 @@ reopening the filter D18 closed — there is still nothing to pick.
   window for it would be inventing a period the books never recorded.
 
 Cash Management keeps no date input; Reports keeps every other period.
+
+### D22 — the register lists what exists, without a period
+
+The position above answers *where the cash is now*. It does not answer *what has been recorded
+against it* — a reader auditing their own data entry has to open the statement in Reports and
+pick a range, which is the range they do not yet know. So Cash Management gains a **register**:
+every ledger row that touched a branch's cash accounts, newest first.
+
+- **It carries no date filter, and that is not a conflict with D18.** A list of what exists is a
+  point-in-time question, not a period question; D18 removed a From/To pair that fed the
+  headline figures. The register narrows by branch, by class and by a text search — never by a
+  date. A reader who wants a period uses Reports.
+- **It is classified by `bucketFor` in code, not by a second SQL `CASE`.** The same function the
+  position statement totals by classifies each row, because a list that disagreed with the
+  figures it sits under would be worse than no list. The drill-down (`/statement/drill`) already
+  made this choice for the same reason; the register follows it. The whole scoped population is
+  read once — the same set `/statement` already reads unbounded — and filtered, classified and
+  paged in code.
+- **The classes offered are built from that population**, with their counts, so the Type
+  dropdown can neither offer a class that yields nothing nor hide one that yields rows.
+- **Scope matches the statement's own data**: `accounts.read_all` through
+  `resolveBranchFilter`, so a foreign or malformed branch answers 404 rather than an empty view,
+  and a branch-scoped operator sees only their branch's cash.
+- **`GET /cash-management/records`** (`reports.read`) serves the page and, with `format=csv`, the
+  whole filtered register as a file. The export is narrowed exactly as the screen is but is not
+  clipped to the visible page, writes a BOM, and reads each date in Manila (`manilaDateTimeKey`)
+  so a row filed Oct 8 in Manila is not exported as Oct 7 — the same off-by-a-day D21 closed for
+  reports. `CashRecordRow` and `cashRecordsCsv` are pure and pinned by
+  `src/test/cashManagement.test.ts`.
+- **A row is filed under its business day.** The register's *Date* is the transaction's
+  `transaction_date` (the day the operator named, D17), falling back to the posting instant for a
+  row with no transaction — a transfer, adjustment or gap fix. The instant the row actually hit
+  the drawer (`entry_date`) is printed beside it as *Posted*, because an expense entered for Sep
+  25 and posted into the drawer on Oct 7 is one of those two dates and the reader has to be able
+  to tell which. The list is ordered by the same filed day, so the order matches the dates on
+  screen: a back-dated row for Sep 25 is neither listed nor sorted under the Oct 7 it was posted.
+  This is why the two dates are carried apart rather than collapsed — the drawer's balance moved
+  on one of them and the books were told the other.
+- **Anonymous classification.** A row whose source the classifier does not recognise still
+  appears, under *Other*, rather than vanishing from the drawer's complete history. A shift float
+  gets its own *Opening Float* class: a shift writes no ledger row today, so the class exists to
+  name one the moment one is posted, not to leave it reading as an unexplained correction.
+
+The register sits **outside the statement's render branch**, so a statement that fails to load
+does not take the drawer's own history down with it. The register is what a reader opens to check
+a figure; it renders whatever the position above it is doing.

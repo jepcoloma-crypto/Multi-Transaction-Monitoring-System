@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, touchesDrawer, drawerLeg } from '../services/cashManagement';
-import type { BranchBalance, LedgerFlowRow } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv } from '../services/cashManagement';
+import type { BranchBalance, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
   assert.equal(bucketFor('transaction', 'operating_expense'), 'operating_expenses');
@@ -251,4 +251,140 @@ test('a movement that changes nothing physical writes no drawer row', () => {
 test('the drawer figure is rounded to centavos rather than left to float error', () => {
   assert.deepEqual(drawerLeg(0.1 + 0.2, 0), { amount: 0.3, entryType: 'credit' });
   assert.deepEqual(drawerLeg(-(0.1 + 0.2), 0.01), { amount: 0.29, entryType: 'debit' });
+});
+
+test('a shift float is a class of its own, not lumped into Other', () => {
+  // A shift writes no ledger row, so this names the classification a float row
+  // must land in if one is ever posted from a shift rather than silently
+  // reading as an unexplained correction.
+  assert.equal(bucketFor('opening_float', null), 'opening_float');
+  assert.equal(bucketFor('shift', null), 'opening_float');
+  assert.equal(BUCKET_LABELS.opening_float, 'Opening Float');
+});
+
+const raw = (over: Partial<CashRecordRaw>): CashRecordRaw => ({
+  id: 'l1',
+  entry_date: '2026-10-07T15:21:25.562Z',
+  entry_type: 'debit',
+  amount: '1045.00',
+  balance_after: '130782.00',
+  source_type: 'transaction',
+  reference_number: null,
+  description: 'Operating expense',
+  account_name: 'Revolving Fund',
+  branch_code: 'MAIN',
+  branch_name: 'Main Branch',
+  transaction_number: 253,
+  transaction_date: '2026-10-07T15:21:25.562Z',
+  payee: null,
+  txn_code: 'operating_expense',
+  payment_method: null,
+  created_by_username: 'admin',
+  ...over,
+});
+
+test('a register row reads its class from the same bucket the statement totals by', () => {
+  const row = toCashRecordRow(raw({}));
+  assert.equal(row.bucket, 'operating_expenses');
+  assert.equal(row.category, 'Operating Expenses');
+  assert.equal(row.direction, 'out');
+  assert.equal(row.amount, '1045.00');
+  assert.equal(row.balanceAfter, '130782.00');
+  assert.equal(row.transactionNumber, 253);
+});
+
+test('a credit reads as money in, a debit as money out', () => {
+  assert.equal(toCashRecordRow(raw({ entry_type: 'credit' })).direction, 'in');
+  assert.equal(toCashRecordRow(raw({ entry_type: 'debit' })).direction, 'out');
+});
+
+test('a register row is filed under its business date, not the posting instant', () => {
+  // The expense was entered for Sep 25 but posted into the drawer on Oct 7.
+  // The register lists it under Sep 25 and keeps the posting instant beside it.
+  const row = toCashRecordRow(raw({
+    transaction_date: '2026-09-25T15:21:25.551Z',
+    entry_date: '2026-10-07T15:21:25.562Z',
+  }));
+  assert.equal(row.businessDate, '2026-09-25T15:21:25.551Z');
+  assert.equal(row.entryDate, '2026-10-07T15:21:25.562Z');
+});
+
+test('a row with no transaction falls back to its posting instant for the date', () => {
+  // A transfer or adjustment has no business date to name, so it must still be
+  // filed under a real day rather than an empty or invalid one.
+  const row = toCashRecordRow(raw({
+    source_type: 'transfer', txn_code: null, transaction_number: null, transaction_date: null,
+  }));
+  assert.equal(row.businessDate, '2026-10-07T15:21:25.562Z');
+  assert.equal(row.businessDate, row.entryDate);
+});
+
+test('an unparseable business date falls back rather than reaching the formatter as garbage', () => {
+  const row = toCashRecordRow(raw({ transaction_date: 'not-a-date' }));
+  assert.equal(row.businessDate, row.entryDate);
+});
+
+test('a register row with no transaction keeps its source type and names no txn', () => {
+  const row = toCashRecordRow(raw({
+    source_type: 'transfer', txn_code: null, transaction_number: null,
+  }));
+  assert.equal(row.bucket, 'transfers');
+  assert.equal(row.transactionNumber, null);
+});
+
+test('an unrecognised row is classified rather than left blank', () => {
+  // The register is the drawer's complete history, so a row it cannot place
+  // still has to appear — under Other, not missing.
+  const row = toCashRecordRow(raw({ source_type: null, txn_code: null }));
+  assert.equal(row.bucket, 'other');
+  assert.equal(row.category, 'Other');
+});
+
+test('the register carries the posting instant, unrounded', () => {
+  const row = toCashRecordRow(raw({ entry_date: '2026-10-07T15:21:25.562Z' }));
+  assert.equal(row.entryDate, '2026-10-07T15:21:25.562Z');
+});
+
+test('a row with a null entry date does not throw or invent one', () => {
+  const row = toCashRecordRow(raw({ entry_date: null as unknown as string }));
+  assert.equal(row.entryDate, new Date(null as unknown as number).toISOString());
+});
+
+test('the CSV leads with the business day and keeps the posting instant beside it', () => {
+  const csv = cashRecordsCsv([
+    toCashRecordRow(raw({
+      transaction_date: '2026-09-25T15:21:25.551Z',
+      entry_date: '2026-10-07T15:21:25.562Z',
+    })),
+  ]);
+  const lines = csv.split('\r\n');
+
+  assert.ok(csv.startsWith('\uFEFF'), 'the BOM is what makes Excel read the file');
+  assert.ok(lines[0].includes('"Business Day"') && lines[0].includes('"Posted At"') && lines[0].includes('"Balance After"'));
+  assert.ok(lines[1].includes('"2026-09-25 23:21"'), `expected the Sep 25 business day, got ${lines[1]}`);
+  assert.ok(lines[1].includes('"2026-10-07 23:21"'), `expected the Oct 7 posting instant, got ${lines[1]}`);
+});
+
+test('the CSV reads every date in Manila, not UTC', () => {
+  // 2026-10-07T18:00Z is 2026-10-08 02:00 in Manila — a row near midnight must
+  // export as the Manila day, not the UTC one. The bug this guards is a
+  // last-day-off export.
+  const csv = cashRecordsCsv([
+    toCashRecordRow(raw({ id: 'l2', transaction_number: null, transaction_date: null, entry_date: '2026-10-07T18:00:00.000Z' })),
+  ]);
+  assert.ok(csv.includes('"2026-10-08 02:00"'), `expected Manila Oct 8, got ${csv}`);
+});
+
+test('the CSV quotes a description so a comma or quote cannot break a column', () => {
+  const csv = cashRecordsCsv([
+    toCashRecordRow(raw({ description: 'Rent, "October"' })),
+  ]);
+  assert.ok(csv.includes('"Rent, ""October"""'), 'a comma or quote must be escaped, not dropped');
+});
+
+test('the CSV writes a null field as an empty cell, never as the text null', () => {
+  const csv = cashRecordsCsv([
+    toCashRecordRow(raw({ payee: null, reference_number: null, transaction_number: null, payment_method: null })),
+  ]);
+  assert.ok(!csv.includes('null'), `a null leaked into the file: ${csv}`);
 });

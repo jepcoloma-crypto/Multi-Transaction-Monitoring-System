@@ -3,12 +3,17 @@ import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
 import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
+import {
+  fetchCashRecords, downloadCashRecordsCsv,
+  type CashRecord, type CashRecordClass, type CashRecordPage,
+} from '../lib/cashRecords';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect, { type AccountOption } from '../components/AccountSelect';
 import { NO_OPEN_SHIFT_HINT } from '../hooks/useShiftGate';
 import {
   Wallet, Plus, Check, X, RefreshCw, ShieldAlert, AlertTriangle, Inbox, Receipt,
   TrendingUp, TrendingDown, Coins, ArrowRight, Calendar, Clock, List, Printer,
+  Search, Download, ChevronLeft, ChevronRight,
 } from 'lucide-react';
 
 // NUMERIC columns arrive as strings and a shift's close fields are still null
@@ -235,6 +240,20 @@ export default function CashManagement() {
 
   const [shifts, setShifts] = useState<Shift[]>([]);
 
+  // The drawer's register — every cash-account ledger row, newest first. Kept
+  // in its own state so a filter or a page change re-reads only this section
+  // and never the position above it.
+  const [records, setRecords] = useState<CashRecord[]>([]);
+  const [recordClasses, setRecordClasses] = useState<CashRecordClass[]>([]);
+  const [recordPage, setRecordPage] = useState<CashRecordPage['pagination'] | null>(null);
+  const [loadingRecords, setLoadingRecords] = useState(true);
+  const [recordError, setRecordError] = useState('');
+  const [recordType, setRecordType] = useState('');
+  const [recordSearchInput, setRecordSearchInput] = useState('');
+  const [recordSearch, setRecordSearch] = useState('');
+  const [recordPageNum, setRecordPageNum] = useState(1);
+  const [exportingRecords, setExportingRecords] = useState(false);
+
   // Elapsed time only means something if it moves. Without this the card would
   // print "0m" for as long as the page sat untouched, which is worse than
   // printing no elapsed time at all.
@@ -306,6 +325,33 @@ export default function CashManagement() {
     }
   }, [branchId]);
 
+  // The register reads from the same branch the position is scoped to, and
+  // resets to page 1 whenever the filter changes: page 3 of a smaller set is a
+  // page that does not exist, and an empty screen reads as "no records".
+  const loadRecords = useCallback(async () => {
+    setLoadingRecords(true);
+    try {
+      const page = await fetchCashRecords({
+        branchId: branchId || undefined,
+        type: recordType || undefined,
+        search: recordSearch || undefined,
+        page: recordPageNum,
+        limit: 50,
+      });
+      setRecords(page.records || []);
+      setRecordClasses(page.classes || []);
+      setRecordPage(page.pagination || null);
+      setRecordError('');
+    } catch (err) {
+      setRecords([]);
+      setRecordClasses([]);
+      setRecordPage(null);
+      setRecordError(err instanceof Error ? err.message : 'Could not load the cash records');
+    } finally {
+      setLoadingRecords(false);
+    }
+  }, [branchId, recordType, recordSearch, recordPageNum]);
+
   const loadExpenses = useCallback(async () => {
     if (!isApprover) return;
     setLoadingExpenses(true);
@@ -372,6 +418,23 @@ export default function CashManagement() {
   useEffect(() => { loadShiftActivity(); }, [loadShiftActivity]);
   useEffect(() => { loadExpenses(); }, [loadExpenses]);
   useEffect(() => { loadShifts(); }, [loadShifts]);
+  useEffect(() => { loadRecords(); }, [loadRecords]);
+
+  // A branch, class or search change narrows the register, so the page number
+  // it was on is no longer the page it is on. Reset before the read rather than
+  // after: reading page 3 of the new filter and then snapping to page 1 would
+  // flash a wrong set first. The loader runs again off the state change.
+  useEffect(() => {
+    setRecordPageNum(1);
+  }, [branchId, recordType, recordSearch]);
+
+  // Debounced so a three-word search is one read, not three. The list is a
+  // register of a whole branch's cash history, not a type-ahead, so waiting for
+  // a pause costs nothing a live list needs.
+  useEffect(() => {
+    const handle = setTimeout(() => setRecordSearch(recordSearchInput.trim()), 300);
+    return () => clearTimeout(handle);
+  }, [recordSearchInput]);
 
   // A shift records a count. Neither of these writes a balance or a ledger row:
   // opening stores the float that was physically counted, and closing stores
@@ -467,6 +530,24 @@ export default function CashManagement() {
     setDrawerActivity(null);
   };
 
+  // The export narrows exactly as the screen is — branch, class and search —
+  // but carries the whole filtered register rather than the visible page.
+  const exportRecords = async () => {
+    setExportingRecords(true);
+    setRecordError('');
+    try {
+      await downloadCashRecordsCsv({
+        branchId: branchId || undefined,
+        type: recordType || undefined,
+        search: recordSearch || undefined,
+      });
+    } catch (err) {
+      setRecordError(err instanceof Error ? err.message : 'Export failed');
+    } finally {
+      setExportingRecords(false);
+    }
+  };
+
   const openForm = () => {
     setForm({ ...emptyForm, transactionDate: manilaDateValue() });
     setFormError('');
@@ -508,7 +589,7 @@ export default function CashManagement() {
         paymentMethod: form.paymentMethod || null,
       });
       setShowForm(false);
-      await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity()]);
+      await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity(), loadRecords()]);
       window.dispatchEvent(new Event('approvals-changed'));
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Could not record the expense');
@@ -1144,6 +1225,166 @@ export default function CashManagement() {
 
         </>
       ) : null}
+
+      {/* The register sits below the position, not above it: the figures answer
+          "where is the cash", and this answers "what has been recorded against
+          it". Both describe the same drawer, so the list is scoped to the same
+          branch and carries no period of its own — a register of what exists is
+          a point-in-time question, and the period-shaped cash analysis stays in
+          Reports (D18).
+
+          Outside the statement's branch on purpose: a statement that failed to
+          load must not take the drawer's own history down with it. This is the
+          section a reader opens to check a figure, so it renders whatever the
+          position above it is doing. */}
+      <div className="card overflow-hidden">
+        <div className="px-4 pt-4 pb-3 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h4 className="font-medium">Cash records</h4>
+            <p className="text-xs text-gray-500">
+              Every ledger entry that touched a branch's cash accounts, newest first — the
+              complete history of the drawer. A register of what has been recorded, not a
+              period, so it carries no From/To; use Reports for a date range. A row is filed
+              under its business day, with the instant it was posted beside it.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn-secondary shrink-0"
+            onClick={exportRecords}
+            disabled={exportingRecords || loadingRecords}
+          >
+            <Download className="w-4 h-4" />
+            {exportingRecords ? 'Exporting...' : 'Export CSV'}
+          </button>
+        </div>
+
+        <div className="px-4 pb-3 flex flex-wrap items-end gap-3">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 w-4 h-4 -translate-y-1/2 text-gray-400" />
+            <input
+              type="search"
+              className="form-input pl-9 w-72"
+              placeholder="Search description, reference, txn # or payee"
+              value={recordSearchInput}
+              onChange={(e) => setRecordSearchInput(e.target.value)}
+              aria-label="Search cash records"
+            />
+          </div>
+          <div>
+            <label className="form-label">Type</label>
+            <select
+              className="form-input w-56"
+              value={recordType}
+              onChange={(e) => setRecordType(e.target.value)}
+            >
+              <option value="">All types</option>
+              {recordClasses.map((c) => (
+                <option key={c.bucket} value={c.bucket}>
+                  {c.label} ({c.count})
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="text-xs text-gray-500 ml-auto self-center">
+            {recordPage ? `${recordPage.total} record(s)` : ''}
+          </p>
+        </div>
+
+        {recordError && (
+          <p className="px-4 pb-3 text-sm text-red-600">{recordError}</p>
+        )}
+
+        {loadingRecords ? (
+          <p className="px-4 pb-6 text-sm text-gray-500">Loading cash records...</p>
+        ) : records.length === 0 ? (
+          <p className="px-4 pb-6 text-sm text-gray-500">
+            {recordType || recordSearch
+              ? 'No cash records match this filter.'
+              : 'No cash records have been recorded for this scope yet.'}
+          </p>
+        ) : (
+          <>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1100px]">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Date</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Posted</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Txn #</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Type</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Account</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Description</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Method</th>
+                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Amount</th>
+                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Balance after</th>
+                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Recorded by</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {records.map((row) => (
+                    <tr key={row.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-600" title={`Business day ${manilaDayLabel(row.businessDate)}`}>
+                        {manilaDayLabel(row.businessDate)}
+                      </td>
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-500" title={`Posted into the drawer ${manilaDateTimeLabel(row.entryDate)}`}>
+                        {manilaDateTimeLabel(row.entryDate)}
+                      </td>
+                      <td className="px-4 py-3 text-sm font-mono text-xs whitespace-nowrap">
+                        {row.transactionNumber !== null ? `TXN #${row.transactionNumber}` : <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-700">{row.category}</td>
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-600">
+                        {row.accountName}
+                        {row.branchCode && <span className="text-gray-400"> · {row.branchCode}</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600 max-w-[22rem] truncate" title={row.description || row.payee || ''}>
+                        {row.description || row.payee || <span className="text-gray-400">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-500">{row.paymentMethod || <span className="text-gray-400">—</span>}</td>
+                      <td className={`px-4 py-3 text-sm text-right font-mono whitespace-nowrap ${row.direction === 'in' ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {row.direction === 'in' ? '+' : '−'}{formatCurrency(Number(row.amount))}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-right font-mono whitespace-nowrap text-gray-700">
+                        {formatCurrency(Number(row.balanceAfter))}
+                      </td>
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-500">{row.recordedBy || <span className="text-gray-400">—</span>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {recordPage && recordPage.totalPages > 1 && (
+              <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-4 py-3">
+                <p className="text-xs text-gray-500">
+                  Page {recordPage.page} of {recordPage.totalPages}
+                </p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setRecordPageNum((n) => Math.max(1, n - 1))}
+                    disabled={recordPage.page <= 1 || loadingRecords}
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => setRecordPageNum((n) => Math.min(recordPage.totalPages, n + 1))}
+                    disabled={recordPage.page >= recordPage.totalPages || loadingRecords}
+                  >
+                    Next
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
 
       {isApprover && (
         <div className="card overflow-hidden">

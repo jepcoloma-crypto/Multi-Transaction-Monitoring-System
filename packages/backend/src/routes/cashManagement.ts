@@ -2,13 +2,13 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
-import { branchClause, canSeeAll } from '../middleware/scope';
-import { buildCashStatement, bucketFor, BUCKET_LABELS } from '../services/cashManagement';
+import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
+import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv } from '../services/cashManagement';
 import { drawerMovements, drawerBalance, drawerWindow } from '../services/drawerQuery';
 import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
-import type { BranchBalance, CashBucket, LedgerFlowRow } from '../services/cashManagement';
+import type { BranchBalance, CashBucket, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
 const router = Router();
 
@@ -546,6 +546,114 @@ router.get('/shifts/:id/movements', authorize('reports.read'), async (req: Reque
   } catch (error) {
     next(error);
   }
+});
+
+// Every ledger row that touched a branch's cash accounts, newest first. The
+// drawer's full history — the list behind "Current accounts" and "Cash on
+// hand", in the order the balance moved.
+//
+// Ordered by the same day each row files under — the transaction's business
+// date where one exists, the posting instant otherwise — so a back-dated entry
+// sits where its date says it does and the order matches the dates printed.
+//
+// No period. A register of what has been recorded is a point-in-time question
+// and needs no window; the period-shaped cash analysis stays the position
+// statement in Reports (D18). What narrows this list is the branch, the class
+// and a search — never a date.
+//
+// The whole scoped population is read once and classified in code with
+// `bucketFor`, the same function the position statement totals by. A second
+// SQL copy of that classification could disagree with the statement's totals,
+// and the type filter is only ever as trustworthy as the totals it slices. The
+// population is the branch's cash rows — the same set `/statement` already
+// reads unbounded — so reading it whole costs what that page already pays.
+router.get('/records', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const branchFilter = await resolveBranchFilter(req, req.query.branchId);
+    const typeFilter = req.query.type ? String(req.query.type) : null;
+    const search = req.query.search ? String(req.query.search).trim() : '';
+    const format = req.query.format === 'csv' ? 'csv' : 'json';
+    const page = Math.max(1, parseInt(String(req.query.page ?? '1'), 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(String(req.query.limit ?? '50'), 10) || 50));
+
+    if (typeFilter && !Object.prototype.hasOwnProperty.call(BUCKET_LABELS, typeFilter)) {
+      throw createError(400, 'Unknown cash record type');
+    }
+
+    const conds: string[] = [`ct.code = 'cash'`];
+    const params: any[] = [];
+
+    // Scoped on the ledger row's own account, the same link the shift movements
+    // endpoint uses — the drawer is the branch's cash accounts, not one wallet.
+    const scope = branchClause(req, 'l', 'accounts.read_all', 1, 'account');
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+    }
+    if (branchFilter) {
+      conds.push(`a.branch_id = $${params.length + 1}`);
+      params.push(branchFilter);
+    }
+    if (search) {
+      // COALESCE so a NULL description cannot blank the row: a search hits if
+      // any of its named fields does, and every field is compared as text.
+      conds.push(`(COALESCE(l.description, '') ILIKE $${params.length + 1}
+                   OR COALESCE(l.reference_number, '') ILIKE $${params.length + 1}
+                   OR COALESCE(t.payee, '') ILIKE $${params.length + 1}
+                   OR CAST(t.transaction_number AS TEXT) ILIKE $${params.length + 1})`);
+      params.push(`%${search}%`);
+    }
+
+    const rows = await query<CashRecordRaw>(
+      `SELECT l.id, l.entry_date, l.entry_type, l.amount, l.balance_after,
+              l.source_type, l.reference_number, l.description,
+              a.name AS account_name, b.code AS branch_code, b.name AS branch_name,
+              t.transaction_number, t.payee, t.payment_method, t.transaction_date,
+              tt.code AS txn_code, u.username AS created_by_username
+       FROM ledger_entries l
+       JOIN accounts a ON a.id = l.account_id
+       JOIN account_types ct ON ct.id = a.account_type_id
+       LEFT JOIN branches b ON b.id = a.branch_id
+       LEFT JOIN transactions t ON t.id = l.transaction_id
+       LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       LEFT JOIN users u ON u.id = t.created_by
+       WHERE ${conds.join(' AND ')}
+       ORDER BY COALESCE(t.transaction_date, l.entry_date) DESC, l.id DESC`,
+      params,
+    );
+
+    const all = rows.map(toCashRecordRow);
+
+    // The classes offered are built from this population, so a dropdown can
+    // never offer a class that yields nothing or hide one that yields rows.
+    const classCounts = new Map<CashBucket, number>();
+    for (const row of all) classCounts.set(row.bucket, (classCounts.get(row.bucket) || 0) + 1);
+    const classes = [...classCounts.entries()]
+      .map(([bucket, count]) => ({ bucket, label: BUCKET_LABELS[bucket], count }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+
+    const filtered = typeFilter ? all.filter((row) => row.bucket === typeFilter) : all;
+    const total = filtered.length;
+    const records = filtered.slice((page - 1) * limit, (page - 1) * limit + limit);
+
+    if (format === 'csv') {
+      // The export carries the whole filtered register, not the page: a file
+      // that held one screen of rows under a header naming the branch would be
+      // the printed-scope problem again.
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="cash-records.csv"');
+      return res.send(cashRecordsCsv(filtered));
+    }
+
+    res.json({
+      success: true,
+      data: {
+        records,
+        classes,
+        pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      },
+    });
+  } catch (error) { next(error); }
 });
 
 export default router;

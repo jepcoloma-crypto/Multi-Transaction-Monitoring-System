@@ -17,6 +17,8 @@
 // construction: opening + Σsources − Σuses = closing. If it ever does not,
 // rows have been dropped or double-counted, which is what the check exposes.
 
+import { manilaDateTimeKey } from './manilaTime';
+
 export type CashBucket =
   | 'owner_capital'
   | 'transfers'
@@ -28,6 +30,7 @@ export type CashBucket =
   | 'other_income'
   | 'adjustments'
   | 'corrections'
+  | 'opening_float'
   | 'other';
 
 export const BUCKET_LABELS: Record<CashBucket, string> = {
@@ -41,6 +44,7 @@ export const BUCKET_LABELS: Record<CashBucket, string> = {
   other_income: 'Other Income',
   adjustments: 'Adjustments',
   corrections: 'Corrections',
+  opening_float: 'Opening Float',
   other: 'Other',
 };
 
@@ -175,6 +179,13 @@ export function bucketFor(sourceType: string | null | undefined, txnCode: string
       return 'adjustments';
     case 'gap_fix':
       return 'corrections';
+    // A shift's float. A shift writes no ledger row, so no row of this kind is
+    // written today; a row that names this source is still classified by it
+    // rather than falling through to Other, so the register reads a float as a
+    // float the moment one is ever posted.
+    case 'opening_float':
+    case 'shift':
+      return 'opening_float';
     default:
       return 'other';
   }
@@ -312,4 +323,136 @@ export function buildCashStatement(rows: LedgerFlowRow[], branches: BranchBalanc
       balanced: difference === 0,
     },
   };
+}
+
+// The cash register — every ledger row that touched a branch's cash accounts,
+// newest first. This is the drawer's full history: what "Current accounts" and
+// "Cash on hand" are built from, in the order the balance moved. It answers
+// "what has been recorded against cash" without a period filter, because a list
+// of what exists is a point-in-time question, not the period question D18 keeps
+// off this screen.
+//
+// Classified with `bucketFor`, the same function the position statement uses,
+// so a row reads the same in the list as it reads in the totals it belongs to.
+export interface CashRecordRaw {
+  id: string;
+  entry_date: string | Date;
+  entry_type: string;
+  amount: string | number;
+  balance_after: string | number;
+  source_type: string | null;
+  reference_number: string | null;
+  description: string | null;
+  account_name: string;
+  branch_code: string | null;
+  branch_name: string | null;
+  transaction_number: number | string | null;
+  transaction_date: string | Date | null;
+  payee: string | null;
+  txn_code: string | null;
+  payment_method: string | null;
+  created_by_username: string | null;
+}
+
+export interface CashRecordRow {
+  id: string;
+  // The day the row is filed under — the transaction's business date where one
+  // exists, the posting instant otherwise. The register reads this, not
+  // `entryDate`: an expense entered for Sep 25 files under Sep 25 even when it
+  // was posted into the drawer on Oct 7.
+  businessDate: string;
+  // The instant the row actually hit the drawer. Kept beside the business date
+  // so the two can be told apart when they differ.
+  entryDate: string;
+  direction: 'in' | 'out';
+  bucket: CashBucket;
+  category: string;
+  amount: string;
+  balanceAfter: string;
+  accountName: string;
+  branchCode: string | null;
+  branchName: string | null;
+  transactionNumber: number | null;
+  paymentMethod: string | null;
+  payee: string | null;
+  referenceNumber: string | null;
+  description: string | null;
+  recordedBy: string | null;
+}
+
+const moneyString = (value: unknown): string => (toCents(value) / 100).toFixed(2);
+
+export function toCashRecordRow(raw: CashRecordRaw): CashRecordRow {
+  const bucket = bucketFor(raw.source_type, raw.txn_code);
+  const number = raw.transaction_number === null || raw.transaction_number === undefined || raw.transaction_number === ''
+    ? null
+    : Number(raw.transaction_number);
+  // The business date the operator named, falling back to the posting instant
+  // for a row with no transaction (a transfer, adjustment or gap fix). Parse
+  // rather than concatenate, so an invalid value falls back too instead of
+  // reaching the formatter as garbage.
+  const entryDate = new Date(raw.entry_date).toISOString();
+  const business = raw.transaction_date ? new Date(raw.transaction_date) : null;
+  return {
+    id: raw.id,
+    businessDate: business && !Number.isNaN(business.getTime()) ? business.toISOString() : entryDate,
+    entryDate,
+    direction: raw.entry_type === 'credit' ? 'in' : 'out',
+    bucket,
+    category: BUCKET_LABELS[bucket],
+    amount: moneyString(raw.amount),
+    balanceAfter: moneyString(raw.balance_after),
+    accountName: raw.account_name,
+    branchCode: raw.branch_code,
+    branchName: raw.branch_name,
+    transactionNumber: Number.isFinite(number as number) ? number : null,
+    paymentMethod: raw.payment_method,
+    payee: raw.payee,
+    referenceNumber: raw.reference_number,
+    description: raw.description,
+    recordedBy: raw.created_by_username,
+  };
+}
+
+const csvCell = (value: unknown): string => {
+  const normalized = value === null || value === undefined ? '' : String(value);
+  return `"${normalized.replace(/"/g, '""')}"`;
+};
+
+const CASH_RECORD_COLUMNS: { header: string; key: keyof CashRecordRow }[] = [
+  { header: 'Business Day', key: 'businessDate' },
+  { header: 'Posted At', key: 'entryDate' },
+  { header: 'Branch', key: 'branchCode' },
+  { header: 'Account', key: 'accountName' },
+  { header: 'Txn #', key: 'transactionNumber' },
+  { header: 'Type', key: 'category' },
+  { header: 'Direction', key: 'direction' },
+  { header: 'Amount', key: 'amount' },
+  { header: 'Balance After', key: 'balanceAfter' },
+  { header: 'Payment Method', key: 'paymentMethod' },
+  { header: 'Payee', key: 'payee' },
+  { header: 'Reference', key: 'referenceNumber' },
+  { header: 'Description', key: 'description' },
+  { header: 'Recorded By', key: 'recordedBy' },
+];
+
+/**
+ * The register as CSV. Both dates are read by `manilaDateTimeKey` rather than
+ * the instant's UTC text, so a row filed under Sep 25 in Manila is not exported
+ * as Sep 24, and one posted Oct 7 is not exported as Oct 6 — the same
+ * off-by-a-day a report's last day used to lose. The BOM lets Excel read the
+ * peso signs and dashes the description column may carry.
+ */
+export function cashRecordsCsv(rows: CashRecordRow[]): string {
+  const lines = [CASH_RECORD_COLUMNS.map(c => csvCell(c.header)).join(',')];
+  for (const row of rows) {
+    const cells = CASH_RECORD_COLUMNS.map(c => {
+      const value = c.key === 'businessDate' || c.key === 'entryDate'
+        ? manilaDateTimeKey(new Date(row[c.key])).replace('T', ' ')
+        : row[c.key];
+      return csvCell(value);
+    });
+    lines.push(cells.join(','));
+  }
+  return '\uFEFF' + lines.join('\r\n');
 }
