@@ -11,7 +11,7 @@ import { useAuth } from '../contexts/AuthContext';
 import AccountSelect, { type AccountOption } from '../components/AccountSelect';
 import { NO_OPEN_SHIFT_HINT } from '../hooks/useShiftGate';
 import {
-  Wallet, Plus, Check, X, RefreshCw, ShieldAlert, AlertTriangle, Inbox, Receipt,
+  Wallet, Landmark, Plus, Check, X, RefreshCw, ShieldAlert, AlertTriangle, Inbox, Receipt,
   TrendingUp, TrendingDown, Coins, ArrowRight, Calendar, Clock, List, Printer,
   Search, Download, ChevronLeft, ChevronRight,
 } from 'lucide-react';
@@ -696,6 +696,15 @@ export default function CashManagement() {
           sub: loadingActivity ? 'Loading the open shift…' : 'No shift open',
         };
 
+  // The total on the books is every account balance, so the drawer is inside
+  // it; the non-cash figure is that total less the drawer. Derived rather than
+  // read from the statement so the three cards can never disagree about scope,
+  // and left undefined when the drawer is absent (an older backend that does
+  // not serve it) rather than passed off as zero.
+  const nonCashOnBooks = t && statement?.drawer !== undefined
+    ? money(t.current) - money(statement.drawer)
+    : undefined;
+
   return (
     <>
     <div className={`p-6 space-y-6${printSheet ? ' print:hidden' : ''}`}>
@@ -779,15 +788,37 @@ export default function CashManagement() {
               period it is shaped by (D18, R3), so what stays here is the live
               position — what is on the books, what the drawers hold, and what
               the open shift's own day earned and spent. */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
             <div className="card">
               <div className="flex items-center gap-2 text-gray-500">
                 <Wallet className="w-4 h-4" />
-                <p className="text-xs font-semibold uppercase tracking-wide">Current accounts</p>
+                <p className="text-xs font-semibold uppercase tracking-wide">Total on the books</p>
               </div>
               <p className="text-2xl font-bold mt-2 tabular-nums">{formatCurrency(t.current)}</p>
-              <p className="text-sm text-gray-500">Every account balance, totalled</p>
+              <p className="text-sm text-gray-500">Every account totalled — the cash drawer is included</p>
             </div>
+
+            {nonCashOnBooks !== undefined && (
+              <div className="card">
+                <div className="flex items-center gap-2 text-gray-500">
+                  <Landmark className="w-4 h-4" />
+                  <p className="text-xs font-semibold uppercase tracking-wide">Accounts (non-cash)</p>
+                </div>
+                <p className="text-2xl font-bold mt-2 tabular-nums">{formatCurrency(nonCashOnBooks)}</p>
+                <p className="text-sm text-gray-500">Banks and e-wallets — total less the drawer</p>
+              </div>
+            )}
+
+            {statement.drawer !== undefined && (
+              <div className="card border border-amber-300">
+                <div className="flex items-center gap-2 text-amber-700">
+                  <Coins className="w-4 h-4" />
+                  <p className="text-xs font-semibold uppercase tracking-wide">Cash on hand</p>
+                </div>
+                <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{formatCurrency(statement.drawer)}</p>
+                <p className="text-sm text-gray-500">In the branch drawers — already counted in the total</p>
+              </div>
+            )}
 
             <div className="card">
               <div className="flex items-center gap-2 text-gray-500">
@@ -815,17 +846,6 @@ export default function CashManagement() {
               <p className="text-2xl font-bold mt-2 tabular-nums text-red-600">{dailyFigures.expense}</p>
               <p className="text-sm text-gray-500">{dailyFigures.sub}</p>
             </div>
-
-            {statement.drawer !== undefined && (
-              <div className="card border border-amber-300">
-                <div className="flex items-center gap-2 text-amber-700">
-                  <Coins className="w-4 h-4" />
-                  <p className="text-xs font-semibold uppercase tracking-wide">Cash on hand</p>
-                </div>
-                <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{formatCurrency(statement.drawer)}</p>
-                <p className="text-sm text-gray-500">Held in the branch drawers</p>
-              </div>
-            )}
           </div>
 
           {/* Earnings, scoped by the shift instead of by a filter this screen

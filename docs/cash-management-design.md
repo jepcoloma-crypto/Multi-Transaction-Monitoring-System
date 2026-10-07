@@ -622,8 +622,11 @@ no approval gate of their own; the variance they produce is what gets investigat
 
 On the existing **Cash Management** page:
 
-1. **Headline split** — `Cash on hand now ₱122,372` is renamed to *Total funds on the
-   books*; the drawer gets its own figure: *Cash in branch*. The two are never summed.
+1. **Headline split** — the total is *Total on the books*, every account balance (the
+   drawer included), shown with *Accounts (non-cash)* — that total less the drawer — beside
+   the drawer's own figure, *Cash on hand*. The drawer is one of the accounts in the total,
+   never a separate pot: the three read `non-cash + cash on hand = total`. They are never
+   summed.
 2. **Shift banner** — closed → an **Open shift** form (float + date + notes); open → the
    current shift with elapsed time and a **Close shift** action.
 3. **Close dialog** — enter counted cash, and show **before confirming**:
@@ -969,3 +972,33 @@ every ledger row that touched a branch's cash accounts, newest first.
 The register sits **outside the statement's render branch**, so a statement that fails to load
 does not take the drawer's own history down with it. The register is what a reader opens to check
 a figure; it renders whatever the position above it is doing.
+
+### D23 — the drawer is inside the total, and the page says so
+
+The headline's total (*Total on the books*) is `Σ` of **every** account balance, and the drawer is
+one of those accounts — a `cash`-type account with a balance its own ledger rows move. So the
+drawer's figure is a **component** of the total, not a second pot beside it, and the page must
+never let the two read as additive.
+
+The old labels were the whole problem: *Current accounts* (sub *"Every account balance,
+totalled"*) and *Cash on hand* (sub *"Held in the branch drawers"*) put a total and one of its
+parts next to each other with nothing saying so, which is exactly what invites a reader to add
+₱253,154 + ₱130,782 and double-count the drawer. Section 14.1 said *Total funds on the books* /
+*Cash in branch* and "the two are never summed"; the shipped page had drifted from it.
+
+- **The maths does not change.** The drawer stays inside the total, because it is an account: the
+  branch tie-out `opening + Σ sources − Σ uses = current` counts every cash row, and dropping the
+  drawer from the total would make the header untrue and break that identity.
+- **The page makes the relationship explicit.** *Total on the books* — sub *"Every account
+  totalled — the cash drawer is included"*; *Cash on hand* — sub *"In the branch drawers —
+  already counted in the total"*; and a derived *Accounts (non-cash)* card, `total − drawer`,
+  so the three read `non-cash + cash on hand = total` at a glance. The non-cash figure is derived
+  in the page, not served, so the cards cannot disagree about scope; it is omitted, not shown as
+  zero, when the drawer is absent from an older backend.
+- **This is labelling, not accounting.** No balance, ledger row, or invariant moves. It exists so
+  a reader auditing the position cannot mistake a component for a peer.
+- **One caveat carried forward.** When a `payment_method = 'cash'` movement posts, D9/D12 write a
+  drawer leg *in addition to* the wallet leg. Today no transaction posts to both a cash and a
+  non-cash account (0 rows; every cash movement has a null method), so the total double-counts
+  nothing live. Whether the two legs are genuinely two assets or one asset seen twice is a
+  question for D12's own review before the total is leaned on as a valuation.

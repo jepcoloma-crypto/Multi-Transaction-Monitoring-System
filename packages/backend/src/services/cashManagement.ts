@@ -326,8 +326,8 @@ export function buildCashStatement(rows: LedgerFlowRow[], branches: BranchBalanc
 }
 
 // The cash register — every ledger row that touched a branch's cash accounts,
-// newest first. This is the drawer's full history: what "Current accounts" and
-// "Cash on hand" are built from, in the order the balance moved. It answers
+// newest first. This is the drawer's full history: what "Total on the books"
+// and "Cash on hand" are built from, in the order the balance moved. It answers
 // "what has been recorded against cash" without a period filter, because a list
 // of what exists is a point-in-time question, not the period question D18 keeps
 // off this screen.

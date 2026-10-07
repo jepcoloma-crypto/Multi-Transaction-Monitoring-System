@@ -549,7 +549,7 @@ router.get('/shifts/:id/movements', authorize('reports.read'), async (req: Reque
 });
 
 // Every ledger row that touched a branch's cash accounts, newest first. The
-// drawer's full history — the list behind "Current accounts" and "Cash on
+// drawer's full history — the list behind "Total on the books" and "Cash on
 // hand", in the order the balance moved.
 //
 // Ordered by the same day each row files under — the transaction's business
