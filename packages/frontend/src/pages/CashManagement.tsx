@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
+import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency, manilaDateValue, dateKeyLabel } from '../lib/format';
+import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, movementPaymentMethodOptions } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect, { type AccountOption } from '../components/AccountSelect';
+import { NO_OPEN_SHIFT_HINT } from '../hooks/useShiftGate';
 import {
-  Wallet, Plus, Check, X, ChevronRight, RefreshCw, ShieldAlert, AlertTriangle, Inbox,
+  Wallet, Plus, Check, X, RefreshCw, ShieldAlert, AlertTriangle, Inbox, Receipt,
+  TrendingUp, TrendingDown, Coins, ArrowRight, Calendar, Clock, List, Printer,
 } from 'lucide-react';
 
 // NUMERIC columns arrive as strings and a shift's close fields are still null
@@ -15,34 +18,59 @@ const money = (value: number | string | null | undefined): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-interface BucketLine {
-  bucket: string;
-  label: string;
-  amount: number;
-  count: number;
-}
+// How long the drawer has been open, said the way an operator would say it.
+// Read from the instant rather than by subtracting date keys: a shift opened
+// at 23:50 and still open at 00:10 is twenty minutes old, not a day old.
+const elapsedLabel = (openedAt: string): string => {
+  const started = new Date(openedAt).getTime();
+  if (!Number.isFinite(started)) return '—';
+  const totalMinutes = Math.max(0, Math.floor((Date.now() - started) / 60000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+};
 
-interface BranchStatement {
-  branchId: string;
-  code: string;
-  name: string;
-  opening: number;
-  sources: number;
-  uses: number;
-  closing: number;
-  current: number;
-}
-
+// Only the fields this screen renders. The endpoint still serves the whole
+// statement, but its Sources and Uses — and the period that shaped them — now
+// belong to Reports (D18, R3), so a wider type here would do nothing except
+// invite the moved sections back.
 interface Statement {
-  period: { startDate: string | null; endDate: string | null };
-  sources: BucketLine[];
-  uses: BucketLine[];
-  branches: BranchStatement[];
-  totals: {
-    opening: number; sources: number; uses: number;
-    closing: number; current: number; difference: number; balanced: boolean;
-  };
+  totals: { current: number };
   drawer?: number;
+  expenseApprovalThreshold?: number;
+}
+
+// Only the components the shift panel prints are declared; the endpoint sends
+// the whole report summary so the panel and the report stay one payload, and a
+// narrower type here keeps the render honest about what it actually reads.
+interface ShiftActivityBranch {
+  branchId: string;
+  branchName: string;
+  shiftDate: string;
+  income: {
+    txnFees: number;
+    loadMargin: number;
+    totalIncome: number;
+  };
+  expense: {
+    serviceFees: number;
+    providerCharges: number;
+    operatingExpenses: number;
+    totalExpense: number;
+  };
+}
+
+interface ShiftActivity {
+  shiftDates: string[];
+  branches: ShiftActivityBranch[];
+  totals: {
+    income: { txnFees: number; loadMargin: number; total: number };
+    expense: { serviceFees: number; providerCharges: number; operatingExpenses: number; total: number };
+    net: number;
+  };
 }
 
 interface Shift {
@@ -78,28 +106,28 @@ interface ShiftResult extends Shift {
   drawerDifference?: number;
 }
 
-interface DrillRow {
+// One cash-account ledger row inside a shift's window — the rows that produced
+// the expected figure the close dialog counts against. Served by
+// `GET /cash-management/shifts/:id/movements`.
+interface DrawerMovement {
   id: string;
   entry_date: string;
   entry_type: string;
-  amount: number;
+  amount: number | string;
   balance_after: number | string;
   source_type: string | null;
   reference_number: string | null;
   description: string | null;
   account_name: string;
-  branch_code: string;
   transaction_number: number | null;
   payee: string | null;
+  txn_code: string | null;
 }
 
-interface Drill {
-  bucket: string;
-  label: string;
-  direction: string;
-  total: number;
-  truncated: boolean;
-  rows: DrillRow[];
+interface DrawerActivity {
+  netMovement: number;
+  expected: number;
+  rows: DrawerMovement[];
 }
 
 interface PendingExpense {
@@ -143,6 +171,66 @@ const emptyForm = {
   paymentMethod: 'cash',
 };
 
+// The count sheet is the one thing here that leaves the screen: it is counted
+// against with a pen before the close and filed after it. It is rendered
+// outside the page root because `window.print()` prints the document rather
+// than a subtree — the page takes `print:hidden` for the frame a sheet is up,
+// leaving this block as all that is on the paper.
+function ShiftCountSheet(props: {
+  branchName: string;
+  shiftDate: string;
+  openedAt: string;
+  openingFloat: number;
+  cashIn?: number;
+  cashOut?: number;
+  expected: number;
+  counted: number | null;
+  variance: number | null;
+  status?: string | null;
+  drawerOnBooks?: number;
+  printedAt: string;
+}) {
+  const { branchName, shiftDate, openedAt, openingFloat, cashIn, cashOut, expected, counted, variance, status, drawerOnBooks, printedAt } = props;
+
+  // Underscores rather than a dash: this half is written on by hand before the
+  // figures exist, and a printed "—" reads as a figure of zero.
+  const blank = '________________';
+  const row = (label: string, value: string, emphasis = false) => (
+    <div className={`flex justify-between gap-8 px-3 py-1.5 ${emphasis ? 'bg-gray-100 font-semibold' : ''}`}>
+      <span>{label}</span>
+      <span className="font-mono">{value}</span>
+    </div>
+  );
+
+  return (
+    <div className="hidden print:block bg-white p-10 text-sm text-black">
+      <div className="border-b-2 border-black pb-3">
+        <h1 className="text-lg font-bold uppercase tracking-wide">Shift count sheet</h1>
+        <p className="mt-1">{branchName} · {dateKeyLabel(shiftDate)}</p>
+        <p className="text-xs text-gray-700">
+          Opened {manilaTimeLabel(openedAt)} · open {elapsedLabel(openedAt)} · printed {printedAt}
+        </p>
+      </div>
+
+      <div className="mt-4 divide-y divide-gray-300 border border-gray-300">
+        {row('Counted opening float', formatCurrency(openingFloat))}
+        {cashIn !== undefined && row('Cash in since opening', `+${formatCurrency(cashIn)}`)}
+        {cashOut !== undefined && row('Cash out since opening', `−${formatCurrency(cashOut)}`)}
+        {row('Expected closing', formatCurrency(expected), true)}
+        {row('Counted closing cash', counted === null ? blank : formatCurrency(counted), true)}
+        {row('Variance', variance === null ? blank : formatCurrency(variance), true)}
+        {status && row('Result', status, true)}
+        {drawerOnBooks !== undefined && row('Drawer on the books', formatCurrency(drawerOnBooks))}
+      </div>
+
+      <div className="mt-12 grid grid-cols-2 gap-12 text-xs">
+        <div className="border-t border-black pt-1">Counted by</div>
+        <div className="border-t border-black pt-1">Date / time</div>
+      </div>
+    </div>
+  );
+}
+
 export default function CashManagement() {
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
@@ -152,11 +240,19 @@ export default function CashManagement() {
   const [branchId, setBranchId] = useState('');
 
   const [statement, setStatement] = useState<Statement | null>(null);
+
+  const [shiftActivity, setShiftActivity] = useState<ShiftActivity | null>(null);
+
+  const [loadingActivity, setLoadingActivity] = useState(true);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
-  const [drill, setDrill] = useState<Drill | null>(null);
-  const [drillLoading, setDrillLoading] = useState(false);
+  // The rows behind one shift's drawer, fetched only when asked. The page can
+  // already say the two readings differ; this is what shows which movements
+  // produced the difference, and which shift they belong to while it loads.
+  const [drawerShiftId, setDrawerShiftId] = useState<string | null>(null);
+  const [drawerActivity, setDrawerActivity] = useState<DrawerActivity | null>(null);
+  const [loadingDrawer, setLoadingDrawer] = useState(false);
 
   const [expenses, setExpenses] = useState<PendingExpense[]>([]);
   const [loadingExpenses, setLoadingExpenses] = useState(false);
@@ -167,12 +263,39 @@ export default function CashManagement() {
   const [expenseTypeId, setExpenseTypeId] = useState('');
 
   const [shifts, setShifts] = useState<Shift[]>([]);
+
+  // Elapsed time only means something if it moves. Without this the card would
+  // print "0m" for as long as the page sat untouched, which is worse than
+  // printing no elapsed time at all.
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    if (!shifts.some((s) => s.status === 'open')) return;
+    const timer = setInterval(() => setClockTick((n) => n + 1), 60_000);
+    return () => clearInterval(timer);
+  }, [shifts]);
   const [drawers, setDrawers] = useState<{ branchId: string; balance: number }[]>([]);
-  const [loadingShifts, setLoadingShifts] = useState(false);
+  // Starts true so the first paint reads as "reading the shift" rather than
+  // "no shift open" — a figure that flashes a wrong answer before the right one
+  // arrives is worse than one that arrives late.
+  const [loadingShifts, setLoadingShifts] = useState(true);
   const [shiftError, setShiftError] = useState('');
   const [shiftOpen, setShiftOpen] = useState<{ branchId: string; openingFloat: string; booksBalance: number; shiftDate: string } | null>(null);
   const [shiftClose, setShiftClose] = useState<{ shift: Shift; countedClosing: string; notes: string } | null>(null);
   const [lastClose, setLastClose] = useState<ShiftResult | null>(null);
+
+  // Which sheet, if any, is on the paper. `window.print()` prints the whole
+  // document, so the sheet has to be in it for one frame and then gone again —
+  // left standing it would ride along on the next print, wanted or not.
+  const [printSheet, setPrintSheet] = useState<'count' | 'result' | null>(null);
+  useEffect(() => {
+    if (!printSheet) return;
+    const frame = requestAnimationFrame(() => {
+      window.print();
+      setPrintSheet(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [printSheet]);
+
   const [savingShift, setSavingShift] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
@@ -183,7 +306,6 @@ export default function CashManagement() {
 
   const loadStatement = useCallback(async () => {
     setLoading(true);
-    setDrill(null);
     try {
       // No period here: this screen is a live position and a window belongs to
       // Reports, not to a drawer count (D18). Only the branch narrows it.
@@ -197,6 +319,27 @@ export default function CashManagement() {
       setLoadError(err instanceof Error ? err.message : 'Could not load the cash statement');
     } finally {
       setLoading(false);
+    }
+  }, [branchId]);
+
+  // Income and expense for the business day the open shift belongs to. The
+  // period is the shift's own, never a filter this screen is allowed to offer
+  // (D18), so only the branch narrows it — the same narrowing the statement
+  // above uses, which is why the two cannot describe different places.
+  const loadShiftActivity = useCallback(async () => {
+    setLoadingActivity(true);
+    try {
+      const params = new URLSearchParams();
+      if (branchId) params.set('branchId', branchId);
+      const qs = params.toString();
+      setShiftActivity(await api.get<ShiftActivity>(`/reports/shift-activity${qs ? `?${qs}` : ''}`));
+    } catch {
+      // Advisory, not fatal: with no shift open the endpoint answers with an
+      // empty set anyway, and a panel that failed to load should read as
+      // "nothing to show" rather than taking the cash position down with it.
+      setShiftActivity(null);
+    } finally {
+      setLoadingActivity(false);
     }
   }, [branchId]);
 
@@ -263,6 +406,7 @@ export default function CashManagement() {
 
   useEffect(() => { loadSetup(); }, [loadSetup]);
   useEffect(() => { loadStatement(); }, [loadStatement]);
+  useEffect(() => { loadShiftActivity(); }, [loadShiftActivity]);
   useEffect(() => { loadExpenses(); }, [loadExpenses]);
   useEffect(() => { loadShifts(); }, [loadShifts]);
 
@@ -300,7 +444,11 @@ export default function CashManagement() {
         shiftDate: shiftOpen.shiftDate,
       });
       setShiftOpen(null);
-      await loadShifts();
+      // The daily figures are keyed on the open shift's own day, so opening one
+      // changes which day they describe. Without this the cards keep reading
+      // "No shift open" until a reload, and closing one would leave the closed
+      // day's figures sitting under a heading that says the shift is open.
+      await Promise.all([loadShifts(), loadShiftActivity()]);
     } catch (err) {
       setShiftError(err instanceof Error ? err.message : 'Could not open the shift');
     } finally {
@@ -325,7 +473,7 @@ export default function CashManagement() {
       });
       setShiftClose(null);
       setLastClose(closed);
-      await loadShifts();
+      await Promise.all([loadShifts(), loadShiftActivity()]);
     } catch (err) {
       setShiftError(err instanceof Error ? err.message : 'Could not close the shift');
     } finally {
@@ -333,18 +481,27 @@ export default function CashManagement() {
     }
   };
 
-  const openDrill = async (line: BucketLine, direction: 'credit' | 'debit') => {
-    setDrillLoading(true);
+  // Fetched one shift at a time rather than with the page: a drawer can hold
+  // hundreds of rows in a day, and only an operator asking to read them should
+  // pay for them. Re-clicking the same shift keeps the rows it already loaded.
+  const loadDrawerActivity = async (shiftId: string) => {
+    if (drawerShiftId === shiftId && (drawerActivity || loadingDrawer)) return;
+    setDrawerShiftId(shiftId);
+    setDrawerActivity(null);
+    setLoadingDrawer(true);
     try {
-      const params = new URLSearchParams({ bucket: line.bucket, direction });
-      if (branchId) params.set('branchId', branchId);
-      const result = await api.get<Drill>(`/cash-management/statement/drill?${params.toString()}`);
-      setDrill(result);
+      setDrawerActivity(await api.get<DrawerActivity>(`/cash-management/shifts/${shiftId}/movements`));
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Could not load the rows behind this figure');
+      alert(err instanceof Error ? err.message : 'Could not load the drawer movements');
+      setDrawerShiftId(null);
     } finally {
-      setDrillLoading(false);
+      setLoadingDrawer(false);
     }
+  };
+
+  const hideDrawerActivity = () => {
+    setDrawerShiftId(null);
+    setDrawerActivity(null);
   };
 
   const openForm = () => {
@@ -388,7 +545,7 @@ export default function CashManagement() {
         paymentMethod: form.paymentMethod || null,
       });
       setShowForm(false);
-      await Promise.all([loadStatement(), loadExpenses()]);
+      await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity()]);
       window.dispatchEvent(new Event('approvals-changed'));
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Could not record the expense');
@@ -410,7 +567,7 @@ export default function CashManagement() {
       if (!reason.trim()) { alert('A reason is required.'); return; }
       try {
         await api.post(`/transactions/${expense.id}/reject`, { reason: reason.trim() });
-        await Promise.all([loadStatement(), loadExpenses()]);
+        await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity()]);
         window.dispatchEvent(new Event('approvals-changed'));
         return;
       } catch (err) {
@@ -422,7 +579,7 @@ export default function CashManagement() {
     setBusy(true);
     try {
       await api.post(`/transactions/${expense.id}/approve`);
-      await Promise.all([loadStatement(), loadExpenses()]);
+      await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity()]);
       window.dispatchEvent(new Event('approvals-changed'));
     } catch (err) {
       alert(err instanceof Error ? err.message : `${verb} failed`);
@@ -444,10 +601,60 @@ export default function CashManagement() {
   }
 
   const t = statement?.totals;
-  const cardGrid = 'grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 text-sm';
+
+  // What the form will say the books will do, taken from the same number the
+  // create route uses. Undefined before the statement lands or on a backend
+  // older than migration 039 — both fall back to "needs approval", which is
+  // what those backends would do anyway.
+  const threshold = statement?.expenseApprovalThreshold;
+  const enteredAmount = Number(form.amount);
+  const settlesNow =
+    threshold !== undefined &&
+    Number.isFinite(enteredAmount) &&
+    enteredAmount > 0 &&
+    enteredAmount <= threshold;
+
+  // The drawer's expectation, not a balance: opening count plus the movements
+  // the shift has already taken. Summed across the open shifts the caller can
+  // see and narrowed by the page's branch, so it is scoped exactly as the two
+  // daily figures beside it — three cards that disagreed about which branch
+  // they describe would be worse than two cards that said less.
+  let openShiftCount = 0;
+  let expectedNow = 0;
+  for (const shift of shifts) {
+    if (shift.status !== 'open' || !shift.live) continue;
+    if (branchId && shift.branch_id !== branchId) continue;
+    openShiftCount += 1;
+    expectedNow += money(shift.live.expected);
+  }
+  const expectedNowFigure = loadingShifts ? '…' : openShiftCount > 0 ? formatCurrency(expectedNow) : '—';
+  const expectedNowSub = loadingShifts
+    ? 'Reading the open shift…'
+    : openShiftCount > 0
+      ? 'What the drawer should hold'
+      : 'No shift open';
+
+  // Both daily cards answer for the shift's own day, so both name it — or say
+  // there is none. Printing a zero with no window behind it would read as
+  // "nothing was earned today", which is a claim about a day nobody opened.
+  const dailyFigures =
+    !loadingActivity && shiftActivity && shiftActivity.branches.length > 0
+      ? {
+          income: formatCurrency(shiftActivity.totals.income.total),
+          expense: formatCurrency(shiftActivity.totals.expense.total),
+          sub: shiftActivity.shiftDates.length === 1
+            ? `Shift day · ${dateKeyLabel(shiftActivity.shiftDates[0])}`
+            : `${shiftActivity.shiftDates.length} shift days`,
+        }
+      : {
+          income: '—',
+          expense: '—',
+          sub: loadingActivity ? 'Loading the open shift…' : 'No shift open',
+        };
 
   return (
-    <div className="p-6 space-y-6">
+    <>
+    <div className={`p-6 space-y-6${printSheet ? ' print:hidden' : ''}`}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
@@ -458,16 +665,36 @@ export default function CashManagement() {
             Where the company's cash physically is, and how it moved.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={loadStatement} className="btn-secondary" disabled={loading}>
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </button>
-          {canWrite && (
-            <button type="button" onClick={openForm} className="btn-primary">
-              <Plus className="w-4 h-4" />
-              Record expense
+        <div className="flex flex-col items-end gap-1.5">
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={loadStatement} className="btn-secondary" disabled={loading}>
+              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
             </button>
+            {/* Refused while no shift is open in the branch the page is scoped
+                to, which is the same test `assertOpenShift` runs server-side —
+                the button never becomes a way through, only an earlier answer.
+                Disabled rather than hidden so the operator can still see that
+                the action exists and read why it is shut. */}
+            {canWrite && (
+              <button
+                type="button"
+                onClick={openForm}
+                className="btn-primary"
+                disabled={openShiftCount === 0}
+                title={openShiftCount === 0 ? 'No shift is open in this scope' : undefined}
+              >
+                <Plus className="w-4 h-4" />
+                Record expense
+              </button>
+            )}
+          </div>
+          {canWrite && openShiftCount === 0 && (
+            <p className="text-xs text-amber-700 text-right">
+              {loadingShifts
+                ? 'Checking whether a shift is open…'
+                : NO_OPEN_SHIFT_HINT}
+            </p>
           )}
         </div>
       </div>
@@ -502,46 +729,205 @@ export default function CashManagement() {
         <div className="card text-center py-10 text-sm text-gray-500">Loading cash position…</div>
       ) : statement && t ? (
         <>
-          <div className={cardGrid}>
+          {/* Money in and money out were never this page's figures: they were
+              the statement's Sources and Uses, principal moving rather than
+              earnings. The statement itself now lives in Reports with the
+              period it is shaped by (D18, R3), so what stays here is the live
+              position — what is on the books, what the drawers hold, and what
+              the open shift's own day earned and spent. */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
             <div className="card">
-              <p className="text-gray-500">Total funds on the books</p>
-              <p className="text-2xl font-bold mt-1">{formatCurrency(t.current)}</p>
+              <div className="flex items-center gap-2 text-gray-500">
+                <Wallet className="w-4 h-4" />
+                <p className="text-xs font-semibold uppercase tracking-wide">Current accounts</p>
+              </div>
+              <p className="text-2xl font-bold mt-2 tabular-nums">{formatCurrency(t.current)}</p>
               <p className="text-sm text-gray-500">Every account balance, totalled</p>
             </div>
-            {/* Only when the field is actually present: a stale backend sends
-                nothing here, and printing a figure it did not send would be
-                inventing one. */}
+
+            <div className="card">
+              <div className="flex items-center gap-2 text-gray-500">
+                <Clock className="w-4 h-4" />
+                <p className="text-xs font-semibold uppercase tracking-wide">Expected Now</p>
+              </div>
+              <p className="text-2xl font-bold mt-2 tabular-nums">{expectedNowFigure}</p>
+              <p className="text-sm text-gray-500">{expectedNowSub}</p>
+            </div>
+
+            <div className="card">
+              <div className="flex items-center gap-2 text-emerald-600">
+                <TrendingUp className="w-4 h-4" />
+                <p className="text-xs font-semibold uppercase tracking-wide">Daily Income</p>
+              </div>
+              <p className="text-2xl font-bold mt-2 tabular-nums text-emerald-600">{dailyFigures.income}</p>
+              <p className="text-sm text-gray-500">{dailyFigures.sub}</p>
+            </div>
+
+            <div className="card">
+              <div className="flex items-center gap-2 text-red-600">
+                <TrendingDown className="w-4 h-4" />
+                <p className="text-xs font-semibold uppercase tracking-wide">Daily Expense</p>
+              </div>
+              <p className="text-2xl font-bold mt-2 tabular-nums text-red-600">{dailyFigures.expense}</p>
+              <p className="text-sm text-gray-500">{dailyFigures.sub}</p>
+            </div>
+
             {statement.drawer !== undefined && (
               <div className="card border border-amber-300">
-                <p className="text-gray-500">Cash in branch</p>
-                <p className="text-2xl font-bold mt-1 text-amber-700">{formatCurrency(statement.drawer)}</p>
+                <div className="flex items-center gap-2 text-amber-700">
+                  <Coins className="w-4 h-4" />
+                  <p className="text-xs font-semibold uppercase tracking-wide">Cash on hand</p>
+                </div>
+                <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{formatCurrency(statement.drawer)}</p>
                 <p className="text-sm text-gray-500">Held in the branch drawers</p>
               </div>
             )}
-            <div className="card">
-              <p className="text-gray-500">Opening</p>
-              <p className="text-2xl font-bold mt-1">{formatCurrency(t.opening)}</p>
-              <p className="text-sm text-gray-500">Balances at the start of this period</p>
+          </div>
+
+          {/* Earnings, scoped by the shift instead of by a filter this screen
+              is not allowed to have (D18): the window is the business day the
+              open shift already belongs to, so it can never name a period the
+              books did not record. The components are the Income and Expense
+              report's own — served by the same loaders — which is why the same
+              day reads the same figure in both places. */}
+          <div className="card">
+            <div className="px-1 pb-1 flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+              <div>
+                <h4 className="font-medium">Income &amp; expense — the open shift</h4>
+                <p className="text-xs text-gray-500">
+                  Scoped to the business day the shift belongs to. Transaction fees and load margin on the
+                  income side; transfer fees, provider charges and recorded operating expenses on the expense side.
+                </p>
+              </div>
+              {!loadingActivity && shiftActivity && shiftActivity.shiftDates.length > 0 && (
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-600">
+                  <Calendar className="w-3.5 h-3.5" />
+                  {shiftActivity.shiftDates.length === 1
+                    ? dateKeyLabel(shiftActivity.shiftDates[0])
+                    : `${shiftActivity.shiftDates.length} business days`}
+                </span>
+              )}
             </div>
-            <div className="card">
-              <p className="text-gray-500">Sources</p>
-              <p className="text-2xl font-bold mt-1 text-emerald-600">{formatCurrency(t.sources)}</p>
-              <p className="text-sm text-gray-500">Money that came in</p>
-            </div>
-            <div className="card">
-              <p className="text-gray-500">Uses</p>
-              <p className="text-2xl font-bold mt-1 text-red-600">{formatCurrency(t.uses)}</p>
-              <p className="text-sm text-gray-500">Money that went out</p>
-            </div>
-            <div className="card">
-              <p className="text-gray-500">Closing</p>
-              <p className="text-2xl font-bold mt-1">{formatCurrency(t.closing)}</p>
-              <p className={`text-sm ${t.balanced ? 'text-emerald-600' : 'text-amber-600'}`}>
-                {t.balanced
-                  ? 'Ties to the balances exactly'
-                  : `Off by ${formatCurrency(t.difference)} — this period ends before today`}
+
+            {loadingActivity ? (
+              <p className="mt-4 text-sm text-gray-500">Loading the shift's income and expense…</p>
+            ) : shiftActivity && shiftActivity.branches.length > 0 ? (
+              <>
+                <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4">
+                    <div className="flex items-center gap-2 text-emerald-700">
+                      <TrendingUp className="w-4 h-4" />
+                      <p className="text-xs font-semibold uppercase tracking-wide">Income</p>
+                    </div>
+                    <p className="text-2xl font-bold mt-2 tabular-nums text-emerald-700">
+                      {formatCurrency(shiftActivity.totals.income.total)}
+                    </p>
+                    <dl className="mt-3 space-y-1 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className="text-emerald-900/70">Transaction fees</dt>
+                        <dd className="font-medium tabular-nums">
+                          {formatCurrency(shiftActivity.totals.income.txnFees)}
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className="text-emerald-900/70">Load margin</dt>
+                        <dd className="font-medium tabular-nums">
+                          {formatCurrency(shiftActivity.totals.income.loadMargin)}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+                    <div className="flex items-center gap-2 text-red-700">
+                      <TrendingDown className="w-4 h-4" />
+                      <p className="text-xs font-semibold uppercase tracking-wide">Expense</p>
+                    </div>
+                    <p className="text-2xl font-bold mt-2 tabular-nums text-red-700">
+                      {formatCurrency(shiftActivity.totals.expense.total)}
+                    </p>
+                    <dl className="mt-3 space-y-1 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className="text-red-900/70">Transfer service fees</dt>
+                        <dd className="font-medium tabular-nums">
+                          {formatCurrency(shiftActivity.totals.expense.serviceFees)}
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className="text-red-900/70">Provider charges</dt>
+                        <dd className="font-medium tabular-nums">
+                          {formatCurrency(shiftActivity.totals.expense.providerCharges)}
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <dt className="text-red-900/70">Operating expenses</dt>
+                        <dd className="font-medium tabular-nums">
+                          {formatCurrency(shiftActivity.totals.expense.operatingExpenses)}
+                        </dd>
+                      </div>
+                    </dl>
+                  </div>
+                </div>
+
+                <div className={`mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border px-4 py-2.5 text-sm ${
+                  shiftActivity.totals.net >= 0
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    : 'border-red-200 bg-red-50 text-red-700'
+                }`}>
+                  <span className="font-medium">Net for the shift</span>
+                  <span className="font-semibold tabular-nums">{formatCurrency(shiftActivity.totals.net)}</span>
+                </div>
+
+                {/* Only when the branches disagree about which day they are
+                    on: with one date the badge above already says it, and a
+                    breakdown of a single row would be noise rather than the
+                    reason this list exists. */}
+                {shiftActivity.branches.length > 1 && (
+                  <dl className="mt-3 divide-y divide-gray-100 text-sm">
+                    {shiftActivity.branches.map((branch) => (
+                      <div
+                        key={branch.branchId}
+                        className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2"
+                      >
+                        <dt className="text-gray-600">
+                          {branch.branchName}
+                          <span className="text-gray-400"> · {dateKeyLabel(branch.shiftDate)}</span>
+                        </dt>
+                        <dd className="flex gap-4 tabular-nums">
+                          <span className="text-emerald-600">+{formatCurrency(branch.income.totalIncome)}</span>
+                          <span className="text-red-600">−{formatCurrency(branch.expense.totalExpense)}</span>
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                )}
+              </>
+            ) : (
+              <p className="mt-4 text-sm text-gray-500">
+                No shift is open in this scope. Open a shift and this panel reports what that day earns
+                and spends — the figures never appear from a period nobody recorded.
               </p>
-            </div>
+            )}
+          </div>
+
+          {/* Movement keeps its own section further down — Sources and Uses —
+              with the tie-out above proving the two still add up. What the
+              cards and the panel above answer is the other question: the
+              drawer's expectation and what the shift's own day earned and
+              spent. That day is the one period this screen is entitled to name
+              (D18); any other period is a Reports question, pointed at from
+              here rather than rebuilt here. */}
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-gray-500">
+            <span>
+              Daily income and expense cover the shift's day only — not a chosen period.
+            </span>
+            <Link
+              to="/reports"
+              className="inline-flex items-center gap-1 text-primary-600 hover:text-primary-700 font-medium"
+            >
+              See earnings for any period
+              <ArrowRight className="w-3.5 h-3.5" />
+            </Link>
           </div>
 
           <div className="card">
@@ -574,6 +960,10 @@ export default function CashManagement() {
                     <span className={`badge-${lastClose.varianceLabel === 'BALANCED' ? 'green' : lastClose.varianceLabel === 'OVER' ? 'yellow' : 'red'}`}>
                       {lastClose.varianceLabel}
                     </span>
+                    <button type="button" className="text-xs underline text-gray-500" onClick={() => setPrintSheet('result')}>
+                      <Printer className="mr-1 inline h-3 w-3" />
+                      Print
+                    </button>
                     <button type="button" className="text-xs underline text-gray-500" onClick={() => setLastClose(null)}>
                       Dismiss
                     </button>
@@ -628,12 +1018,32 @@ export default function CashManagement() {
 
                       {live && open ? (
                         <>
+                          {/* A shift is one Manila day (D17) and a branch holds
+                              only one open at a time (D15), so a shift left open
+                              from yesterday does not merely look stale — it
+                              refuses today's money. Said here rather than left
+                              for the 409 to explain after the operator has typed
+                              the whole form. */}
+                          {open.shift_date < manilaDateValue() && (
+                            <p className="mt-2 flex items-start gap-1.5 rounded border border-amber-300 bg-amber-50 px-2.5 py-2 text-xs text-amber-800">
+                              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                              <span>
+                                Dated {dateKeyLabel(open.shift_date)}. Every movement must carry the shift's own
+                                date, so today's transactions will be refused until this is closed and today's
+                                shift is opened.
+                              </span>
+                            </p>
+                          )}
                           <dl className="mt-3 space-y-1 text-sm">
                             <div className="flex justify-between gap-3">
                               <dt className="text-gray-500">Shift date</dt>
                               <dd className="font-medium" title="Transactions recorded under this shift must carry this date.">
                                 {dateKeyLabel(open.shift_date)}
                               </dd>
+                            </div>
+                            <div className="flex justify-between gap-3">
+                              <dt className="text-gray-500">Open for</dt>
+                              <dd className="font-medium">{elapsedLabel(open.opened_at)}</dd>
                             </div>
                             <div className="flex justify-between gap-3">
                               <dt className="text-gray-500">Opening count</dt>
@@ -657,6 +1067,14 @@ export default function CashManagement() {
                               ? 'The two readings agree.'
                               : `The two readings differ by ${formatCurrency(live.drawerDifference)}.`}
                           </p>
+                          <button
+                            type="button"
+                            className="btn-secondary mt-3 w-full flex items-center justify-center gap-2"
+                            onClick={() => (drawerShiftId === open.id ? hideDrawerActivity() : void loadDrawerActivity(open.id))}
+                          >
+                            <List className="w-4 h-4" />
+                            {drawerShiftId === open.id ? 'Hide movements' : 'View movements'}
+                          </button>
                           <button
                             type="button"
                             className="btn-secondary mt-3 w-full"
@@ -686,6 +1104,74 @@ export default function CashManagement() {
                           </button>
                         </>
                       )}
+
+                      {/* The rows behind "expected now", fetched on demand —
+                          a busy drawer can hold hundreds of them, and only an
+                          operator who wants to read them should pay to fetch
+                          them. Inside the card rather than as a dialog: it
+                          explains a figure printed two lines above it. */}
+                      {open && drawerShiftId === open.id && (
+                        <div className="mt-3 rounded-lg border border-gray-200 bg-white">
+                          <div className="flex items-start justify-between gap-2 px-3 pt-3">
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Drawer movements</p>
+                              <p className="text-xs text-gray-500">
+                                {loadingDrawer
+                                  ? 'Reading the rows behind the expected figure…'
+                                  : `${drawerActivity?.rows.length ?? 0} cash row(s) in this shift's window`}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={hideDrawerActivity}
+                              className="shrink-0 text-gray-400 hover:text-gray-600"
+                              aria-label="Close movements"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          {!loadingDrawer && drawerActivity && drawerActivity.rows.length > 0 && (
+                            <dl className="mt-2 space-y-1 px-3 text-xs">
+                              <div className="flex justify-between gap-3">
+                                <dt className="text-gray-500">Net movement</dt>
+                                <dd className="font-mono font-medium">{formatCurrency(drawerActivity.netMovement)}</dd>
+                              </div>
+                              <div className="flex justify-between gap-3">
+                                <dt className="text-gray-500">Expected at close</dt>
+                                <dd className="font-mono font-medium">{formatCurrency(drawerActivity.expected)}</dd>
+                              </div>
+                            </dl>
+                          )}
+
+                          {!loadingDrawer && (
+                            <ul className="mt-2 max-h-64 overflow-y-auto divide-y divide-gray-100 border-t border-gray-100">
+                              {!drawerActivity || drawerActivity.rows.length === 0 ? (
+                                <li className="px-3 py-4 text-center text-xs text-gray-500">
+                                  No cash movements in this shift's window.
+                                </li>
+                              ) : drawerActivity.rows.map((row) => (
+                                <li key={row.id} className="px-3 py-2 text-xs">
+                                  <div className="flex justify-between gap-2">
+                                    <span className="truncate text-gray-700">
+                                      {row.description || (row.payee ? `Paid to ${row.payee}` : row.account_name)}
+                                    </span>
+                                    <span className={`shrink-0 font-mono font-medium ${row.entry_type === 'credit' ? 'text-emerald-600' : 'text-red-600'}`}>
+                                      {row.entry_type === 'credit' ? '+' : '−'}{formatCurrency(money(row.amount))}
+                                    </span>
+                                  </div>
+                                  <div className="mt-0.5 flex justify-between gap-2 text-gray-500">
+                                    <span className="truncate">
+                                      {row.account_name} · {manilaTimeLabel(row.entry_date)}
+                                    </span>
+                                    <span className="shrink-0 font-mono">after {formatCurrency(money(row.balance_after))}</span>
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -693,182 +1179,6 @@ export default function CashManagement() {
             )}
           </div>
 
-          <div className="card overflow-hidden">
-            <div className="px-4 pt-4 pb-1">
-              <h4 className="font-medium">Position by branch</h4>
-              <p className="text-xs text-gray-500">
-                Opening plus sources minus uses must equal closing on every line, and closing must equal
-                the branch's live balance when the period reaches today.
-              </p>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[840px]">
-                <thead className="bg-gray-50">
-                  <tr>
-                    <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Opening</th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Sources</th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Uses</th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Closing</th>
-                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Live balance</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {statement.branches.length === 0 ? (
-                    <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500">No branches in scope.</td></tr>
-                  ) : statement.branches.map((b) => {
-                    const tied = Math.abs(b.closing - b.current) < 0.005;
-                    return (
-                      <tr key={b.branchId} className="hover:bg-gray-50">
-                        <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">
-                          {b.name} <span className="text-gray-400 font-normal">({b.code})</span>
-                        </td>
-                        <td className="px-4 py-3.5 text-sm text-right font-mono text-gray-600">{formatCurrency(b.opening)}</td>
-                        <td className="px-4 py-3.5 text-sm text-right font-mono text-emerald-600">{formatCurrency(b.sources)}</td>
-                        <td className="px-4 py-3.5 text-sm text-right font-mono text-red-600">{formatCurrency(b.uses)}</td>
-                        <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(b.closing)}</td>
-                        <td className="px-4 py-3.5 text-sm text-right font-mono">
-                          <span className={tied ? 'text-gray-900' : 'text-amber-600'}>{formatCurrency(b.current)}</span>
-                          {!tied && <span className="ml-1.5 text-xs" title="The period ends before today, so closing and the live balance are different figures by design.">·</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot className="bg-gray-50 border-t border-gray-200">
-                  <tr>
-                    <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap">Total</td>
-                    <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(t.opening)}</td>
-                    <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-emerald-600">{formatCurrency(t.sources)}</td>
-                    <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-red-600">{formatCurrency(t.uses)}</td>
-                    <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(t.closing)}</td>
-                    <td className={`px-4 py-3.5 text-sm text-right font-mono font-semibold ${t.balanced ? 'text-emerald-600' : 'text-amber-600'}`}>
-                      {formatCurrency(t.current)}
-                    </td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="card overflow-hidden">
-              <div className="px-4 pt-4 pb-1">
-                <h4 className="font-medium">Sources</h4>
-                <p className="text-xs text-gray-500">Click a line to see the rows behind it.</p>
-              </div>
-              <table className="w-full mt-2">
-                <tbody className="divide-y divide-gray-100">
-                  {statement.sources.length === 0 ? (
-                    <tr><td className="px-4 py-6 text-center text-sm text-gray-500">No inflows recorded.</td></tr>
-                  ) : statement.sources.map((line) => (
-                    <tr key={line.bucket} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-sm">
-                        <button
-                          type="button"
-                          onClick={() => openDrill(line, 'credit')}
-                          className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 text-left hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                        >
-                          <ChevronRight className="w-4 h-4 text-gray-400" />
-                          <span>{line.label}</span>
-                          <span className="text-xs text-gray-400">{line.count}</span>
-                        </button>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-right font-mono text-emerald-600">{formatCurrency(line.amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="card overflow-hidden">
-              <div className="px-4 pt-4 pb-1">
-                <h4 className="font-medium">Uses</h4>
-                <p className="text-xs text-gray-500">Click a line to see the rows behind it.</p>
-              </div>
-              <table className="w-full mt-2">
-                <tbody className="divide-y divide-gray-100">
-                  {statement.uses.length === 0 ? (
-                    <tr><td className="px-4 py-6 text-center text-sm text-gray-500">No outflows recorded.</td></tr>
-                  ) : statement.uses.map((line) => (
-                    <tr key={line.bucket} className="hover:bg-gray-50">
-                      <td className="px-4 py-3 text-sm">
-                        <button
-                          type="button"
-                          onClick={() => openDrill(line, 'debit')}
-                          className="inline-flex items-center gap-1.5 rounded px-1 -mx-1 py-0.5 text-left hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-primary-500"
-                        >
-                          <ChevronRight className="w-4 h-4 text-gray-400" />
-                          <span>{line.label}</span>
-                          <span className="text-xs text-gray-400">{line.count}</span>
-                        </button>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-right font-mono text-red-600">{formatCurrency(line.amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {drillLoading && <div className="card text-center py-6 text-sm text-gray-500">Loading rows…</div>}
-
-          {drill && !drillLoading && (
-            <div className="card overflow-hidden">
-              <div className="px-4 pt-4 pb-1 flex items-start justify-between gap-4">
-                <div>
-                  <h4 className="font-medium">{drill.label} — {drill.rows.length} rows</h4>
-                  <p className="text-xs text-gray-500">
-                    {drill.direction === 'credit' ? 'Money in' : 'Money out'} · {formatCurrency(drill.total)}
-                    {drill.truncated && ' · only the most recent rows in this period are listed'}
-                  </p>
-                </div>
-                <button type="button" onClick={() => setDrill(null)} className="text-gray-400 hover:text-gray-600" aria-label="Close">
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[760px]">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reference</th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
-                      <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
-                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
-                      <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Balance after</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {drill.rows.length === 0 ? (
-                      <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-gray-500">No rows recorded.</td></tr>
-                    ) : drill.rows.map((row) => (
-                      <tr key={row.id}>
-                        <td className="px-4 py-3 text-sm whitespace-nowrap">
-                          {row.entry_date ? new Date(row.entry_date).toLocaleDateString() : '—'}
-                        </td>
-                        <td className="px-4 py-3 text-sm font-mono text-xs whitespace-nowrap">
-                          {row.transaction_number !== null ? `TXN #${row.transaction_number}` : (row.reference_number || '—')}
-                        </td>
-                        <td className="px-4 py-3 text-sm whitespace-nowrap">
-                          {row.account_name} <span className="text-gray-400">· {row.branch_code}</span>
-                        </td>
-                        <td className="px-4 py-3 text-sm text-gray-600 max-w-[320px] truncate" title={row.description || ''}>
-                          {row.description || (row.payee ? `Paid to ${row.payee}` : '—')}
-                        </td>
-                        <td className={`px-4 py-3 text-sm text-right font-mono ${row.entry_type === 'credit' ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {row.entry_type === 'credit' ? '+' : '−'}{formatCurrency(Number(row.amount))}
-                        </td>
-                        <td className="px-4 py-3 text-sm text-right font-mono text-gray-600">
-                          {formatCurrency(Number(row.balance_after))}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
         </>
       ) : null}
 
@@ -877,8 +1187,8 @@ export default function CashManagement() {
           <div className="px-4 pt-4 pb-1">
             <h4 className="font-medium">Awaiting approval</h4>
             <p className="text-xs text-gray-500">
-              A second person releases these. Nobody approves their own request, and only an
-              administrator may release or decline an operating expense.
+              These are the expenses above the {threshold !== undefined ? formatCurrency(threshold) : 'approval'} approval threshold. Nobody
+              approves their own request, and only an administrator may release or decline one.
             </p>
           </div>
           <div className="overflow-x-auto">
@@ -970,135 +1280,204 @@ export default function CashManagement() {
       )}
 
       {showForm && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
-          <div className="mx-auto mt-12 max-w-xl bg-white rounded-xl shadow-xl border border-gray-200">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
-              <h3 className="text-lg font-semibold">Record operating expense</h3>
-              <button type="button" onClick={() => setShowForm(false)} aria-label="Close" className="text-gray-400 hover:text-gray-600">
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
+          <div className="mx-auto my-10 max-w-2xl bg-white rounded-xl shadow-2xl border border-gray-200">
+            <div className="flex items-start gap-3 px-6 pt-6 pb-5 border-b border-gray-200">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-red-50 text-red-600">
+                <Receipt className="w-5 h-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-lg font-semibold text-gray-900">Record operating expense</h3>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  Cash paid out of a wallet for a running cost of the business.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowForm(false)}
+                aria-label="Close"
+                className="-mr-1 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <form onSubmit={submitExpense} className="p-5 space-y-4">
-              <div className="bg-blue-50 border border-blue-200 text-blue-800 text-xs rounded-lg p-3">
-                This is saved as a request, not a withdrawal. Nothing leaves the wallet until a second
-                person approves it.
+
+            <form onSubmit={submitExpense}>
+              <div className="px-6 py-5 space-y-6">
+                <div className={`flex gap-3 rounded-lg border px-4 py-3 ${
+                  settlesNow
+                    ? 'border-emerald-200 bg-emerald-50'
+                    : 'border-blue-200 bg-blue-50'
+                }`}>
+                  <ShieldAlert className={`mt-0.5 h-4 w-4 shrink-0 ${settlesNow ? 'text-emerald-600' : 'text-blue-600'}`} />
+                  <p className={`text-xs leading-relaxed ${settlesNow ? 'text-emerald-800' : 'text-blue-800'}`}>
+                    {settlesNow
+                      ? <>This is deducted from the wallet <span className="font-semibold">now</span>. The amount is at
+                        or under the {formatCurrency(threshold)} approval threshold, so nothing reviews it first —
+                        check the figure before you save.</>
+                      : <>This is saved as a <span className="font-semibold">request</span>, not a
+                        withdrawal. Nothing leaves the wallet until a second person approves it, and
+                        nobody approves their own request.</>}
+                  </p>
+                </div>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Amount
+                  </h4>
+                  <div className="relative">
+                    <span className="pointer-events-none absolute inset-y-0 left-0 flex w-10 items-center justify-center border-r border-gray-200 text-gray-500">
+                      ₱
+                    </span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      required
+                      autoFocus
+                      className="form-input pl-12 text-2xl font-semibold tabular-nums"
+                      value={form.amount}
+                      onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
+                      placeholder="0.00"
+                    />
+                  </div>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Payment source
+                  </h4>
+                  <AccountSelect
+                    accounts={accounts}
+                    value={form.accountId}
+                    onChange={(v) => setForm((f) => ({ ...f, accountId: v }))}
+                    placeholder="Select the wallet the cash comes out of"
+                    className="form-input"
+                  />
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    The revolving fund holds the branch&apos;s physical cash on hand. Any visible
+                    wallet may be used.
+                  </p>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Expense details
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="sm:col-span-2">
+                      <label className="form-label" htmlFor="exp-description">
+                        What was it for <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        id="exp-description"
+                        type="text"
+                        className="form-input"
+                        value={form.description}
+                        onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                        placeholder="Electrical bill — October"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="form-label" htmlFor="exp-category">Category</label>
+                      <select
+                        id="exp-category"
+                        className="form-input"
+                        value={form.transactionCategoryId}
+                        onChange={(e) => setForm((f) => ({ ...f, transactionCategoryId: e.target.value }))}
+                      >
+                        <option value="">Uncategorised</option>
+                        {categories.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="form-label" htmlFor="exp-payee">Paid to</label>
+                      <input
+                        id="exp-payee"
+                        type="text"
+                        className="form-input"
+                        value={form.payee}
+                        onChange={(e) => setForm((f) => ({ ...f, payee: e.target.value }))}
+                        placeholder="Who received the money"
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Settlement
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="form-label" htmlFor="exp-date">Date paid</label>
+                      <input
+                        id="exp-date"
+                        type="date"
+                        className="form-input"
+                        value={form.transactionDate}
+                        onChange={(e) => setForm((f) => ({ ...f, transactionDate: e.target.value }))}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="form-label" htmlFor="exp-method">How it was paid</label>
+                      <select
+                        id="exp-method"
+                        className="form-input"
+                        value={form.paymentMethod}
+                        onChange={(e) => setForm((f) => ({ ...f, paymentMethod: e.target.value }))}
+                      >
+                        {movementPaymentMethodOptions.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="form-label" htmlFor="exp-reference">Voucher / reference</label>
+                      <input
+                        id="exp-reference"
+                        type="text"
+                        className="form-input"
+                        value={form.referenceNumber}
+                        onChange={(e) => setForm((f) => ({ ...f, referenceNumber: e.target.value }))}
+                        placeholder="Optional"
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                {formError && (
+                  <div className="flex gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                    <p className="text-sm text-red-700">{formError}</p>
+                  </div>
+                )}
               </div>
 
-              <div>
-                <label className="form-label">Wallet to pay from</label>
-                <AccountSelect
-                  accounts={accounts}
-                  value={form.accountId}
-                  onChange={(v) => setForm((f) => ({ ...f, accountId: v }))}
-                  placeholder="Select the wallet the cash comes out of"
-                  className="w-full"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  The revolving fund holds the branch's physical cash on hand. Any visible wallet may be used.
+              <div className="flex items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4 rounded-b-xl">
+                <p className="text-xs text-gray-500 hidden sm:block">
+                  {settlesNow
+                    ? <>Deducted from the wallet <span className="font-medium text-gray-600">immediately</span> —
+                      no second signature under {formatCurrency(threshold)}.</>
+                    : <>Goes to <span className="font-medium text-gray-600">Awaiting approval</span> for a
+                      second signature.</>}
                 </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="form-label">Category</label>
-                  <select
-                    className="form-input"
-                    value={form.transactionCategoryId}
-                    onChange={(e) => setForm((f) => ({ ...f, transactionCategoryId: e.target.value }))}
-                  >
-                    <option value="">Uncategorised</option>
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
+                <div className="flex gap-3 ml-auto">
+                  <button type="button" className="btn-secondary" onClick={() => setShowForm(false)} disabled={saving}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={saving}>
+                    {saving ? 'Saving…' : settlesNow ? 'Record expense' : 'Send for approval'}
+                  </button>
                 </div>
-                <div>
-                  <label className="form-label">Amount (PHP)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    className="form-input"
-                    value={form.amount}
-                    onChange={(e) => setForm((f) => ({ ...f, amount: e.target.value }))}
-                    placeholder="0.00"
-                    required
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="form-label">Paid to</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={form.payee}
-                    onChange={(e) => setForm((f) => ({ ...f, payee: e.target.value }))}
-                    placeholder="Who received the money"
-                  />
-                </div>
-                <div>
-                  <label className="form-label">Voucher / reference</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={form.referenceNumber}
-                    onChange={(e) => setForm((f) => ({ ...f, referenceNumber: e.target.value }))}
-                    placeholder="Optional"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="form-label">What was it for</label>
-                <input
-                  type="text"
-                  className="form-input"
-                  value={form.description}
-                  onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
-                  placeholder="Electrical bill — October"
-                  required
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="form-label">Date paid</label>
-                  <input
-                    type="date"
-                    className="form-input"
-                    value={form.transactionDate}
-                    onChange={(e) => setForm((f) => ({ ...f, transactionDate: e.target.value }))}
-                    required
-                  />
-                </div>
-                <div>
-                  <label className="form-label">How it was paid</label>
-                  <select
-                    className="form-input"
-                    value={form.paymentMethod}
-                    onChange={(e) => setForm((f) => ({ ...f, paymentMethod: e.target.value }))}
-                  >
-                    <option value="cash">Cash</option>
-                    <option value="gcash">GCash</option>
-                    <option value="bank">Bank Transfer</option>
-                    <option value="maya">Maya</option>
-                  </select>
-                </div>
-              </div>
-
-              {formError && (
-                <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg p-3">{formError}</div>
-              )}
-
-              <div className="flex justify-end gap-3 pt-1">
-                <button type="button" className="btn-secondary" onClick={() => setShowForm(false)} disabled={saving}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn-primary" disabled={saving}>
-                  {saving ? 'Saving…' : 'Send for approval'}
-                </button>
               </div>
             </form>
           </div>
@@ -1262,6 +1641,14 @@ export default function CashManagement() {
                 </div>
 
                 <div className="flex justify-end gap-3 pt-1">
+                  <button
+                    type="button"
+                    className="btn-secondary flex items-center gap-2"
+                    onClick={() => setPrintSheet('count')}
+                  >
+                    <Printer className="w-4 h-4" />
+                    Print sheet
+                  </button>
                   <button type="button" className="btn-secondary" onClick={() => setShiftClose(null)}>Cancel</button>
                   <button type="submit" className="btn-primary" disabled={savingShift || !countedOk}>
                     {savingShift ? 'Saving…' : 'Close shift'}
@@ -1273,5 +1660,40 @@ export default function CashManagement() {
         );
       })()}
     </div>
+
+    {/* Outside the page root deliberately — window.print() prints the document,
+        and the root above carries print:hidden for exactly as long as one of
+        these is mounted. */}
+    {printSheet === 'count' && shiftClose && (
+      <ShiftCountSheet
+        branchName={shiftClose.shift.branch_name}
+        shiftDate={shiftClose.shift.shift_date}
+        openedAt={shiftClose.shift.opened_at}
+        openingFloat={money(shiftClose.shift.opening_float)}
+        cashIn={shiftClose.shift.live?.cashIn}
+        cashOut={shiftClose.shift.live?.cashOut}
+        expected={shiftClose.shift.live?.expected ?? 0}
+        counted={null}
+        variance={null}
+        drawerOnBooks={shiftClose.shift.live?.drawerBalance}
+        printedAt={`${dateKeyLabel(manilaDateValue())} ${manilaTimeLabel(new Date())}`}
+      />
+    )}
+
+    {printSheet === 'result' && lastClose && (
+      <ShiftCountSheet
+        branchName={branches.find((x) => x.id === lastClose.branch_id)?.name || 'Shift'}
+        shiftDate={lastClose.shift_date}
+        openedAt={lastClose.opened_at}
+        openingFloat={money(lastClose.opening_float)}
+        expected={money(lastClose.expected_closing)}
+        counted={money(lastClose.counted_closing)}
+        variance={money(lastClose.variance)}
+        status={lastClose.varianceLabel}
+        drawerOnBooks={lastClose.drawerBalance === undefined ? undefined : money(lastClose.drawerBalance)}
+        printedAt={`${dateKeyLabel(manilaDateValue())} ${manilaTimeLabel(new Date())}`}
+      />
+    )}
+    </>
   );
 }
