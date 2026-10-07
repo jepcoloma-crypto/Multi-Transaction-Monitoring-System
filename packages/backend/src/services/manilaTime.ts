@@ -91,6 +91,42 @@ export function parseManilaDateTime(value: string): Date | null {
 }
 
 /**
+ * The `entry_date` bounds for a period an operator picked.
+ *
+ * The two ends are stated differently on purpose. The window *opens* at the
+ * instant its first day begins, but it *closes* at the next Manila day, because
+ * `end` names the last day **included**. Deriving the close from the instant
+ * instead takes its UTC day — Oct 6 00:00 Manila is Oct 5 16:00 UTC — which
+ * binds `entry_date < 2026-10-06` and cuts the final day out of every figure
+ * while the report still prints the range it was asked for.
+ *
+ * Returned as one value so the ends cannot drift apart: one right and the other
+ * built from an instant is exactly how they did.
+ *
+ * The upper bound's `::date + INTERVAL '1 day'` is read in the session's
+ * timezone, which this deployment pins to Asia/Manila — the whole of the day
+ * named, and none of the day after it.
+ */
+export function entryDateBounds(
+  alias: string,
+  startIndex: number,
+  start: Date | null,
+  end: Date | null,
+): { conds: string[]; params: string[] } {
+  const conds: string[] = [];
+  const params: string[] = [];
+  if (start) {
+    conds.push(`${alias}.entry_date >= $${startIndex + params.length}`);
+    params.push(start.toISOString());
+  }
+  if (end) {
+    conds.push(`${alias}.entry_date < ($${startIndex + params.length}::date + INTERVAL '1 day')`);
+    params.push(manilaDateKey(end));
+  }
+  return { conds, params };
+}
+
+/**
  * The date to compare a shift against: the one supplied, or now if the action
  * carries no date of its own.
  */

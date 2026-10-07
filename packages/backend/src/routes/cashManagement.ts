@@ -6,7 +6,8 @@ import { branchClause, canSeeAll } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS } from '../services/cashManagement';
 import { drawerMovements, drawerBalance, drawerWindow } from '../services/drawerQuery';
 import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS } from '../services/shifts';
-import { parseManilaDateTime, parseDateKey, manilaDateKey } from '../services/manilaTime';
+import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
+import { expenseApprovalThreshold } from '../services/settings';
 import type { BranchBalance, CashBucket, LedgerFlowRow } from '../services/cashManagement';
 
 const router = Router();
@@ -95,16 +96,9 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
       for (const row of priorRows) priorNet.set(row.branch_id, num(row.net));
     }
 
-    const flowParams: any[] = [];
-    const flowConds: string[] = [];
-    if (start) {
-      flowConds.push(`l.entry_date >= $${flowParams.length + 1}`);
-      flowParams.push(start.toISOString());
-    }
-    if (end) {
-      flowConds.push(`l.entry_date < ($${flowParams.length + 1}::date + INTERVAL '1 day')`);
-      flowParams.push(end.toISOString().slice(0, 10));
-    }
+    const flowBounds = entryDateBounds('l', 1, start, end);
+    const flowConds = [...flowBounds.conds];
+    const flowParams: any[] = [...flowBounds.params];
     const flowScope = branchClause(req, 'l', 'accounts.read_all', flowParams.length + 1, 'account');
     if (flowScope.clause) {
       flowConds.push(flowScope.clause);
@@ -157,11 +151,20 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
       success: true,
       data: {
         period: {
-          startDate: start ? start.toISOString().slice(0, 10) : null,
-          endDate: end ? end.toISOString().slice(0, 10) : null,
+          // The Manila day the operator picked, read back in Manila. Slicing
+          // the instant would print the UTC day — one day early for both ends —
+          // so a report filed under the wrong period would look perfectly
+          // well-formed while naming a range it never ran.
+          startDate: start ? manilaDateKey(start) : null,
+          endDate: end ? manilaDateKey(end) : null,
         },
         ...statement,
         drawer: num(drawerRow?.balance),
+        // Served beside the drawer figure for the same reason: the expense form
+        // on this page has to say what the books will do, and the create route
+        // decides that from this number. The operator role holds no
+        // settings.read, so this is the one place the form can read it from.
+        expenseApprovalThreshold: await expenseApprovalThreshold(),
       },
     });
   } catch (error) {
@@ -189,16 +192,9 @@ router.get('/statement/drill', authorize('reports.read'), async (req: Request, r
     const end = parseDate(req.query.endDate, 'endDate');
     const branchFilter = req.query.branchId ? String(req.query.branchId) : null;
 
-    const params: any[] = [];
-    const conds: string[] = [];
-    if (start) {
-      conds.push(`l.entry_date >= $${params.length + 1}`);
-      params.push(start.toISOString());
-    }
-    if (end) {
-      conds.push(`l.entry_date < ($${params.length + 1}::date + INTERVAL '1 day')`);
-      params.push(end.toISOString().slice(0, 10));
-    }
+    const periodBounds = entryDateBounds('l', 1, start, end);
+    const conds = [...periodBounds.conds];
+    const params: any[] = [...periodBounds.params];
     const scope = branchClause(req, 'l', 'accounts.read_all', params.length + 1, 'account');
     if (scope.clause) {
       conds.push(scope.clause);
