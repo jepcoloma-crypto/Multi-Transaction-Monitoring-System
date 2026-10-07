@@ -875,3 +875,51 @@ differently, cannot disagree with the total they sit under.
 
 R1 first because it shapes the other two: R2 needs the branch on the row, and R3's statement
 is per-branch by construction.
+
+**All three shipped.**
+
+R2 groups in the renderer wherever rows exist: transaction, transfer and loading carry
+`branch_name` straight off the query, income, expense and reversal carry `branchName`, and the
+subtotals a foot prints are sums of the rows directly above them — so a subtotal cannot
+disagree with the total it sits under. Consolidated is the exception, because it has no rows to
+group: its five figures are now each asked **once** with `GROUP BY branch`, and the grand total
+above them is that same grouping summed rather than a second query over the same rows.
+
+R3 moved the statement into Reports as the **Sources & Uses** report type, reading
+`/cash-management/statement` with From/To — `buildCashStatement` and its drill-down never left
+the server, so nothing was reimplemented. Cash Management keeps calling the endpoint with no
+period, because a live position has no period of its own (D18).
+
+Giving the statement a period exposed a defect it had never been able to show: both ends of
+`entryDateBounds` used to be built from the instant, and `end`'s UTC day is one behind its
+Manila day. Oct 6 00:00 Manila is Oct 5 16:00 UTC, so a period ending Oct 6 bound
+`entry_date < 2026-10-06` — silently dropping the last day of every figure while the echoed
+period still read Oct 1–6. It stayed dormant because Cash Management sent no dates at all
+before this. The bound now names the day the operator picked, and
+`src/test/manilaTime.test.ts` pins it.
+
+### D21 — the one period Cash Management may name is its own shift
+
+D18 removed the page's From/To because a live position has no period of its own. It does have
+a shift, and the shift has a day: every transaction in that branch is already held to
+`shift_date` (D17), so the open shift's date is a window the page derives rather than one a
+user supplies. **Income and expense for that day** therefore sit on Cash Management without
+reopening the filter D18 closed — there is still nothing to pick.
+
+`GET /reports/shift-activity` (`reports.read`, `branchId` validated through
+`resolveBranchFilter` so a foreign or malformed branch answers 404 rather than an empty view):
+
+- **Period** — `shift_date` of each open shift in the caller's scope, per branch. Branches may
+  disagree about the day, so the payload carries the set of dates and a per-branch row instead
+  of one label that would be false for the rest.
+- **Figures** — the Income and Expense report's own components, from the same
+  `loadIncomeReport` / `loadExpenseReport` called once per open shift. Not a second
+  implementation restating their conditions: two readings of one rule can agree by
+  construction, two rules cannot. Transaction fees and load margin are income; transfer
+  service fees, provider charges and recorded operating expenses are expense — a transfer's
+  fee still stays out of income, because the sender is debited the amount plus it and the
+  receiver credited only the amount (`incomeReport.ts`, `expenseReport.ts`).
+- **Absence** — a branch with no open shift is absent, and the panel says so. Inventing a
+  window for it would be inventing a period the books never recorded.
+
+Cash Management keeps no date input; Reports keeps every other period.

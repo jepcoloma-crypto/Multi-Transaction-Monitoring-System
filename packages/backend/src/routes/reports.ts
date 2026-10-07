@@ -18,6 +18,19 @@ router.use(authenticate);
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+// One branch's share of every consolidated figure (D20). Built by folding the
+// grouped rows of five queries into a single map, so the totals above it are
+// that same list summed — never a second query over the same rows.
+interface ConsolidatedBranch {
+  branchId: string | null;
+  branchName: string;
+  accounts: { count: number; totalBalance: number };
+  transactions: { count: number; totalIn: number; totalOut: number };
+  transfers: { count: number; totalAmount: number; totalFees: number };
+  loading: { count: number; totalRevenue: number; totalProfit: number };
+  reconciliation: { total: number; reconciled: number };
+}
+
 // Where a reversal leaves its trail: the compensating entry, the request that
 // authorised it and the audit entry a direct administrator reversal writes
 // instead. Every query that has to say why a transaction is reversed joins the
@@ -341,8 +354,14 @@ router.get('/loading-report', authorize('reports.read'), async (req: Request, re
 
 router.get('/consolidated', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Five independent queries, each with its own param list, so each binds
-    // the same branch at $1 rather than sharing one placeholder across them.
+    // Five figures, each asked once and grouped by branch (D20).
+    //
+    // The grand total is summed from those same groups rather than queried a
+    // second time: a total computed separately from the subtotals that sit
+    // under it is two implementations of one number, and the two are then
+    // free to disagree about the same rows. An empty branch produces no group
+    // at all, so its figures come out as zero — the same answer the flat query
+    // gave it.
     const branchId = await resolveBranchFilter(req, req.query.branchId);
     const accountScope = branchClause(req, 'accounts', 'accounts.read_all', 1, 'self', branchId);
     const txScope = branchClause(req, 't', 'transactions.read_all', 1, 'account', branchId);
@@ -350,45 +369,154 @@ router.get('/consolidated', authorize('reports.read'), async (req: Request, res:
     const loadingScope = branchClause(req, 'loading_transactions', 'loading.read_all', 1, 'account', branchId);
     const reconScope = branchClause(req, 'reconciliations', 'accounts.read_all', 1, 'account', branchId);
 
-    const accountSummary = await queryOne(
-      `SELECT COUNT(*) as count, COALESCE(SUM(current_balance), 0) as total_balance FROM accounts WHERE status = 'active'${accountScope.clause ? ` AND ${accountScope.clause}` : ''}`,
+    // LEFT JOINs throughout: an orphaned row belongs to no branch and must
+    // still be counted once, under a null branch, rather than quietly leaving
+    // the total it has always been part of.
+    const accountRows = await query<any>(
+      `SELECT accounts.branch_id, b.name AS branch_name,
+              COUNT(*) AS count, COALESCE(SUM(accounts.current_balance), 0) AS total_balance
+       FROM accounts
+       LEFT JOIN branches b ON b.id = accounts.branch_id
+       WHERE accounts.status = 'active'${accountScope.clause ? ` AND ${accountScope.clause}` : ''}
+       GROUP BY accounts.branch_id, b.name`,
       accountScope.params
     );
-    const txSummary = await queryOne(
-      `SELECT COUNT(*) as count,
+    const txRows = await query<any>(
+      `SELECT a.branch_id, b.name AS branch_name,
+              COUNT(*) as count,
               COALESCE(SUM(CASE WHEN tt.direction = 'in' THEN t.amount + chg.total ELSE 0 END), 0) as total_in,
               COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_out
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN accounts a ON a.id = t.account_id
+       LEFT JOIN branches b ON b.id = a.branch_id
        LEFT JOIN LATERAL (
          SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0) AS total
          FROM jsonb_array_elements(
            CASE WHEN jsonb_typeof(t.additional_charges) = 'array' THEN t.additional_charges ELSE '[]'::jsonb END
          ) c
        ) chg ON true
-       WHERE t.status != 'reversed'${txScope.clause ? ` AND ${txScope.clause}` : ''}`,
+       WHERE t.status != 'reversed'${txScope.clause ? ` AND ${txScope.clause}` : ''}
+       GROUP BY a.branch_id, b.name`,
       txScope.params
     );
-    const transferSummary = await queryOne(
-      `SELECT COUNT(*) as count, COALESCE(SUM(transfer_amount), 0) as total_amount, COALESCE(SUM(transfer_fee), 0) as total_fees FROM transfers WHERE status = 'completed'${transferScope.clause ? ` AND ${transferScope.clause}` : ''}`,
+    const transferRows = await query<any>(
+      `SELECT sa.branch_id, b.name AS branch_name,
+              COUNT(*) as count,
+              COALESCE(SUM(transfers.transfer_amount), 0) as total_amount,
+              COALESCE(SUM(transfers.transfer_fee), 0) as total_fees
+       FROM transfers
+       LEFT JOIN accounts sa ON sa.id = transfers.source_account_id
+       LEFT JOIN branches b ON b.id = sa.branch_id
+       WHERE transfers.status = 'completed'${transferScope.clause ? ` AND ${transferScope.clause}` : ''}
+       GROUP BY sa.branch_id, b.name`,
       transferScope.params
     );
-    const loadingSummary = await queryOne(
-      `SELECT COUNT(*) as count, COALESCE(SUM(total_revenue), 0) as revenue, COALESCE(SUM(profit), 0) as profit FROM loading_transactions WHERE status = 'completed'${loadingScope.clause ? ` AND ${loadingScope.clause}` : ''}`,
+    const loadingRows = await query<any>(
+      `SELECT a.branch_id, b.name AS branch_name,
+              COUNT(*) as count,
+              COALESCE(SUM(loading_transactions.total_revenue), 0) as revenue,
+              COALESCE(SUM(loading_transactions.profit), 0) as profit
+       FROM loading_transactions
+       LEFT JOIN accounts a ON a.id = loading_transactions.account_id
+       LEFT JOIN branches b ON b.id = a.branch_id
+       WHERE loading_transactions.status = 'completed'${loadingScope.clause ? ` AND ${loadingScope.clause}` : ''}
+       GROUP BY a.branch_id, b.name`,
       loadingScope.params
     );
-    const reconSummary = await queryOne(
-      `SELECT COUNT(*) as count, SUM(CASE WHEN status = 'reconciled' THEN 1 ELSE 0 END) as reconciled FROM reconciliations${reconScope.clause ? ` WHERE ${reconScope.clause}` : ''}`,
+    const reconRows = await query<any>(
+      `SELECT a.branch_id, b.name AS branch_name,
+              COUNT(*) as count,
+              SUM(CASE WHEN reconciliations.status = 'reconciled' THEN 1 ELSE 0 END) as reconciled
+       FROM reconciliations
+       LEFT JOIN accounts a ON a.id = reconciliations.account_id
+       LEFT JOIN branches b ON b.id = a.branch_id
+       ${reconScope.clause ? `WHERE ${reconScope.clause}` : ''}
+       GROUP BY a.branch_id, b.name`,
       reconScope.params
     );
 
+    const groups = new Map<string, ConsolidatedBranch>();
+    const groupOf = (id: unknown, name: unknown): ConsolidatedBranch => {
+      const branchKey = id == null ? '' : String(id);
+      const found = groups.get(branchKey);
+      if (found) return found;
+      const created: ConsolidatedBranch = {
+        branchId: branchKey || null,
+        branchName: (name as string | null) || 'Unassigned branch',
+        accounts: { count: 0, totalBalance: 0 },
+        transactions: { count: 0, totalIn: 0, totalOut: 0 },
+        transfers: { count: 0, totalAmount: 0, totalFees: 0 },
+        loading: { count: 0, totalRevenue: 0, totalProfit: 0 },
+        reconciliation: { total: 0, reconciled: 0 },
+      };
+      groups.set(branchKey, created);
+      return created;
+    };
+    const num = (value: unknown): number => {
+      const parsed = typeof value === 'number' ? value : parseFloat(String(value ?? ''));
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    for (const row of accountRows) {
+      const g = groupOf(row.branch_id, row.branch_name);
+      g.accounts.count += num(row.count);
+      g.accounts.totalBalance += num(row.total_balance);
+    }
+    for (const row of txRows) {
+      const g = groupOf(row.branch_id, row.branch_name);
+      g.transactions.count += num(row.count);
+      g.transactions.totalIn += num(row.total_in);
+      g.transactions.totalOut += num(row.total_out);
+    }
+    for (const row of transferRows) {
+      const g = groupOf(row.branch_id, row.branch_name);
+      g.transfers.count += num(row.count);
+      g.transfers.totalAmount += num(row.total_amount);
+      g.transfers.totalFees += num(row.total_fees);
+    }
+    for (const row of loadingRows) {
+      const g = groupOf(row.branch_id, row.branch_name);
+      g.loading.count += num(row.count);
+      g.loading.totalRevenue += num(row.revenue);
+      g.loading.totalProfit += num(row.profit);
+    }
+    for (const row of reconRows) {
+      const g = groupOf(row.branch_id, row.branch_name);
+      g.reconciliation.total += num(row.count);
+      g.reconciliation.reconciled += num(row.reconciled);
+    }
+
+    const byBranch = [...groups.values()].sort((a, b) => a.branchName.localeCompare(b.branchName));
+    const sum = (pick: (b: ConsolidatedBranch) => number): number =>
+      byBranch.reduce((acc, b) => acc + pick(b), 0);
+
     res.json({
       success: true, data: {
-        accounts: { count: parseInt(accountSummary?.count || '0'), totalBalance: parseFloat(accountSummary?.total_balance || '0') },
-        transactions: { count: parseInt(txSummary?.count || '0'), totalIn: parseFloat(txSummary?.total_in || '0'), totalOut: parseFloat(txSummary?.total_out || '0') },
-        transfers: { count: parseInt(transferSummary?.count || '0'), totalAmount: parseFloat(transferSummary?.total_amount || '0'), totalFees: parseFloat(transferSummary?.total_fees || '0') },
-        loading: { count: parseInt(loadingSummary?.count || '0'), totalRevenue: parseFloat(loadingSummary?.revenue || '0'), totalProfit: parseFloat(loadingSummary?.profit || '0') },
-        reconciliation: { total: parseInt(reconSummary?.count || '0'), reconciled: parseInt(reconSummary?.reconciled || '0') }
+        accounts: {
+          count: sum(b => b.accounts.count),
+          totalBalance: byBranch.reduce((acc, b) => acc + b.accounts.totalBalance, 0),
+        },
+        transactions: {
+          count: sum(b => b.transactions.count),
+          totalIn: byBranch.reduce((acc, b) => acc + b.transactions.totalIn, 0),
+          totalOut: byBranch.reduce((acc, b) => acc + b.transactions.totalOut, 0),
+        },
+        transfers: {
+          count: sum(b => b.transfers.count),
+          totalAmount: byBranch.reduce((acc, b) => acc + b.transfers.totalAmount, 0),
+          totalFees: byBranch.reduce((acc, b) => acc + b.transfers.totalFees, 0),
+        },
+        loading: {
+          count: sum(b => b.loading.count),
+          totalRevenue: byBranch.reduce((acc, b) => acc + b.loading.totalRevenue, 0),
+          totalProfit: byBranch.reduce((acc, b) => acc + b.loading.totalProfit, 0),
+        },
+        reconciliation: {
+          total: sum(b => b.reconciliation.total),
+          reconciled: byBranch.reduce((acc, b) => acc + b.reconciliation.reconciled, 0),
+        },
+        byBranch,
       }
     });
   } catch (error) { next(error); }
@@ -839,6 +967,114 @@ router.get('/income-report', authorize('reports.read'), async (req: Request, res
       branchId: await resolveBranchFilter(req, req.query.branchId),
     });
     res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
+interface ShiftActivityBranch {
+  branchId: string;
+  branchName: string;
+  shiftDate: string;
+  income: IncomeReport['summary'];
+  expense: ExpenseReport['summary'];
+}
+
+// Income and expense for the business day an open shift belongs to.
+//
+// The period is derived from the shift, never asked for. Cash Management is a
+// live position and may not carry a date filter of its own (D18), so the only
+// window it can honestly name is the one its own shift already defines — the
+// same `shift_date` every transaction in that branch is already held to.
+//
+// Both figures come from the same two loaders behind the Income and Expense
+// report, called once per open shift with that shift's date. Reusing them
+// rather than restating their conditions keeps the panel and the report the
+// same query instead of two readings of one rule, which is the only way a
+// figure shown in two places can be trusted in either. A branch with no open
+// shift contributes nothing and says so by being absent, because inventing a
+// window for it would be inventing a period the books never had.
+router.get('/shift-activity', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const branchFilter = await resolveBranchFilter(req, req.query.branchId);
+
+    const params: any[] = [];
+    const conds = [`s.status = 'open'`];
+    const scope = branchClause(req, 's', 'branches.read_all', 1, 'self');
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+    }
+    if (branchFilter) {
+      conds.push(`s.branch_id = $${params.length + 1}`);
+      params.push(branchFilter);
+    }
+
+    // shift_date is re-cast after `s.*` so node-postgres's parsed DATE — local
+    // midnight in this host's UTC+3 — is replaced by the day it names. The
+    // later column wins in the row object, which is why it is written last.
+    const shifts = await query<{ branch_id: string; branch_name: string; shift_date: string }>(
+      `SELECT s.branch_id, s.shift_date::text AS shift_date, b.name AS branch_name
+       FROM shifts s
+       JOIN branches b ON b.id = s.branch_id
+       WHERE ${conds.join(' AND ')}
+       ORDER BY b.code`,
+      params,
+    );
+
+    const branches: ShiftActivityBranch[] = [];
+    for (const shift of shifts) {
+      const [income, expense] = await Promise.all([
+        loadIncomeReport(req, { startDate: shift.shift_date, endDate: shift.shift_date, branchId: shift.branch_id }),
+        loadExpenseReport(req, { startDate: shift.shift_date, endDate: shift.shift_date, branchId: shift.branch_id }),
+      ]);
+      branches.push({
+        branchId: shift.branch_id,
+        branchName: shift.branch_name,
+        shiftDate: shift.shift_date,
+        income: income.summary,
+        expense: expense.summary,
+      });
+    }
+
+    const totals = branches.reduce(
+      (acc, branch) => ({
+        txnFees: acc.txnFees + branch.income.txnFees,
+        loadMargin: acc.loadMargin + branch.income.loadMargin,
+        totalIncome: acc.totalIncome + branch.income.totalIncome,
+        serviceFees: acc.serviceFees + branch.expense.serviceFees,
+        providerCharges: acc.providerCharges + branch.expense.providerCharges,
+        operatingExpenses: acc.operatingExpenses + branch.expense.operatingExpenses,
+        totalExpense: acc.totalExpense + branch.expense.totalExpense,
+      }),
+      {
+        txnFees: 0, loadMargin: 0, totalIncome: 0,
+        serviceFees: 0, providerCharges: 0, operatingExpenses: 0, totalExpense: 0,
+      },
+    );
+
+    res.json({
+      success: true,
+      data: {
+        // Branches may hold their shift on different days, so the dates are
+        // reported as the set they are rather than one label that would be
+        // false for every branch outside the first.
+        shiftDates: [...new Set(branches.map((branch) => branch.shiftDate))].sort(),
+        branches,
+        totals: {
+          income: {
+            txnFees: round2(totals.txnFees),
+            loadMargin: round2(totals.loadMargin),
+            total: round2(totals.totalIncome),
+          },
+          expense: {
+            serviceFees: round2(totals.serviceFees),
+            providerCharges: round2(totals.providerCharges),
+            operatingExpenses: round2(totals.operatingExpenses),
+            total: round2(totals.totalExpense),
+          },
+          net: round2(totals.totalIncome - totals.totalExpense),
+        },
+      },
+    });
   } catch (error) { next(error); }
 });
 

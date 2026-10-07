@@ -1,14 +1,15 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, dateKeyLabel } from '../lib/format';
+import { formatCurrency, dateKeyLabel, manilaDayLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 import { ExpenseDetailPanel } from '../components/ExpenseDetail';
+import { CashStatementPanel } from '../components/CashStatement';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement';
 
 // One report module, two tabs. They are separate queries with separate
 // endpoints rather than one payload split in the browser: the income side
@@ -29,6 +30,29 @@ const sideLabel = (side: string | null): string =>
 
 const sideClass = (side: string | null): string =>
   side === 'credit' ? 'text-finance-green' : side === 'debit' ? 'text-finance-red' : 'text-gray-500';
+
+// D20 — one subtotal per branch, built from the rows already on screen.
+//
+// Grouped in the renderer rather than by a second query, which is the whole
+// point: a subtotal is then a sum of exactly the rows above it, so it cannot
+// disagree with the total it sits under no matter how that total was computed.
+// Ordered by the same measure the rows are, so the reading order survives.
+//
+// Returns every group; the caller decides when to show them, because a view
+// spanning a single branch would only repeat the grand total underneath it.
+function branchSubtotals(rows: any[], keys: string[], headline: string) {
+  const groups = new Map<string, { rows: number; sums: Record<string, number> }>();
+  for (const row of rows) {
+    const label = row?.branchName || 'Unassigned branch';
+    let group = groups.get(label);
+    if (!group) { group = { rows: 0, sums: {} }; groups.set(label, group); }
+    group.rows += 1;
+    for (const key of keys) group.sums[key] = (group.sums[key] ?? 0) + Number(row[key] ?? 0);
+  }
+  return [...groups.entries()]
+    .map(([label, group]) => ({ label, ...group }))
+    .sort((a, b) => (b.sums[headline] ?? 0) - (a.sums[headline] ?? 0));
+}
 
 // A compensating entry is a completed transaction wearing an adjustment type,
 // so the stored status undersells it. The badge names the role instead, and the
@@ -81,6 +105,15 @@ export default function Reports() {
   const [detailLoading, setDetailLoading] = useState<Record<string, boolean>>({});
   const [detailTabs, setDetailTabs] = useState<Record<string, IncomeDetailTab>>({});
   const requestedRef = useRef<Set<string>>(new Set());
+  // Bumped once per fetch so a reply for a request the operator has already
+  // replaced can be recognised and dropped.
+  //
+  // Without it a slow response lands after the switch and fills the page with
+  // the *previous* report's payload. The render guards only ask whether a
+  // property exists, so Consolidated's `transfers: { count, ... }` satisfies
+  // `reportData.transfers` and the transfer table then calls `.map` on an
+  // object — a blank screen rather than a spinner.
+  const fetchSeqRef = useRef(0);
 
   useEffect(() => {
     // The route pages at 20 for the Accounts table; a filter dropdown needs
@@ -102,6 +135,7 @@ export default function Reports() {
   }, []);
 
   const fetchReport = useCallback(async () => {
+    const seq = ++fetchSeqRef.current;
     setLoading(true);
     clearDetail();
     try {
@@ -122,13 +156,25 @@ export default function Reports() {
       // the browser. Only the side on screen is fetched, so switching tabs
       // costs one query and clears the cached drill-down — the two sides hold
       // different shapes of detail and must never sit in the same cache.
-      const endpoint = activeReport !== 'income-expense'
-        ? activeReport
-        : incomeExpenseTab === 'income' ? 'income-report' : 'expense-report';
-      const url = `/reports/${endpoint}${qs ? `?${qs}` : ''}`;
+      // The statement is the one report that is not served from /reports:
+      // D18/R3 moved its *reporting* to this screen and left the arithmetic
+      // where it was, so it is read from the module that has always built it
+      // rather than restated here.
+      const path = activeReport === 'cash-statement'
+        ? 'cash-management/statement'
+        : activeReport === 'income-expense'
+          ? `reports/${incomeExpenseTab === 'income' ? 'income-report' : 'expense-report'}`
+          : `reports/${activeReport}`;
+      const url = `/${path}${qs ? `?${qs}` : ''}`;
       const data = await api.get(url);
+      if (seq !== fetchSeqRef.current) return;
       setReportData(data);
-    } catch (err) { console.error('Reports load error:', err); } finally { setLoading(false); }
+    } catch (err) {
+      if (seq !== fetchSeqRef.current) return;
+      console.error('Reports load error:', err);
+    } finally {
+      if (seq === fetchSeqRef.current) setLoading(false);
+    }
   }, [activeReport, incomeExpenseTab, clearDetail, filters]);
 
   const fetchDetail = useCallback(async (accountId: string) => {
@@ -236,8 +282,9 @@ export default function Reports() {
     { id: 'transfer-report' as ReportType, name: 'Transfer Report', icon: ArrowLeftRight, desc: 'Fund transfer history' },
     { id: 'loading-report' as ReportType, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
     { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
-  { id: 'shift-report' as ReportType, name: 'Shift & Cash Count', icon: Coins, desc: 'Drawer counts per shift: float, expected vs counted, and variance' },
+    { id: 'shift-report' as ReportType, name: 'Shift & Cash Count', icon: Coins, desc: 'Drawer counts per shift: float, expected vs counted, and variance' },
     { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, in two tabs' },
+    { id: 'cash-statement' as ReportType, name: 'Sources & Uses', icon: Scale, desc: 'Opening + sources − uses = closing for a period, per branch' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
   ];
 
@@ -259,6 +306,21 @@ export default function Reports() {
       : filters.accountId;
     setFilters({ ...filters, branchId, accountId });
   };
+
+  // D20. Computed for whichever side of the module is on screen; the other
+  // side's rows were never fetched, so its list is simply empty.
+  const activeRows = activeReport === 'income-expense' && Array.isArray(reportData?.rows) ? reportData.rows : [];
+  const incomeSubtotals = incomeExpenseTab === 'income'
+    ? branchSubtotals(activeRows, [
+        'txnCount', 'transferCount', 'loadCount', 'txnFees', 'additionalCharges',
+        'feeIncome', 'loadMargin', 'totalIncome', 'reversedExcluded', 'transferFees',
+      ], 'totalIncome')
+    : [];
+  const expenseSubtotals = incomeExpenseTab === 'expense'
+    ? branchSubtotals(activeRows, [
+        'transferCount', 'serviceFees', 'providerCharges', 'operatingExpenses', 'totalExpense',
+      ], 'totalExpense')
+    : [];
 
   return (
     <div className="space-y-6">
@@ -449,6 +511,74 @@ export default function Reports() {
                   <p className="text-sm text-gray-500">Reconciled accounts</p>
                 </div>
               </div>
+
+              {/* D20 — the same figures split across the branches in scope.
+                  Every column adds up to the total beneath it because both are
+                  summed from these rows: the backend groups once and derives
+                  the cards above from that same grouping, so a subtotal and the
+                  grand total can never have come from different row sets.
+                  Loading's count and revenue split exactly as its profit does. */}
+              {(reportData.byBranch?.length ?? 0) > 1 && (
+                <div className="card overflow-hidden">
+                  <div className="px-4 pt-4 pb-1">
+                    <h4 className="font-medium">By branch</h4>
+                    <p className="text-xs text-gray-500">
+                      The figures above, grouped by the branch they belong to. Loading sales and revenue split the same way as loading profit.
+                    </p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[980px]">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Accounts</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Balance on Books</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Txns</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Money In</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Money Out</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transfers</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transfer Amount</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Service Charges</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Loading Profit</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reconciled</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {reportData.byBranch.map((b: any) => (
+                          <tr key={b.branchId || b.branchName} className="hover:bg-gray-50">
+                            <td className="px-4 py-3.5 text-sm font-medium whitespace-nowrap">{b.branchName}</td>
+                            <td className="px-4 py-3.5 text-sm text-right text-gray-600">{b.accounts.count}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(b.accounts.totalBalance)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right text-gray-600">{b.transactions.count}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono text-finance-green">{formatCurrency(b.transactions.totalIn)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono text-finance-red">{formatCurrency(b.transactions.totalOut)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right text-gray-600">{b.transfers.count}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(b.transfers.totalAmount)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(b.transfers.totalFees)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono text-finance-green">{formatCurrency(b.loading.totalProfit)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right text-gray-600">{b.reconciliation.reconciled} / {b.reconciliation.total}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot className="bg-gray-50 border-t border-gray-300">
+                        <tr>
+                          <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap">Total</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-semibold">{reportData.accounts?.count || 0}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.accounts?.totalBalance || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-semibold">{reportData.transactions?.count || 0}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-finance-green">{formatCurrency(reportData.transactions?.totalIn || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-finance-red">{formatCurrency(reportData.transactions?.totalOut || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-semibold">{reportData.transfers?.count || 0}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.transfers?.totalAmount || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.transfers?.totalFees || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-finance-green">{formatCurrency(reportData.loading?.totalProfit || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-semibold">{reportData.reconciliation?.reconciled || 0} / {reportData.reconciliation?.total || 0}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           ) : activeReport === 'account-statement' && reportData.entries ? (
             <div className="space-y-4">
@@ -499,7 +629,7 @@ export default function Reports() {
                         const isCorrection = Boolean(e.is_correction);
                         return (
                         <tr key={e.id} id={e.transaction_id ? `entry-${e.transaction_id}` : undefined} className={isCorrection ? 'bg-blue-50 hover:bg-blue-100' : isReversed ? 'bg-amber-50 hover:bg-amber-100' : isCompensating ? 'bg-green-50 hover:bg-green-100' : 'hover:bg-gray-50'}>
-                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{new Date(e.entry_date).toLocaleDateString()}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{manilaDayLabel(e.entry_date)}</td>
                           <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">
                             <a
                               href={isReversed && e.reversal_resolves_to ? `#entry-${e.reversal_resolves_to}` : undefined}
@@ -570,12 +700,13 @@ export default function Reports() {
               </div>
               <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[800px]">
+                  <table className="w-full min-w-[920px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
                         <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Category</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
@@ -588,9 +719,10 @@ export default function Reports() {
                           <td className="px-6 py-3.5 font-mono text-sm whitespace-nowrap">{t.transaction_number}</td>
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{t.type_name}</td>
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{t.account_name}</td>
+                          <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{t.branch_name || '—'}</td>
                           <td className={`px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap ${t.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>{t.direction === 'in' ? '+' : '-'}{formatCurrency(t.amount)}</td>
                           <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{t.category_name || '-'}</td>
-                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{new Date(t.transaction_date).toLocaleDateString()}</td>
+                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{manilaDayLabel(t.transaction_date)}</td>
                           <td className="px-6 py-3.5 text-center"><span className={`text-xs font-medium ${t.status === 'completed' ? 'text-green-600' : 'text-yellow-600'}`}>{t.status}</span></td>
                         </tr>
                       ))}
@@ -610,12 +742,13 @@ export default function Reports() {
               </div>
               <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[800px]">
+                  <table className="w-full min-w-[960px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">From</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">To</th>
+                        <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
                         <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
                         <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Service Charge</th>
                         <th className="text-center px-6 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
@@ -628,10 +761,15 @@ export default function Reports() {
                           <td className="px-6 py-3.5 font-mono text-sm whitespace-nowrap">{t.transfer_number}</td>
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{t.source_name}</td>
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{t.destination_name}</td>
+                          {/* The branch that funded it, which is also the branch
+                              charged its fee — a cross-branch transfer resolves to
+                              one branch or the per-branch subtotals would count it
+                              twice. */}
+                          <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{t.branch_name || '—'}</td>
                           <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(t.transfer_amount)}</td>
                           <td className="px-6 py-3.5 text-sm text-right whitespace-nowrap">{formatCurrency(parseFloat(t.transfer_fee))}</td>
                           <td className="px-6 py-3.5 text-center"><span className={`text-xs font-medium ${t.status === 'completed' ? 'text-green-600' : 'text-yellow-600'}`}>{t.status}</span></td>
-                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{new Date(t.transfer_date).toLocaleDateString()}</td>
+                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{manilaDayLabel(t.transfer_date)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -662,12 +800,13 @@ export default function Reports() {
               )}
               <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[800px]">
+                  <table className="w-full min-w-[900px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Product</th>
                         <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Customer</th>
+                        <th className="text-left px-6 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
                         <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Qty</th>
                         <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Revenue</th>
                         <th className="text-right px-6 py-3 text-xs font-medium text-gray-500 uppercase">Profit</th>
@@ -680,10 +819,11 @@ export default function Reports() {
                           <td className="px-6 py-3.5 font-mono text-sm whitespace-nowrap">{s.transaction_number}</td>
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{s.product_name}</td>
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{s.customer_number}</td>
+                          <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{s.branch_name || '—'}</td>
                           <td className="px-6 py-3.5 text-sm text-right whitespace-nowrap">{s.quantity}</td>
                           <td className="px-6 py-3.5 text-sm text-finance-green text-right whitespace-nowrap">{formatCurrency(s.total_revenue)}</td>
                           <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(s.profit)}</td>
-                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{new Date(s.created_at).toLocaleDateString()}</td>
+                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{manilaDayLabel(s.created_at)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -855,6 +995,25 @@ export default function Reports() {
                     </tbody>
                     {reportData.rows.length > 0 && (
                       <tfoot className="bg-gray-50 border-t border-gray-200">
+                        {/* D20 — one row per branch, above the total and only
+                            when the view spans more than one branch. */}
+                        {incomeSubtotals.length > 1 && incomeSubtotals.map(g => (
+                          <tr key={g.label} className="bg-gray-100 border-t border-gray-200">
+                            <td className="px-4 py-2.5 text-sm font-semibold text-gray-700 whitespace-nowrap" colSpan={3}>
+                              {g.label} <span className="font-normal text-gray-500">· {g.rows} account{g.rows === 1 ? '' : 's'}</span>
+                            </td>
+                            <td className="px-4 py-2.5 text-sm text-right text-gray-600">{g.sums.txnCount}</td>
+                            <td className="px-4 py-2.5 text-sm text-right text-gray-600">{g.sums.transferCount}</td>
+                            <td className="px-4 py-2.5 text-sm text-right text-gray-600">{g.sums.loadCount}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-medium">{formatCurrency(g.sums.txnFees)}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-medium">{formatCurrency(g.sums.additionalCharges)}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-medium">{formatCurrency(g.sums.feeIncome)}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-medium">{formatCurrency(g.sums.loadMargin)}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-semibold text-finance-green">{formatCurrency(g.sums.totalIncome)}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono text-amber-600">{g.sums.reversedExcluded > 0 ? formatCurrency(g.sums.reversedExcluded) : '—'}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono text-red-600">{g.sums.transferFees > 0 ? formatCurrency(g.sums.transferFees) : '—'}</td>
+                          </tr>
+                        ))}
                         <tr>
                           <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap" colSpan={6}>Total ({reportData.summary?.accounts || 0} accounts)</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.txnFees || 0)}</td>
@@ -976,6 +1135,20 @@ export default function Reports() {
                     </tbody>
                     {reportData.rows.length > 0 && (
                       <tfoot className="bg-gray-50 border-t border-gray-200">
+                        {/* D20 — one row per branch, above the total and only
+                            when the view spans more than one branch. */}
+                        {expenseSubtotals.length > 1 && expenseSubtotals.map(g => (
+                          <tr key={g.label} className="bg-gray-100 border-t border-gray-200">
+                            <td className="px-4 py-2.5 text-sm font-semibold text-gray-700 whitespace-nowrap" colSpan={3}>
+                              {g.label} <span className="font-normal text-gray-500">· {g.rows} account{g.rows === 1 ? '' : 's'}</span>
+                            </td>
+                            <td className="px-4 py-2.5 text-sm text-right text-gray-600">{g.sums.transferCount}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-medium">{formatCurrency(g.sums.serviceFees)}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-medium text-red-600">{formatCurrency(g.sums.providerCharges)}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-medium text-red-600">{formatCurrency(g.sums.operatingExpenses)}</td>
+                            <td className="px-4 py-2.5 text-sm text-right font-mono font-semibold text-red-600">{formatCurrency(g.sums.totalExpense)}</td>
+                          </tr>
+                        ))}
                         <tr>
                           <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap" colSpan={3}>Total ({reportData.summary?.accounts || 0} accounts)</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{reportData.summary?.transferCount || 0}</td>
@@ -1119,11 +1292,12 @@ export default function Reports() {
                   <p className="text-xs text-gray-500">The original movement against the compensating entry that replaced it</p>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1100px]">
+                  <table className="w-full min-w-[1200px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Original</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reversed</th>
@@ -1136,11 +1310,12 @@ export default function Reports() {
                     </thead>
                     <tbody className="divide-y divide-gray-200">
                       {reportData.reversals.length === 0 ? (
-                        <tr><td colSpan={10} className="px-4 py-8 text-center text-sm text-gray-500">No reversed transactions for these filters.</td></tr>
+                        <tr><td colSpan={11} className="px-4 py-8 text-center text-sm text-gray-500">No reversed transactions for these filters.</td></tr>
                       ) : reportData.reversals.map((r: any) => (
                         <tr key={r.id} className="hover:bg-gray-50">
                           <td className="px-4 py-3.5 font-mono text-sm whitespace-nowrap">{r.transactionNumber}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.accountName}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.branchName || '—'}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.typeName}</td>
                           <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">
                             <span className="text-xs font-medium uppercase tracking-wide text-gray-500 mr-1.5">{sideLabel(r.originalEntryType)}</span>
@@ -1163,7 +1338,7 @@ export default function Reports() {
                               {r.requestStatus || 'direct'}
                             </span>
                           </td>
-                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.reversedAt ? new Date(r.reversedAt).toLocaleDateString() : <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.reversedAt ? manilaDayLabel(r.reversedAt) : <span className="text-gray-400">—</span>}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1177,11 +1352,12 @@ export default function Reports() {
                   <p className="text-xs text-gray-500">Every reversal requested for these transactions, approved or not</p>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1000px]">
+                  <table className="w-full min-w-[1100px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
                         <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reason</th>
@@ -1193,11 +1369,12 @@ export default function Reports() {
                     </thead>
                     <tbody className="divide-y divide-gray-200">
                       {reportData.requests.length === 0 ? (
-                        <tr><td colSpan={9} className="px-4 py-8 text-center text-sm text-gray-500">No reversal requests for these filters.</td></tr>
+                        <tr><td colSpan={10} className="px-4 py-8 text-center text-sm text-gray-500">No reversal requests for these filters.</td></tr>
                       ) : reportData.requests.map((q: any) => (
                         <tr key={q.id} className="hover:bg-gray-50">
                           <td className="px-4 py-3.5 font-mono text-sm whitespace-nowrap">{q.transactionNumber ?? '—'}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.accountName || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{q.branchName || '—'}</td>
                           <td className="px-4 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(q.amount)}</td>
                           <td className="px-4 py-3.5 text-center">
                             <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${q.status === 'approved' ? 'bg-green-100 text-green-700' : q.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
@@ -1207,8 +1384,8 @@ export default function Reports() {
                           <td className="px-4 py-3.5 text-sm text-gray-700">{q.reason || <span className="text-gray-400">—</span>}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.requestedBy || <span className="text-gray-400">—</span>}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.approvedBy || <span className="text-gray-400">—</span>}</td>
-                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.requestedAt ? new Date(q.requestedAt).toLocaleDateString() : '—'}</td>
-                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.decidedAt && q.status !== 'pending' ? new Date(q.decidedAt).toLocaleDateString() : '—'}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.requestedAt ? manilaDayLabel(q.requestedAt) : '—'}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{q.decidedAt && q.status !== 'pending' ? manilaDayLabel(q.decidedAt) : '—'}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1216,6 +1393,8 @@ export default function Reports() {
                 </div>
               </div>
             </div>
+          ) : activeReport === 'cash-statement' && reportData.branches ? (
+            <CashStatementPanel statement={reportData} branchId={filters.branchId} />
           ) : null}
         </div>
       </div>
