@@ -72,6 +72,45 @@ export const dateKeyLabel = (key: string): string => {
   });
 };
 
+const manilaTimeFmt = new Intl.DateTimeFormat('en-GB', {
+  timeZone: MANILA_TZ,
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/**
+ * Manila wall-clock time for a stored instant.
+ *
+ * `entry_date` is `TIMESTAMPTZ`, so UTC is what reaches the browser and the
+ * browser's own zone decides what it says — on this UTC+3 host a 23:30 entry
+ * prints as 02:30 the next morning. Every row inside a shift's window belongs
+ * to that one shift day, so the hour is the only part worth showing anyway.
+ */
+export const manilaTimeLabel = (value: string | Date | null | undefined): string => {
+  const date = value instanceof Date ? value : new Date(String(value ?? ''));
+  if (Number.isNaN(date.getTime())) return '—';
+  return manilaTimeFmt.format(date);
+};
+
+const manilaDayFmt = new Intl.DateTimeFormat('en-PH', { timeZone: MANILA_TZ });
+
+/**
+ * Manila calendar day for a stored instant — the counterpart to
+ * `manilaTimeLabel`, and the fix for the `entry_date` rows.
+ *
+ * `TIMESTAMPTZ` reaches the browser as UTC and the browser's own zone decides
+ * what day that is. On this UTC+3 host an entry made at 00:30 in Manila prints
+ * as the day *before*. Inside a period statement that is not cosmetic: the row
+ * would appear under a date outside the From/To range printed above it, and a
+ * page filed with the wrong day is wrong whether or not the arithmetic is.
+ */
+export const manilaDayLabel = (value: string | Date | null | undefined): string => {
+  const date = value instanceof Date ? value : new Date(String(value ?? ''));
+  if (Number.isNaN(date.getTime())) return '—';
+  return manilaDayFmt.format(date);
+};
+
 // transactions.payment_method is unconstrained VARCHAR(50), so nothing stops a
 // new value reaching the detail view and every dropdown. One list here keeps
 // the stored code and the text an operator reads in step.
