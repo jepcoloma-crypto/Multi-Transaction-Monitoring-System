@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, dateKeyLabel, manilaDayLabel } from '../lib/format';
+import { formatCurrency, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
@@ -343,7 +343,7 @@ export default function Reports() {
             ? `${filters.startDate || 'start'} to ${filters.endDate || 'today'}`
             : 'all dates'}
         </p>
-        <p className="text-xs text-gray-500">Generated {new Date().toLocaleString()}</p>
+        <p className="text-xs text-gray-500">Generated {manilaDateTimeLabel(new Date())}</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">

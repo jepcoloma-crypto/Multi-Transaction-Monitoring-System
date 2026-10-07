@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
+import { manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
 import { User, Lock, Clock, Shield, Edit, Camera, Trash2 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
@@ -231,8 +232,8 @@ export default function Profile() {
         <h3 className="font-semibold mb-4">Account Info</h3>
         <div className="grid grid-cols-2 gap-4 text-sm">
           <div className="flex items-center gap-2"><User className="w-4 h-4 text-gray-400" /><div><p className="text-gray-500">Status</p><p className="font-medium">{profile.is_active ? 'Active' : 'Inactive'}</p></div></div>
-          <div className="flex items-center gap-2"><Clock className="w-4 h-4 text-gray-400" /><div><p className="text-gray-500">Member Since</p><p className="font-medium">{new Date(profile.created_at).toLocaleDateString()}</p></div></div>
-          <div className="flex items-center gap-2"><Clock className="w-4 h-4 text-gray-400" /><div><p className="text-gray-500">Last Login</p><p className="font-medium">{profile.last_login_at ? new Date(profile.last_login_at).toLocaleString() : 'Never'}</p></div></div>
+          <div className="flex items-center gap-2"><Clock className="w-4 h-4 text-gray-400" /><div><p className="text-gray-500">Member Since</p><p className="font-medium">{manilaDayLabel(profile.created_at)}</p></div></div>
+          <div className="flex items-center gap-2"><Clock className="w-4 h-4 text-gray-400" /><div><p className="text-gray-500">Last Login</p><p className="font-medium">{profile.last_login_at ? manilaDateTimeLabel(profile.last_login_at) : 'Never'}</p></div></div>
         </div>
       </div>
 
@@ -242,7 +243,7 @@ export default function Profile() {
           <div className="space-y-2">
             {profile.loginHistory.slice(0, 5).map((login, i) => (
               <div key={i} className="flex justify-between text-sm py-2 border-b last:border-0">
-                <span className="text-gray-900">{new Date(login.created_at).toLocaleString()}</span>
+                <span className="text-gray-900">{manilaDateTimeLabel(login.created_at)}</span>
                 <span className="text-gray-500">{login.ip_address || 'Unknown'}</span>
               </div>
             ))}

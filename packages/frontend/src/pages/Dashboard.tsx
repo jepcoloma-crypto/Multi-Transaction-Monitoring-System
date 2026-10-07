@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, manilaDayLabel, manilaDateTimeLabel, manilaClockLabel } from '../lib/format';
 import { Wallet, TrendingUp, TrendingDown, ArrowUpDown, ArrowRight, Coins, Smartphone, RefreshCw, Calendar } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -50,7 +50,7 @@ export default function Dashboard() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const formatTime = (d: Date) => d.toLocaleTimeString('en-PH', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const formatTime = (d: Date) => manilaClockLabel(d);
 
   const sortedAccounts = useMemo(
     () => [...(balances?.accounts || [])].sort((a, b) => b.current_balance - a.current_balance),
@@ -268,7 +268,7 @@ export default function Dashboard() {
               <div key={tx.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-gray-900 truncate">{tx.type_name}</p>
-                  <p className="text-xs text-gray-500">{tx.account_name} | {new Date(tx.transaction_date).toLocaleDateString()}</p>
+                  <p className="text-xs text-gray-500">{tx.account_name} | {manilaDayLabel(tx.transaction_date)}</p>
                 </div>
                 <div className="text-right ml-3">
                   <p className={`text-sm font-bold ${tx.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
@@ -294,7 +294,7 @@ export default function Dashboard() {
                 <div key={t.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-gray-900 truncate">{t.source_name} → {t.destination_name}</p>
-                    <p className="text-xs text-gray-500">{new Date(t.transfer_date).toLocaleDateString()}</p>
+                    <p className="text-xs text-gray-500">{manilaDayLabel(t.transfer_date)}</p>
                   </div>
                   <div className="text-right ml-3">
                     <p className="text-sm font-bold text-purple-600">{formatCurrency(t.transfer_amount)}</p>
@@ -320,7 +320,7 @@ export default function Dashboard() {
                 <div key={a.id} className={`p-3 rounded-lg ${!a.is_read ? 'bg-blue-50 border-l-2 border-blue-400' : 'bg-gray-50'}`}>
                   <p className="text-sm font-medium text-gray-900">{a.title}</p>
                   {a.message && <p className="text-xs text-gray-600 mt-1 line-clamp-2">{a.message}</p>}
-                  <p className="text-xs text-gray-400 mt-1">{new Date(a.created_at).toLocaleString()}</p>
+                  <p className="text-xs text-gray-400 mt-1">{manilaDateTimeLabel(a.created_at)}</p>
                 </div>
               ))}
             </div>

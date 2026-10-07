@@ -1,4 +1,4 @@
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, manilaDayLabel } from '../lib/format';
 
 export type IncomeDetailTab = 'cash' | 'loading' | 'transfers';
 
@@ -90,8 +90,7 @@ const thRight = `${th} text-right`;
 const td = 'px-3 py-2 text-sm whitespace-nowrap';
 const tdRight = `${td} text-right font-mono`;
 
-const dateLabel = (value: string | null): string =>
-  value ? new Date(value).toLocaleDateString() : '—';
+const dateLabel = (value: string | null): string => manilaDayLabel(value);
 
 const numberLabel = (value: number | null): string =>
   value === null ? '—' : `#${value}`;

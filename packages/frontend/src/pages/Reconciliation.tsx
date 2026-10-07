@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
 import { Scale, Plus, Check, Eye, X, Filter, Upload, ArrowRight, RefreshCw, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
 import GapFixes from './GapFixes';
@@ -262,7 +262,7 @@ export default function Reconciliation() {
                         <td className="px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap">{formatCurrency(r.actual_balance)}</td>
                         <td className={`px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap ${Math.abs(r.variance) > 0.01 ? 'text-red-600' : 'text-green-600'}`}>{formatCurrency(r.variance)}</td>
                         <td className="px-6 py-3.5 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${statusColor(r.status)}`}>{r.status}</span></td>
-                        <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{new Date(r.created_at).toLocaleDateString()}</td>
+                        <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{manilaDayLabel(r.created_at)}</td>
                         <td className="px-6 py-3.5 text-right">
                           <div className="flex gap-1 justify-end">
                             <button onClick={() => viewDetail(r)} className="p-1 hover:bg-gray-100 rounded"><Eye className="w-4 h-4" /></button>
@@ -319,7 +319,7 @@ export default function Reconciliation() {
                           <div className="flex justify-between items-start">
                             <div>
                               <p className="text-sm font-medium">{s.description || 'No description'}</p>
-                              <p className="text-xs text-gray-500">{new Date(s.statement_date).toLocaleDateString()} {s.reference_number && `• Ref: ${s.reference_number}`}</p>
+                              <p className="text-xs text-gray-500">{manilaDayLabel(s.statement_date)} {s.reference_number && `• Ref: ${s.reference_number}`}</p>
                             </div>
                             <div className="text-right">
                               {parseFloat(String(s.credit)) > 0 && <p className="text-sm font-medium text-green-600">+{formatCurrency(s.credit)}</p>}
@@ -350,7 +350,7 @@ export default function Reconciliation() {
                           <div className="flex justify-between items-start">
                             <div>
                               <p className="text-sm font-medium">#{t.transaction_number} — {t.type_name}</p>
-                              <p className="text-xs text-gray-500">{new Date(t.transaction_date).toLocaleDateString()} {t.description && `• ${t.description}`}</p>
+                              <p className="text-xs text-gray-500">{manilaDayLabel(t.transaction_date)} {t.description && `• ${t.description}`}</p>
                             </div>
                             <p className={`text-sm font-medium ${t.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
                               {t.direction === 'in' ? '+' : '-'}{formatCurrency(t.amount)}
@@ -399,7 +399,7 @@ export default function Reconciliation() {
                         <td className="px-6 py-3 text-sm whitespace-nowrap">
                           <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${m.match_type === 'auto' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>{m.match_type}</span>
                         </td>
-                        <td className="px-6 py-3 text-sm whitespace-nowrap">{new Date(m.statement_date).toLocaleDateString()}</td>
+                        <td className="px-6 py-3 text-sm whitespace-nowrap">{manilaDayLabel(m.statement_date)}</td>
                         <td className="px-6 py-3 text-sm whitespace-nowrap">{m.stmt_desc || '-'}</td>
                         <td className="px-6 py-3 text-sm text-right whitespace-nowrap">{parseFloat(String(m.stmt_credit)) > 0 ? formatCurrency(m.stmt_credit) : `-${formatCurrency(m.stmt_debit)}`}</td>
                         <td className="px-6 py-3 text-sm font-mono whitespace-nowrap">#{m.transaction_number}</td>
@@ -486,8 +486,8 @@ export default function Reconciliation() {
                 </div>
               )}
               <div className="pt-2 border-t text-xs text-gray-400">
-                <p>Created: {new Date(showDetail.created_at).toLocaleString()}</p>
-                {showDetail.reconciled_at && <p>Reconciled: {new Date(showDetail.reconciled_at).toLocaleString()} by {showDetail.reconciled_by_email}</p>}
+                <p>Created: {manilaDateTimeLabel(showDetail.created_at)}</p>
+                {showDetail.reconciled_at && <p>Reconciled: {manilaDateTimeLabel(showDetail.reconciled_at)} by {showDetail.reconciled_by_email}</p>}
               </div>
             </div>
             <div className="mt-4 flex justify-end">

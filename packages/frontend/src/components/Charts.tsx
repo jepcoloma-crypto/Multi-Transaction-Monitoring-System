@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, dateKeyLabel } from '../lib/format';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar, PieChart, Pie, Cell } from 'recharts';
 
 interface TrendData {
@@ -20,7 +20,7 @@ export function BalanceTrendChart({ accountId }: { accountId?: string }) {
         const res = await api.get<TrendData[]>(`/reports/balance-trends${params}`);
         const grouped: Record<string, any> = {};
         res.forEach((d: TrendData) => {
-          const date = new Date(d.date).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
+          const date = dateKeyLabel(d.date, { month: 'short', day: 'numeric' });
           if (!grouped[date]) grouped[date] = { date };
           grouped[date][d.account_name] = parseFloat(d.closing_balance);
         });
@@ -61,7 +61,7 @@ export function IncomeExpenseChart() {
         const res = await api.get<TrendData[]>('/reports/balance-trends?days=30');
         const grouped: Record<string, { date: string; income: number; expense: number }> = {};
         res.forEach((d: TrendData) => {
-          const date = new Date(d.date).toLocaleDateString('en-PH', { month: 'short', day: 'numeric' });
+          const date = dateKeyLabel(d.date, { month: 'short', day: 'numeric' });
           if (!grouped[date]) grouped[date] = { date, income: 0, expense: 0 };
           grouped[date].income += parseFloat(d.credits);
           grouped[date].expense += parseFloat(d.debits);
@@ -129,7 +129,7 @@ export function MonthlyComparisonChart() {
         const res = await api.get<TrendData[]>('/reports/balance-trends?days=90');
         const monthly: Record<string, { month: string; inflow: number; outflow: number; net: number }> = {};
         res.forEach((d: TrendData) => {
-          const month = new Date(d.date).toLocaleDateString('en-PH', { month: 'short', year: '2-digit' });
+          const month = dateKeyLabel(d.date, { month: 'short', year: '2-digit' });
           if (!monthly[month]) monthly[month] = { month, inflow: 0, outflow: 0, net: 0 };
           const inflow = parseFloat(d.credits);
           const outflow = parseFloat(d.debits);

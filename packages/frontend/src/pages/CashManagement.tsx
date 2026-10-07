@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, movementPaymentMethodOptions } from '../lib/format';
+import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect, { type AccountOption } from '../components/AccountSelect';
@@ -1183,7 +1183,7 @@ export default function CashManagement() {
                     <tr className="hover:bg-gray-50">
                       <td className="px-4 py-3.5 text-sm font-mono text-xs font-medium whitespace-nowrap">TXN #{exp.transaction_number}</td>
                       <td className="px-4 py-3.5 text-sm whitespace-nowrap">
-                        {exp.transaction_date ? new Date(exp.transaction_date).toLocaleDateString() : '—'}
+                        {manilaDayLabel(exp.transaction_date)}
                       </td>
                       <td className="px-4 py-3.5 text-sm whitespace-nowrap">
                         {exp.account_name}
@@ -1225,7 +1225,7 @@ export default function CashManagement() {
                     <tr className="bg-gray-50 detail-row">
                       <td colSpan={8} className="px-4 py-2 text-xs text-gray-500">
                         Requested by <strong>{exp.requested_by_username || '—'}</strong> on{' '}
-                        {new Date(exp.created_at).toLocaleString()}
+                        {manilaDateTimeLabel(exp.created_at)}
                         {exp.reference_number && <> · voucher <span className="font-mono">{exp.reference_number}</span></>}
                         {' '}· balance before decision {formatCurrency(Number(exp.current_balance))}
                         <span className="ml-2 inline-flex items-center gap-1 text-gray-400">

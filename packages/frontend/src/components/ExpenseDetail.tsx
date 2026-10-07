@@ -1,4 +1,4 @@
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, manilaDayLabel } from '../lib/format';
 import { Reconciles } from './IncomeDetail';
 
 // The expense side of the Income & Expense Report expands an account into the
@@ -78,8 +78,7 @@ const thRight = `${th} text-right`;
 const td = 'px-3 py-2 text-sm whitespace-nowrap';
 const tdRight = `${td} text-right font-mono`;
 
-const dateLabel = (value: string | null): string =>
-  value ? new Date(value).toLocaleDateString() : '—';
+const dateLabel = (value: string | null): string => manilaDayLabel(value);
 
 const countLabel = (value: number): string => String(value);
 

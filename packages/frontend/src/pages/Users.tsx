@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { api } from '../lib/api';
+import { manilaDayLabel } from '../lib/format';
 import { Plus, Search, Edit2, Trash2, X } from 'lucide-react';
 
 interface User {
@@ -249,7 +250,7 @@ export default function Users() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-500">
-                    {user.last_login_at ? new Date(user.last_login_at).toLocaleDateString() : 'Never'}
+                    {user.last_login_at ? manilaDayLabel(user.last_login_at) : 'Never'}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-2">

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, manilaDateTimeLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import {
   ShieldAlert, Inbox, Plus, Check, X, AlertTriangle, RefreshCw, Activity,
@@ -377,7 +377,7 @@ function ProposalTable({ rows, tab, busy, currentUserId, onApprove, onReject }: 
                 </td>
                 <td className="px-4 py-3 text-gray-700">{f.proposed_by_username}</td>
                 {tab !== 'pending' && <td className="px-4 py-3 text-gray-700">{f.decided_by_username || '—'}</td>}
-                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(f.created_at).toLocaleString()}</td>
+                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{manilaDateTimeLabel(f.created_at)}</td>
                 {tab === 'pending' && (
                   <td className="px-4 py-3 text-center">
                     {isMine ? (

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import { Check, X, Clock, Inbox, ShieldAlert, AlertCircle } from 'lucide-react';
 
@@ -421,7 +421,7 @@ function TransferPendingTable({ rows, busy, onApprove, onReject }: {
               <td className="px-4 py-3 text-right font-semibold text-gray-900">{formatCurrency(t.total_source_deduction)}</td>
               <td className="px-4 py-3 text-gray-500 max-w-[180px] truncate">{t.purpose || '—'}</td>
               <td className="px-4 py-3 text-gray-700">{t.created_by_username || '—'}</td>
-              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(t.created_at).toLocaleString()}</td>
+              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{manilaDateTimeLabel(t.created_at)}</td>
               <td className="px-4 py-3">
                 <ActionButtons busy={busy} onApprove={() => onApprove(t)} onReject={() => onReject(t)} />
               </td>
@@ -464,7 +464,7 @@ function TransferRejectedTable({ rows }: { rows: Transfer[] }) {
                   {t.failure_reason}
                 </span>
               </td>
-              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(t.updated_at).toLocaleString()}</td>
+              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{manilaDateTimeLabel(t.updated_at)}</td>
             </tr>
           ))}
         </tbody>
@@ -509,7 +509,7 @@ function FundPendingTable({ rows, busy, onApprove, onReject }: {
                 </td>
                 <td className="px-4 py-3 text-right text-gray-700">{formatCurrency(balanceAfter)}</td>
                 <td className="px-4 py-3 text-gray-700">{paymentLabel(f.payment_method)}</td>
-                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(f.transaction_date).toLocaleDateString()}</td>
+                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{manilaDayLabel(f.transaction_date)}</td>
                 <td className="px-4 py-3 text-gray-700">{f.created_by_username || '—'}</td>
                 <td className="px-4 py-3">
                   <ActionButtons busy={busy} onApprove={() => onApprove(f)} onReject={() => onReject(f)} />
@@ -554,7 +554,7 @@ function FundRejectedTable({ rows }: { rows: OwnerFund[] }) {
                   {f.rejection_reason || '—'}
                 </span>
               </td>
-              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(f.created_at).toLocaleString()}</td>
+              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{manilaDateTimeLabel(f.created_at)}</td>
             </tr>
           ))}
         </tbody>
@@ -607,7 +607,7 @@ function ReversalPendingTable({ rows, busy, canDecide, onApprove, onReject }: {
                   </span>
                 </td>
                 <td className="px-4 py-3 text-gray-700">{r.requested_by_username || '—'}</td>
-                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(r.created_at).toLocaleString()}</td>
+                <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{manilaDateTimeLabel(r.created_at)}</td>
                 <td className="px-4 py-3">
                   {canDecide
                     ? <ActionButtons busy={busy} onApprove={() => onApprove(r)} onReject={() => onReject(r)} />
@@ -653,7 +653,7 @@ function ReversalRejectedTable({ rows }: { rows: Reversal[] }) {
                 </span>
               </td>
               <td className="px-4 py-3 text-gray-700">{r.decided_by_username || '—'}</td>
-              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{new Date(r.updated_at).toLocaleString()}</td>
+              <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{manilaDateTimeLabel(r.updated_at)}</td>
             </tr>
           ))}
         </tbody>

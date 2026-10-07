@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
+import { manilaDateTimeLabel } from '../lib/format';
 import { Trash2, RefreshCw, Database, Upload } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
@@ -113,7 +114,7 @@ export default function Backup() {
                 <div>
                   <p className="text-sm font-medium">{backup.filename}</p>
                   <p className="text-xs text-gray-500">
-                    {formatSize(backup.size)} | {new Date(backup.createdAt).toLocaleString()}
+                    {formatSize(backup.size)} | {manilaDateTimeLabel(backup.createdAt)}
                   </p>
                 </div>
                 <div className="flex items-center gap-2">

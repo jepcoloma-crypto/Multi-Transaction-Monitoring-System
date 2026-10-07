@@ -60,15 +60,16 @@ export const manilaDateTimeValue = (d: Date = new Date()): string => {
  * and no zone arithmetic is involved: the day is read as UTC midnight and
  * printed in UTC, which reproduces the same day in any browser.
  */
-export const dateKeyLabel = (key: string): string => {
+export const dateKeyLabel = (
+  key: string,
+  options: Intl.DateTimeFormatOptions = { day: 'numeric', month: 'short', year: 'numeric' },
+): string => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return key;
   const date = new Date(`${key}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return key;
   return date.toLocaleDateString('en-PH', {
     timeZone: 'UTC',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
+    ...options,
   });
 };
 
@@ -109,6 +110,48 @@ export const manilaDayLabel = (value: string | Date | null | undefined): string 
   const date = value instanceof Date ? value : new Date(String(value ?? ''));
   if (Number.isNaN(date.getTime())) return '—';
   return manilaDayFmt.format(date);
+};
+
+const manilaDateTimeSecFmt = new Intl.DateTimeFormat('en-PH', {
+  timeZone: MANILA_TZ,
+  year: 'numeric',
+  month: 'numeric',
+  day: 'numeric',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
+/**
+ * Manila date *and* time for a stored instant — what `toLocaleString()` on a
+ * row used to print, minus the browser's zone.
+ *
+ * The seconds stay because the rows that use it are audit and approval
+ * records: two decisions in the same minute would otherwise be told apart by
+ * nothing the reader can see.
+ */
+export const manilaDateTimeLabel = (value: string | Date | null | undefined): string => {
+  const date = value instanceof Date ? value : new Date(String(value ?? ''));
+  if (Number.isNaN(date.getTime())) return '—';
+  return manilaDateTimeSecFmt.format(date);
+};
+
+const manilaClockSecFmt = new Intl.DateTimeFormat('en-PH', {
+  timeZone: MANILA_TZ,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
+/**
+ * Manila wall-clock for a timestamp taken now rather than stored: the
+ * dashboard's "last refreshed", which ticks. The seconds are the point, so
+ * this corrects the zone and leaves the rest of the face alone.
+ */
+export const manilaClockLabel = (value: string | Date = new Date()): string => {
+  const date = value instanceof Date ? value : new Date(String(value ?? ''));
+  if (Number.isNaN(date.getTime())) return '—';
+  return manilaClockSecFmt.format(date);
 };
 
 // transactions.payment_method is unconstrained VARCHAR(50), so nothing stops a

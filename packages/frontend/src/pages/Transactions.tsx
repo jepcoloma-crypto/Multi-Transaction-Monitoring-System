@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, manilaDateTimeValue, paymentMethodLabel, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode } from '../lib/format';
+import { formatCurrency, manilaDateTimeValue, paymentMethodLabel, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
@@ -552,7 +552,7 @@ export default function Transactions() {
               transactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm font-mono">#{tx.transaction_number}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{new Date(tx.transaction_date).toLocaleDateString()}</td>
+                  <td className="px-4 py-3 text-sm text-gray-600">{manilaDayLabel(tx.transaction_date)}</td>
                   <td className="px-4 py-3 text-sm">{tx.account_name}</td>
                   <td className="px-4 py-3 text-sm">
                     <div className="flex items-center gap-1">
@@ -641,7 +641,7 @@ export default function Transactions() {
                   <div><p className="text-xs text-gray-500">Account Movement</p><p className="font-bold">{formatCurrency((showDetail.fee_added_to_balance ? showDetail.amount : showDetail.amount - showDetail.fee) + (showDetail.additional_charges || []).reduce((sum, c) => sum + c.amount, 0))}</p></div>
                 )}
                 <div><p className="text-xs text-gray-500">Status</p><p className="font-medium">{showDetail.status}</p></div>
-                <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{new Date(showDetail.transaction_date).toLocaleString()}</p></div>
+                <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{manilaDateTimeLabel(showDetail.transaction_date)}</p></div>
                 <div><p className="text-xs text-gray-500">Reference</p><p className="font-medium">{showDetail.reference_number || '-'}</p></div>
                 {showDetail.payment_method && <div><p className="text-xs text-gray-500">Method</p><p className="font-medium">{paymentMethodLabel(showDetail.payment_method)}</p></div>}
                 {showDetail.customer_name && <div><p className="text-xs text-gray-500">Customer</p><p className="font-medium">{showDetail.customer_name}</p></div>}
@@ -1182,7 +1182,7 @@ export default function Transactions() {
                         {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                         <div>
                           <p className="text-sm font-medium">#{tx.transaction_number} — {tx.type_name}</p>
-                          <p className="text-xs text-gray-500">{tx.account_name} • {new Date(tx.transaction_date).toLocaleDateString()}</p>
+                          <p className="text-xs text-gray-500">{tx.account_name} • {manilaDayLabel(tx.transaction_date)}</p>
                         </div>
                       </div>
                       <div className="text-right">

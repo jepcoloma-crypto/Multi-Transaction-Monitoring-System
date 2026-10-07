@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
+import { manilaDateTimeLabel } from '../lib/format';
 
 interface AuditLog {
   id: string;
@@ -106,7 +107,7 @@ export default function AuditLogs() {
               logs.map((log) => (
                 <tr key={log.id} className="hover:bg-gray-50">
                   <td className="px-4 py-3 text-sm text-gray-500">
-                    {new Date(log.created_at).toLocaleString()}
+                    {manilaDateTimeLabel(log.created_at)}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-900">
                     {log.first_name} {log.last_name}

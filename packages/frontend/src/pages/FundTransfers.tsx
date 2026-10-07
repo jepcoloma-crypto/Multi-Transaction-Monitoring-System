@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
 import { ArrowLeftRight, Plus, Search, Eye, Check, X, Filter, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
 import AccountSelect from '../components/AccountSelect';
@@ -204,7 +204,7 @@ export default function FundTransfers() {
                     <td className="px-6 py-3.5 whitespace-nowrap"><p className="text-sm font-medium">{t.destination_name}</p><p className="text-xs text-gray-500">{t.dest_masked}</p></td>
                     <td className="px-6 py-3.5 font-medium text-right whitespace-nowrap">{formatCurrency(t.transfer_amount)}</td>
                     <td className="px-6 py-3.5 text-gray-600 text-right whitespace-nowrap">{parseFloat(String(t.transfer_fee)) > 0 ? formatCurrency(parseFloat(String(t.transfer_fee))) : '-'}</td>
-                    <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{new Date(t.transfer_date).toLocaleDateString()}</td>
+                    <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{manilaDayLabel(t.transfer_date)}</td>
                     <td className="px-6 py-3.5 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${statusColor(t.status)}`}>{t.status}</span></td>
                     <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{t.created_by_email || '-'}</td>
                     <td className="px-6 py-3.5 text-right">
@@ -364,8 +364,8 @@ export default function FundTransfers() {
                 </div>
               )}
               <div className="pt-2 border-t text-xs text-gray-400">
-                <p>Created: {new Date(showDetail.transfer_date).toLocaleString()} by {showDetail.created_by_email}</p>
-                {showDetail.completed_at && <p>Completed: {new Date(showDetail.completed_at).toLocaleString()}</p>}
+                <p>Created: {manilaDateTimeLabel(showDetail.transfer_date)} by {showDetail.created_by_email}</p>
+                {showDetail.completed_at && <p>Completed: {manilaDateTimeLabel(showDetail.completed_at)}</p>}
               </div>
             </div>
             <div className="mt-4 flex justify-end">

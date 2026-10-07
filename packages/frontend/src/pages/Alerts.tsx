@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
+import { manilaDateTimeLabel } from '../lib/format';
 import { Bell, CheckCheck, Eye } from 'lucide-react';
 
 interface Alert {
@@ -76,7 +77,7 @@ export default function Alerts() {
                     <span className="text-xs text-gray-500">{alert.alert_type}</span>
                   </div>
                   {alert.message && <p className="text-sm text-gray-600 mt-1">{alert.message}</p>}
-                  <p className="text-xs text-gray-400 mt-2">{new Date(alert.created_at).toLocaleString()}</p>
+                  <p className="text-xs text-gray-400 mt-2">{manilaDateTimeLabel(alert.created_at)}</p>
                 </div>
                 {!alert.is_read && (
                   <button onClick={() => markRead(alert.id)} className="p-1 hover:bg-gray-100 rounded text-gray-400 hover:text-gray-600" title="Mark as read">

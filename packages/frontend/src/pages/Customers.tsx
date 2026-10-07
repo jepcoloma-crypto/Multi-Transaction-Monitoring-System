@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, manilaDayLabel } from '../lib/format';
 import { Plus, Search, Edit2, Trash2, X, Phone, Mail, MapPin, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
 
 interface Customer {
@@ -272,8 +272,8 @@ export default function Customers() {
                       <td className="px-4 py-3 text-sm text-right text-green-600">{formatCurrency(c.total_in)}</td>
                       <td className="px-4 py-3 text-sm text-right text-red-600">{formatCurrency(c.total_out)}</td>
                       <td className="px-4 py-3 text-sm text-right text-yellow-600">{formatCurrency(c.total_fees)}</td>
-                      <td className="px-4 py-3 text-sm text-gray-500">{new Date(c.first_transaction_date).toLocaleDateString()}</td>
-                      <td className="px-4 py-3 text-sm text-gray-500">{new Date(c.last_transaction_date).toLocaleDateString()}</td>
+                      <td className="px-4 py-3 text-sm text-gray-500">{manilaDayLabel(c.first_transaction_date)}</td>
+                      <td className="px-4 py-3 text-sm text-gray-500">{manilaDayLabel(c.last_transaction_date)}</td>
                     </tr>
                   ))
                 )}
@@ -326,7 +326,7 @@ export default function Customers() {
                             {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                             <div>
                               <p className="text-xs font-medium">#{tx.transaction_number} - {tx.type_name}</p>
-                              <p className="text-xs text-gray-500">{tx.account_name} | {new Date(tx.transaction_date).toLocaleDateString()}</p>
+                              <p className="text-xs text-gray-500">{tx.account_name} | {manilaDayLabel(tx.transaction_date)}</p>
                             </div>
                           </div>
                           <span className={`text-sm font-medium ${tx.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
@@ -349,7 +349,7 @@ export default function Customers() {
                             {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                             <div>
                               <p className="text-xs font-medium">#{tx.transaction_number} - {tx.type_name} <span className="text-yellow-600">(name match)</span></p>
-                              <p className="text-xs text-gray-500">{tx.account_name} | {new Date(tx.transaction_date).toLocaleDateString()}</p>
+                              <p className="text-xs text-gray-500">{tx.account_name} | {manilaDayLabel(tx.transaction_date)}</p>
                             </div>
                           </div>
                           <span className={`text-sm font-medium ${tx.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
@@ -413,7 +413,7 @@ export default function Customers() {
                         {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                         <div>
                           <p className="text-sm font-medium">#{tx.transaction_number} — {tx.type_name}</p>
-                          <p className="text-xs text-gray-500">{tx.account_name} • {new Date(tx.transaction_date).toLocaleDateString()}</p>
+                          <p className="text-xs text-gray-500">{tx.account_name} • {manilaDayLabel(tx.transaction_date)}</p>
                         </div>
                       </div>
                       <div className="text-right">
