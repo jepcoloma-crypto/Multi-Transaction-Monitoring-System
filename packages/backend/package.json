@@ -10,7 +10,7 @@
     "migrate:rollback": "node ../../node_modules/ts-node/dist/bin.js src/database/migrate.ts rollback",
     "seed": "node ../../node_modules/ts-node/dist/bin.js src/database/seed.ts",
     "lint": "node ../../node_modules/typescript/bin/tsc --noEmit",
-    "test": "node --test --experimental-test-coverage dist-test/test/**/*.test.js",
+    "test": "node ../../node_modules/typescript/bin/tsc -p tsconfig.test.json && node --test --experimental-test-coverage dist-test/test/**/*.test.js",
     "test:build": "node ../../node_modules/typescript/bin/tsc -p tsconfig.test.json && node --test dist-test/test/**/*.test.js"
   },
   "dependencies": {
