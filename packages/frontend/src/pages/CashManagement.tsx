@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
 import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, movementPaymentMethodOptions } from '../lib/format';
+import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect, { type AccountOption } from '../components/AccountSelect';
 import { NO_OPEN_SHIFT_HINT } from '../hooks/useShiftGate';
@@ -41,36 +42,6 @@ interface Statement {
   totals: { current: number };
   drawer?: number;
   expenseApprovalThreshold?: number;
-}
-
-// Only the components the shift panel prints are declared; the endpoint sends
-// the whole report summary so the panel and the report stay one payload, and a
-// narrower type here keeps the render honest about what it actually reads.
-interface ShiftActivityBranch {
-  branchId: string;
-  branchName: string;
-  shiftDate: string;
-  income: {
-    txnFees: number;
-    loadMargin: number;
-    totalIncome: number;
-  };
-  expense: {
-    serviceFees: number;
-    providerCharges: number;
-    operatingExpenses: number;
-    totalExpense: number;
-  };
-}
-
-interface ShiftActivity {
-  shiftDates: string[];
-  branches: ShiftActivityBranch[];
-  totals: {
-    income: { txnFees: number; loadMargin: number; total: number };
-    expense: { serviceFees: number; providerCharges: number; operatingExpenses: number; total: number };
-    net: number;
-  };
 }
 
 interface Shift {
@@ -324,20 +295,12 @@ export default function CashManagement() {
 
   // Income and expense for the business day the open shift belongs to. The
   // period is the shift's own, never a filter this screen is allowed to offer
-  // (D18), so only the branch narrows it — the same narrowing the statement
-  // above uses, which is why the two cannot describe different places.
+  // (D18) — fetchShiftActivity owns that rule and the advisory failure; this
+  // callback owns only the panel's loading flag.
   const loadShiftActivity = useCallback(async () => {
     setLoadingActivity(true);
     try {
-      const params = new URLSearchParams();
-      if (branchId) params.set('branchId', branchId);
-      const qs = params.toString();
-      setShiftActivity(await api.get<ShiftActivity>(`/reports/shift-activity${qs ? `?${qs}` : ''}`));
-    } catch {
-      // Advisory, not fatal: with no shift open the endpoint answers with an
-      // empty set anyway, and a panel that failed to load should read as
-      // "nothing to show" rather than taking the cash position down with it.
-      setShiftActivity(null);
+      setShiftActivity(await fetchShiftActivity(branchId));
     } finally {
       setLoadingActivity(false);
     }
