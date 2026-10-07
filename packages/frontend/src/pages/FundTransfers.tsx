@@ -5,6 +5,7 @@ import { formatCurrency } from '../lib/format';
 import { ArrowLeftRight, Plus, Search, Eye, Check, X, Filter, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
 import AccountSelect from '../components/AccountSelect';
+import { ShiftGatedButton } from '../components/ShiftGatedButton';
 
 interface Transfer {
   id: string; transfer_number: number; transfer_reference: string; source_name: string; destination_name: string;
@@ -143,9 +144,9 @@ export default function FundTransfers() {
           <h2 className="text-lg font-semibold text-gray-900">Fund Transfers</h2>
           <p className="text-sm text-gray-600">Transfer funds between accounts</p>
         </div>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-2">
-          <Plus className="w-4 h-4" /> New Transfer
-        </button>
+        <ShiftGatedButton onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
+          New Transfer
+        </ShiftGatedButton>
       </div>
 
       <div className="flex gap-4 items-center">

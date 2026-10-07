@@ -5,6 +5,7 @@ import { Smartphone, Plus, Search, Package, X, Edit2, Trash2 } from 'lucide-reac
 import { useAuth } from '../contexts/AuthContext';
 import Pagination from '../components/Pagination';
 import AccountSelect from '../components/AccountSelect';
+import { ShiftGatedButton } from '../components/ShiftGatedButton';
 
 interface LoadingTx {
   id: string; transaction_number: number; customer_number: string; quantity: number;
@@ -152,7 +153,9 @@ export default function Loading() {
             <button onClick={openCreateProduct} className="btn-secondary flex items-center gap-2"><Plus className="w-4 h-4" /> Add Product</button>
           )}
           {activeTab === 'sales' && (
-            <button onClick={() => setShowModal(true)} className="btn-primary flex items-center gap-2"><Plus className="w-4 h-4" /> New Sale</button>
+            <ShiftGatedButton onClick={() => setShowModal(true)} icon={<Plus className="w-4 h-4" />}>
+              New Sale
+            </ShiftGatedButton>
           )}
         </div>
       </div>

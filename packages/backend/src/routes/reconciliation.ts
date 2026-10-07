@@ -3,6 +3,7 @@ import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
 import { assertBranch } from '../middleware/scope';
+import { assertOpenShift } from '../middleware/shiftGate';
 import { createAuditLog } from '../services/audit';
 
 const router = Router();
@@ -102,6 +103,14 @@ router.post('/:id/adjust', authorize('reconciliation.write'), async (req: Reques
     if (!Number.isFinite(adjAmount) || adjAmount === 0) {
       throw createError(400, 'Adjustment amount must be a non-zero number');
     }
+
+    // D17 — an adjustment writes current_balance and a ledger row, so it is a
+    // money movement like any other and the administrator-only rule above does
+    // not stand in for an open drawer. After the validation above so a
+    // malformed amount still reads as 400 rather than as a closed branch, and
+    // before the account is locked so nothing is held while the gate answers.
+    // No event date: an adjustment books the moment it is applied.
+    await assertOpenShift(recon.account_id);
 
     const acct = (await client.query(
       'SELECT current_balance, opening_balance FROM accounts WHERE id = $1 FOR UPDATE',

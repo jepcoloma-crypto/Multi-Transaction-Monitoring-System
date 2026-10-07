@@ -4,6 +4,7 @@ import { formatCurrency, manilaDateTimeValue, paymentMethodLabel, paymentMethodO
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
+import { ShiftGatedButton } from '../components/ShiftGatedButton';
 
 const DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1, 0.25, 0.1, 0.05, 0.01];
 
@@ -450,9 +451,9 @@ export default function Transactions() {
           <h2 className="text-lg font-semibold text-gray-900">Transactions</h2>
           <p className="text-sm text-gray-600">{pagination.total} transaction(s)</p>
         </div>
-        <button onClick={openCreate} className="btn-primary flex items-center gap-2">
-          <Plus className="w-4 h-4" /> New Transaction
-        </button>
+        <ShiftGatedButton onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
+          New Transaction
+        </ShiftGatedButton>
       </div>
 
       {summary && (
