@@ -13,6 +13,9 @@ CREATE TABLE transaction_fees (
   description TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  base_amount NUMERIC(15, 2) DEFAULT 0,
+  step_amount NUMERIC(15, 2) DEFAULT 0,
+  step_fee NUMERIC(15, 2) DEFAULT 0,
   CONSTRAINT valid_fee_type CHECK (fee_type IN ('fixed', 'percentage'))
 );
 

@@ -12,6 +12,8 @@ CREATE TABLE loading_products (
   notes TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  company_additional_charge NUMERIC(15, 2) NOT NULL DEFAULT 0,
+  provider_convenience_fee NUMERIC(15, 2) NOT NULL DEFAULT 0,
   CONSTRAINT positive_cost CHECK (cost_price >= 0),
   CONSTRAINT positive_selling CHECK (selling_price >= 0)
 );
@@ -38,6 +40,11 @@ CREATE TABLE loading_transactions (
   created_by UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  -- 026 matches a ledger amount against total_cost + provider_convenience_fee.
+  -- Live had both columns; the chain created neither, which is where the replay
+  -- stopped once 023 was out of the way.
+  provider_convenience_fee NUMERIC(15, 2) NOT NULL DEFAULT 0,
+  company_additional_charge NUMERIC(15, 2) NOT NULL DEFAULT 0,
   CONSTRAINT positive_quantity CHECK (quantity > 0),
   CONSTRAINT valid_loading_status CHECK (status IN ('pending', 'completed', 'failed', 'reversed'))
 );

@@ -21,6 +21,42 @@ CREATE TABLE transaction_categories (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- customers and additional_charge_types existed only on live: no migration in
+-- the chain created either, so a rebuilt database had no customers table while
+-- live had one with a foreign key hanging off transactions. They are defined
+-- here because transactions points at them — the key below needs customers to
+-- already exist. Definitions are transcribed from live rather than invented,
+-- including customers' TIMESTAMP WITHOUT TIME ZONE, which is not the convention
+-- the rest of the schema follows but is what is actually deployed.
+CREATE TABLE customers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  first_name VARCHAR(100) NOT NULL,
+  last_name VARCHAR(100) NOT NULL,
+  email VARCHAR(255),
+  phone VARCHAR(50),
+  address TEXT,
+  id_type VARCHAR(50),
+  id_number VARCHAR(100),
+  notes TEXT,
+  status VARCHAR(20) DEFAULT 'active',
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_customers_name ON customers(last_name, first_name);
+CREATE INDEX idx_customers_status ON customers(status);
+
+CREATE TABLE additional_charge_types (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(100) NOT NULL UNIQUE,
+  description TEXT,
+  default_amount NUMERIC(15, 2) DEFAULT 0,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 CREATE TABLE transactions (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   transaction_number SERIAL UNIQUE,
@@ -41,6 +77,13 @@ CREATE TABLE transactions (
   approved_by UUID REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  -- All three are read on every write path (notes 158 references, additional_charges
+  -- 71, customer_id 7) and all three existed on live, but the chain never created
+  -- them: a replayed database accepted migrations up to 026 and then failed on
+  -- anything that mentioned these columns.
+  additional_charges JSONB DEFAULT '[]',
+  notes TEXT,
+  customer_id UUID REFERENCES customers(id),
   CONSTRAINT valid_transaction_status CHECK (status IN ('draft', 'pending', 'completed', 'failed', 'cancelled', 'reversed')),
   CONSTRAINT positive_amount CHECK (amount >= 0),
   CONSTRAINT positive_fee CHECK (fee >= 0)
@@ -53,6 +96,7 @@ CREATE INDEX idx_transactions_status ON transactions(status);
 CREATE INDEX idx_transactions_date ON transactions(transaction_date);
 CREATE INDEX idx_transactions_reference ON transactions(reference_number);
 CREATE INDEX idx_transactions_created_by ON transactions(created_by);
+CREATE INDEX idx_transactions_customer_id ON transactions(customer_id);
 
 CREATE TABLE ledger_entries (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -116,5 +160,7 @@ INSERT INTO transaction_categories (name, code, transaction_type_id) VALUES
 
 DROP TABLE IF EXISTS ledger_entries;
 DROP TABLE IF EXISTS transactions;
+DROP TABLE IF EXISTS additional_charge_types;
+DROP TABLE IF EXISTS customers;
 DROP TABLE IF EXISTS transaction_categories;
 DROP TABLE IF EXISTS transaction_types;

@@ -16,8 +16,8 @@ ON CONFLICT (name) DO NOTHING;
 -- PART 2: Grant delete permissions to administrator and manager only
 -- ============================================================
 -- Administrator gets all delete permissions
-INSERT INTO role_permissions (id, role_id, permission_id, created_at)
-SELECT gen_random_uuid(), r.id, p.id, NOW()
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
 FROM roles r, permissions p
 WHERE r.name = 'administrator'
   AND p.name IN ('transactions.delete', 'loading.delete', 'transfers.delete')
@@ -26,8 +26,8 @@ WHERE r.name = 'administrator'
   );
 
 -- Manager gets all delete permissions
-INSERT INTO role_permissions (id, role_id, permission_id, created_at)
-SELECT gen_random_uuid(), r.id, p.id, NOW()
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
 FROM roles r, permissions p
 WHERE r.name = 'manager'
   AND p.name IN ('transactions.delete', 'loading.delete', 'transfers.delete')
@@ -63,8 +63,8 @@ INSERT INTO permissions (id, name, description, created_at) VALUES
 ON CONFLICT (name) DO NOTHING;
 
 -- Grant to admin only
-INSERT INTO role_permissions (id, role_id, permission_id, created_at)
-SELECT gen_random_uuid(), r.id, p.id, NOW()
+INSERT INTO role_permissions (role_id, permission_id)
+SELECT r.id, p.id
 FROM roles r, permissions p
 WHERE r.name = 'administrator'
   AND p.name = 'transactions.reverse_approve'

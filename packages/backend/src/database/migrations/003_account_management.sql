@@ -9,7 +9,8 @@ CREATE TABLE providers (
   logo_url VARCHAR(500),
   notes TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  convenience_fee NUMERIC(15, 2) NOT NULL DEFAULT 0
 );
 
 CREATE TABLE account_types (

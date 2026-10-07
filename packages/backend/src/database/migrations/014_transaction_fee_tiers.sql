@@ -7,7 +7,9 @@ CREATE TABLE transaction_fee_tiers (
   max_amount NUMERIC(15, 2),
   fee_value NUMERIC(15, 2) NOT NULL DEFAULT 0,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  fee_type VARCHAR(20) NOT NULL DEFAULT 'fixed',
+  CONSTRAINT valid_tier_fee_type CHECK (fee_type IN ('fixed', 'percentage'))
 );
 
 CREATE INDEX idx_fee_tiers_fee_id ON transaction_fee_tiers(fee_id);
