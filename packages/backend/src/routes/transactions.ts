@@ -10,6 +10,7 @@ import type { CounterpartyLeg } from '../services/balance';
 import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg } from '../services/cashManagement';
 import { calculateTieredFee } from '../services/feeCalc';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
+import { expenseApprovalThreshold } from '../services/settings';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -523,10 +524,14 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     const isAdminCreator = (req.user!.roles || []).includes('administrator');
     // An administrator who creates an owner fund settles it at once — that
     // path's established behaviour, deliberately left alone. An operating
-    // expense does not inherit the bypass: the two-person rule was chosen for
-    // expenses specifically, so nobody, administrator included, may release
-    // their own request.
-    const requiresApproval = isControlled && (isOperatingExpense || !isAdminCreator);
+    // expense settles when it is recorded at or below the configured threshold
+    // and waits for a second signature above it, so small purchases no longer
+    // sit in a queue nobody needed. The same threshold is served to the expense
+    // form, so what the operator is told matches what the books will do.
+    const expenseThreshold = await expenseApprovalThreshold();
+    const requiresApproval = isOperatingExpense
+      ? amountNum > expenseThreshold
+      : isControlled && !isAdminCreator;
     const finalStatus = requiresApproval ? 'pending' : (status || 'completed');
 
     if (finalStatus !== 'completed' && !isControlled) {
