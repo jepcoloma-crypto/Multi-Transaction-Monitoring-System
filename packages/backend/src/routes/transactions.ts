@@ -11,6 +11,7 @@ import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHO
 import { calculateTieredFee } from '../services/feeCalc';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
+import { withTransaction } from '../services/withTransaction';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -904,7 +905,6 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
 });
 
 router.post('/:id/reverse', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
-  const client = await getClient();
   try {
     const original = await queryOne(
       `SELECT t.*, tt.direction FROM transactions t
@@ -935,43 +935,46 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
     const { reason } = req.body;
 
     if (isAdmin) {
-      // Admin: execute reversal immediately
-      await client.query('BEGIN');
+      // Admin: execute reversal immediately. The status flip, the reversing row
+      // and the balance move it causes are one unit of work on one connection,
+      // so none of them can land without the others — the difference between a
+      // reversal that did not happen and one that has been recorded twice.
+      const reverseTx = await withTransaction(async (client) => {
+        const originalCharges = original.additional_charges || [];
+        const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
 
-      const originalCharges = original.additional_charges || [];
-      const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+        await client.query(
+          `UPDATE transactions SET status = 'reversed', updated_at = NOW() WHERE id = $1`,
+          [req.params.id]
+        );
 
-      await client.query(
-        `UPDATE transactions SET status = 'reversed', updated_at = NOW() WHERE id = $1`,
-        [req.params.id]
-      );
+        const reverseEntryType = original.direction === 'in' ? 'debit' : 'credit';
+        const reverseTypeId = (await client.query<{ id: string }>(
+          `SELECT id FROM transaction_types WHERE code = $1`,
+          [original.direction === 'in' ? 'adjustment_out' : 'adjustment_in']
+        )).rows[0];
 
-      const reverseEntryType = original.direction === 'in' ? 'debit' : 'credit';
-      const reverseTypeId = await queryOne<{ id: string }>(
-        `SELECT id FROM transaction_types WHERE code = $1`,
-        [original.direction === 'in' ? 'adjustment_out' : 'adjustment_in']
-      );
+        const created = (await client.query(
+          `INSERT INTO transactions (account_id, transaction_type_id, amount, fee, net_amount,
+           reference_number, transaction_date, description, status, created_by)
+           VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6)
+           RETURNING *`,
+          [
+            original.account_id, reverseTypeId!.id, original.amount,
+            `REV-${original.transaction_number}`, `Reversal: ${reason || original.description || 'Transaction reversal'}`,
+            req.user!.userId,
+          ]
+        )).rows[0];
 
-      const reverseTx = await queryOne(
-        `INSERT INTO transactions (account_id, transaction_type_id, amount, fee, net_amount,
-         reference_number, transaction_date, description, status, created_by)
-         VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6)
-         RETURNING *`,
-        [
-          original.account_id, reverseTypeId!.id, original.amount,
-          `REV-${original.transaction_number}`, `Reversal: ${reason || original.description || 'Transaction reversal'}`,
-          req.user!.userId,
-        ]
-      );
+        await processTransaction(
+          original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
+          reverseEntryType as 'debit' | 'credit', created.id,
+          `REV-${original.transaction_number}`, `Reversal: ${reason || 'Transaction reversal'}`,
+          new Date(), client
+        );
 
-      await processTransaction(
-        original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
-        reverseEntryType as 'debit' | 'credit', reverseTx!.id,
-        `REV-${original.transaction_number}`, `Reversal: ${reason || 'Transaction reversal'}`,
-        new Date(), client
-      );
-
-      await client.query('COMMIT');
+        return created;
+      });
 
       await createAuditLog({
         userId: req.user!.userId,
@@ -1007,10 +1010,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
       res.json({ success: true, data: pending });
     }
   } catch (error) {
-    await client.query('ROLLBACK');
     next(error);
-  } finally {
-    client.release();
   }
 });
 
