@@ -1007,7 +1007,10 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
       res.json({ success: true, data: pending });
     }
   } catch (error) {
+    await client.query('ROLLBACK');
     next(error);
+  } finally {
+    client.release();
   }
 });
 
