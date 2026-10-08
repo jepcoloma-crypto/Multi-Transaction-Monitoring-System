@@ -1316,23 +1316,6 @@ export default function CashManagement() {
           </p>
         </div>
 
-        {recordTotals && (
-          <div className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-red-100 bg-red-50 px-4 py-3">
-            <div className="flex items-center gap-2 text-red-700">
-              <TrendingDown className="w-4 h-4" />
-              <span className="text-xs font-semibold uppercase tracking-wide">Cash expenses</span>
-            </div>
-            <div className="flex items-baseline gap-3">
-              <span className="text-xl font-bold tabular-nums text-red-700">
-                {formatCurrency(Number(recordTotals.cashExpenses))}
-              </span>
-              <span className="text-xs text-red-900/60">
-                Operating Expenses, Provider Charges and Payments &amp; Bills — every matching record, not just this page
-              </span>
-            </div>
-          </div>
-        )}
-
         {recordError && (
           <p className="px-4 pb-3 text-sm text-red-600">{recordError}</p>
         )}
@@ -1394,6 +1377,32 @@ export default function CashManagement() {
                     </tr>
                   ))}
                 </tbody>
+                {/*
+                  The total sits under the column it totals rather than above
+                  the table: a figure in an Amount column footer is read as that
+                  column's sum, which is what it is — narrowed to the expense
+                  classes named beside it.
+
+                  It is the filtered population's total while the rows above it
+                  are one page of it, so the note says so. Without that a reader
+                  would take it for the sum of the rows currently in view.
+                */}
+                <tfoot className="border-t-2 border-gray-300 bg-red-50">
+                  <tr>
+                    <td colSpan={7} className="px-4 py-3">
+                      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                        <span className="text-sm font-semibold text-gray-700">Cash expenses</span>
+                        <span className="text-xs text-gray-500">
+                          Operating Expenses, Provider Charges and Payments &amp; Bills — every matching record, not just this page
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-right font-mono font-semibold whitespace-nowrap text-red-700">
+                      {recordTotals ? formatCurrency(Number(recordTotals.cashExpenses)) : '—'}
+                    </td>
+                    <td colSpan={2} className="px-4 py-3" />
+                  </tr>
+                </tfoot>
               </table>
             </div>
 
