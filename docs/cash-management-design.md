@@ -490,6 +490,11 @@ drawer_delta = wallet_delta + fee
 | Cash-out, separate | −500 | 490 | **−490** | 10 retained |
 | Cash-out, deducted | −500 | 490 | **−490** | 10 retained |
 
+> **Direction corrected in D24.** The formula above and the *Drawer* column had the drawer
+> moving **with** the wallet. It moves **against** it. The fee's treatment here — report income
+> *and* credit the drawer — is unchanged; only the sign of the movement under it moved. D24
+> carries the corrected table.
+
 > ⚠️ A peso now appears in *both* the Income report and the cash statement. That is
 > correct — they answer different questions, as section 1 states — but **the two must
 > never be added together.** Recorded here so no future report does so by accident.
@@ -508,7 +513,9 @@ Corrected, and it is the only change to existing posting behaviour in this secti
 | credit | `amount − fee` — *already correct* |
 | debit | **`amount`** — *corrected*; customer receives `amount − fee`, `fee` stays in the drawer |
 
-Without this, `drawer_delta = wallet_delta + fee` cannot hold for cash-outs.
+Without this the account drops less than the movement it recorded, and the fee is reported as
+earned out of an amount nobody paid. D24 restates the drawer's own side of that row; the debit
+rule above is unchanged by it.
 
 ### D14 — A shift is a count, never a movement
 
@@ -1001,4 +1008,60 @@ parts next to each other with nothing saying so, which is exactly what invites a
   drawer leg *in addition to* the wallet leg. Today no transaction posts to both a cash and a
   non-cash account (0 rows; every cash movement has a null method), so the total double-counts
   nothing live. Whether the two legs are genuinely two assets or one asset seen twice is a
-  question for D12's own review before the total is leaned on as a valuation.
+  question for D12's own review before the total is leaned on as a valuation. **Answered by
+  D24:** the legs run *opposite*, so the pair is a transfer between two pools rather than a
+  second asset — the total gains only the fee, never twice the movement.
+
+### D24 — the drawer moves against the account, not with it
+
+D12 wrote the counterparty leg in the **same** direction as the account leg, and `planPostings`
+documented that as deliberate: *"a cash-in puts money into the customer's wallet and into the
+drawer... this is not a transfer between two accounts."* It is one. The drawer and the account
+are two pools of the same company's money, and a cash movement moves value between them.
+
+The operator's rule, recorded:
+
+| | Account | Drawer | Income | Drawer net | Books |
+|---|---:|---:|---:|---:|---:|
+| **Cash in** | +500 | −500 | +10 | **−490** | **+10** |
+| **Cash out** | −500 | +500 | +10 | **+510** | **+10** |
+
+So the drawer's side is `fee − signedAmount` — the sign of the account leg flips. What that buys
+is one identity, true in every combination of direction and fee mode:
+
+```
+signedAmount + drawer_delta = fee
+```
+
+The books grow by exactly the fee, which is exactly what the income report books. Under D12's
+`signedAmount + fee` the sum was `2 × signedAmount + fee`: a ₱500 cash-in added **₱990** to the
+total while the income report said ₱10.
+
+| Mode | Account | Drawer | Fee | Books |
+|---|---:|---:|---:|---:|
+| Cash-in, separate | +500 | **−490** | 10 | +10 |
+| Cash-in, deducted | +490 | **−480** | 10 | +10 |
+| Cash-out, separate | −500 | **+510** | 10 | +10 |
+| Cash-out, deducted | −500 | **+510** | 10 | +10 |
+
+- **The change costs nothing, because the path had never run.** Measured before shipping:
+  0 of 131 transactions carried `payment_method = 'cash'`, every transaction had exactly one
+  ledger row, and none posted to both a cash and a non-cash account. No balance in production
+  came from `drawerLeg`, so no balance needed correcting and no row was rewritten. No migration.
+- **The guard lands where it should.** `resolveDrawerLeg` refuses a debit the drawer cannot
+  fund. With the sign flipped, a cash-in *is* the drawer's debit, so *"the branch's cash drawer
+  holds X but this movement hands out Y"* now protects the direction that actually hands money
+  out. This is a new operator-facing refusal — recording a cash-in the drawer cannot fund is a
+  400 rather than a silent overdraft, which is the correct outcome and worth expecting.
+- **One net row, not two.** The table above draws the drawer as −500 then +10; the ledger writes
+  a single −490 row. D9 already specifies *a* second row (singular), `CounterpartyLeg` is one
+  object, and the transaction still carries `fee`, so the split stays recoverable in the
+  register and the Statement of Account. Two rows would widen the change across `planPostings`
+  and the balance-after sequencing for no gain in information.
+- **`planPostings` still decides nothing.** It writes what the caller gives it; only its
+  comment claimed otherwise. The direction now lives where it always should have — in
+  `drawerLeg`, one tested expression.
+
+The identity is pinned by a test asserting `signedAmount + drawer_delta === fee` across every
+direction and fee mode, so reintroducing the same direction fails the suite rather than quietly
+inflating the total.

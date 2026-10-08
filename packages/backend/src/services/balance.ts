@@ -86,11 +86,11 @@ export interface Posting {
 /**
  * Decide which ledger rows a movement writes, without touching the database.
  *
- * The counterparty moves in the *same* direction as the primary leg, not the opposite one:
- * a cash-in puts money into the customer's wallet and into the drawer, and a cash-out
- * takes it out of both. This is not a transfer between two accounts, so there is no
- * contra-leg to derive — the caller states the drawer's amount explicitly, which is what
- * keeps the fee formula (section 12 D12) out of this function.
+ * The counterparty carries its own direction from the caller, so this function takes no
+ * position on it. Under D24 a cash movement is a transfer between the drawer and the
+ * account, so the drawer leg runs *opposite* to the primary leg — but the caller states
+ * that direction and amount explicitly, which is what keeps the fee formula
+ * (section 12 D12) out of this function.
  *
  * A zero-amount counterparty writes no row. A 0.00 ledger entry carries no information and
  * would show up as a movement in the Statement of Account.

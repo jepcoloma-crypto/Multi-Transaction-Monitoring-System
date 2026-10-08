@@ -305,7 +305,8 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
   }
 });
 
-// The drawer's side of a movement settled in physical cash (design D12).
+// The drawer's side of a movement settled in physical cash (design D12; the
+// direction is opposite to the account leg, design D24).
 //
 // The amount comes from drawerLeg rather than being restated here, so the rule
 // covering both directions and both fee modes lives in one tested place. The
@@ -511,8 +512,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // Taking it from a debit as well collected it from nobody: the balance would
     // drop by amount − fee and the customer would be handed amount − fee, so the
     // fee was booked as income and physically never taken. On a debit the whole
-    // amount leaves and the drawer is what retains the fee — which is also the
-    // only way drawerLeg's expression can hold (design D13).
+    // amount leaves and the drawer is what retains the fee (design D13).
     const netAmount = deductFee && entryType === 'credit'
       ? Math.round((amountNum - feeNum) * 100) / 100
       : amountNum;

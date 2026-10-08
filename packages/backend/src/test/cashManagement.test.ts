@@ -220,28 +220,46 @@ test('only physical cash touches the drawer', () => {
   assert.equal(touchesDrawer(undefined), false);
 });
 
-test('the drawer receives the fee on top of an inflow', () => {
-  // Deducted: ₱490 lands in the wallet, ₱500 of physical cash is received.
-  assert.deepEqual(drawerLeg(490, 10), { amount: 500, entryType: 'credit' });
-  // Separate: ₱500 lands and the ₱10 fee is paid in cash on top.
-  assert.deepEqual(drawerLeg(500, 10), { amount: 510, entryType: 'credit' });
+test('the drawer moves opposite to the account and keeps the fee', () => {
+  // Cash in, separate: ₱500 lands in the account, ₱500 leaves the drawer and
+  // ₱10 comes back as income, so the drawer nets −490.
+  assert.deepEqual(drawerLeg(500, 10), { amount: 490, entryType: 'debit' });
+  // Cash in, deducted: the account only lands ₱490, so the drawer nets −480.
+  assert.deepEqual(drawerLeg(490, 10), { amount: 480, entryType: 'debit' });
+  // Cash out: ₱500 leaves the account, ₱500 arrives in the drawer plus the
+  // ₱10 income on top, so the drawer nets +510. Both fee modes land here
+  // because a debit is never shrunk by a deducted fee (D13).
+  assert.deepEqual(drawerLeg(-500, 10), { amount: 510, entryType: 'credit' });
+  // Cash out with no fee is a plain ₱500 into the drawer.
+  assert.deepEqual(drawerLeg(-500, 0), { amount: 500, entryType: 'credit' });
 });
 
-test('the drawer keeps the fee on an outflow', () => {
-  // Both fee modes land on the same figure: ₱500 comes out of the wallet and
-  // ₱490 is physically handed over.
-  assert.deepEqual(drawerLeg(-500, 10), { amount: 490, entryType: 'debit' });
-  assert.deepEqual(drawerLeg(-500, 0), { amount: 500, entryType: 'debit' });
-});
+test('both legs together equal the fee, so the books grow by the fee alone', () => {
+  // The identity that ties the cash statement to the income report: whatever
+  // the account leg, the drawer leg makes up the difference to the fee. Adding
+  // them in the same direction grows the total by 2×signedAmount + fee instead
+  // — ₱990 on a ₱500 cash-in, against the ₱10 the income report books.
+  const signedOf = (leg: { amount: number; entryType: 'credit' | 'debit' }): number =>
+    leg.entryType === 'credit' ? leg.amount : -leg.amount;
 
-test('a deducted fee stays in the drawer instead of disappearing', () => {
-  // The wallet loses ₱500 and ₱490 is handed over, so ₱10 of the withdrawal is
-  // the company's fee and it is still in the drawer. Had the debit been posted
-  // as ₱490, this same expression would have returned −480 and the ₱10 would
-  // have existed nowhere at all while the income report counted it as earned.
-  const leg = drawerLeg(-500, 10)!;
-  assert.equal(leg.amount, 490);
-  assert.equal(Math.abs(-500) - leg.amount, 10);
+  const cases: Array<[number, number]> = [
+    [500, 10],
+    [490, 10],
+    [-500, 10],
+    [-500, 0],
+    [0, 0],
+    [10, 10],
+  ];
+
+  for (const [signedAmount, fee] of cases) {
+    const leg = drawerLeg(signedAmount, fee);
+    const drawerDelta = leg ? signedOf(leg) : 0;
+    assert.equal(
+      Math.round((signedAmount + drawerDelta) * 100) / 100,
+      fee,
+      `signedAmount=${signedAmount} fee=${fee}`
+    );
+  }
 });
 
 test('a movement that changes nothing physical writes no drawer row', () => {
@@ -249,8 +267,8 @@ test('a movement that changes nothing physical writes no drawer row', () => {
 });
 
 test('the drawer figure is rounded to centavos rather than left to float error', () => {
-  assert.deepEqual(drawerLeg(0.1 + 0.2, 0), { amount: 0.3, entryType: 'credit' });
-  assert.deepEqual(drawerLeg(-(0.1 + 0.2), 0.01), { amount: 0.29, entryType: 'debit' });
+  assert.deepEqual(drawerLeg(0.1 + 0.2, 0), { amount: 0.3, entryType: 'debit' });
+  assert.deepEqual(drawerLeg(-(0.1 + 0.2), 0.01), { amount: 0.31, entryType: 'credit' });
 });
 
 test('a shift float is a class of its own, not lumped into Other', () => {

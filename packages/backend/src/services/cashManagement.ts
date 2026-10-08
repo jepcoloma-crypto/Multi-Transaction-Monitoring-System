@@ -95,25 +95,29 @@ export interface DrawerLeg {
 
 // What the drawer does when a movement is settled in physical cash.
 //
-// It moves by what the wallet leg moved plus the fee, in both directions, and
-// that one expression covers every combination of direction and fee mode:
+// The drawer and the account are two pools of the same money, so a cash
+// movement transfers between them: the drawer moves opposite to the account
+// leg, and the fee is credited back to the drawer as income.
 //
-//   cash-in,  deducted   wallet +490   cash received 500   drawer +500
-//   cash-in,  separate   wallet +500   cash received 510   drawer +510
-//   cash-out, separate   wallet -500   cash handed out 490 drawer -490
-//   cash-out, deducted   wallet -500   cash handed out 490 drawer -490
+//   cash-in,  separate   account +500   drawer -490
+//   cash-in,  deducted   account +490   drawer -480
+//   cash-out, separate   account -500   drawer +510
+//   cash-out, deducted   account -500   drawer +510
 //
-// The fee is charged in cash on top of an inflow and retained from an outflow,
-// which is why it adds in both directions rather than being signed with the
-// movement. The last row is the reason a debit may not be shrunk by a deducted
-// fee: had the wallet dropped 490 there, this expression would have produced
-// -480 and 10 would have vanished from the drawer while the income report still
-// counted it as earned.
+// The sign is what makes the two legs sum to the fee in every row:
 //
-// `signedAmount` is the signed wallet leg; `fee` is always positive. Null means
+//     signedAmount + (fee - signedAmount) = fee
+//
+// so the books grow by exactly what the income report books. Adding them in
+// the same direction instead grew the total by the whole movement again — a
+// ₱500 cash-in would have added ₱990 to the total while income reported ₱10.
+// The two cash-out rows coincide because a debit is never shrunk by a deducted
+// fee (D13): the account loses the whole 500 and the drawer keeps the 10.
+//
+// `signedAmount` is the signed account leg; `fee` is always positive. Null means
 // nothing physically changed hands and no ledger row should be written.
 export function drawerLeg(signedAmount: number, fee: number): DrawerLeg | null {
-  const delta = Math.round((signedAmount + fee) * 100) / 100;
+  const delta = Math.round((fee - signedAmount) * 100) / 100;
   if (delta === 0) return null;
   return delta > 0
     ? { amount: delta, entryType: 'credit' }
