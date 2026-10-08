@@ -4,10 +4,10 @@ Status: **Phases A–E implemented and deployed** (migrations 034/035 applied to
 engine, endpoints, Cash Management page, Expense report component — commits `b3d8faf`,
 `3a5005e`, `8a0f176`).
 
-Sections 10 onward — drawer participation, shifts, and the open-shift precondition of §18 —
-are **written and implemented but not deployed**. Nothing is pushed: the authoritative list
-of what is pending is `git log origin/main..HEAD`. Migrations 036 and 037 are written but
-**not applied**. The order they go live in is forced, not preferred:
+Sections 10 onward — drawer participation, shifts, the open-shift precondition of §18 and the
+live/period split of §19 — are **pushed and running in production**: `git log origin/main..HEAD`
+is empty, and migrations 036–039 are applied (036/037 on 6 Oct 2026, 038/039 in the same
+week). The order below is kept as the record of *why* it was forced, not as work outstanding:
 
 1. **Fund the revolving funds first**, using the code as it runs today. F3 gives the drawer
    a ledger leg, and a leg that cannot be paid is refused: with both drawers at ₱0 every
@@ -1065,3 +1065,175 @@ total while the income report said ₱10.
 The identity is pinned by a test asserting `signedAmount + drawer_delta === fee` across every
 direction and fee mode, so reintroducing the same direction fails the suite rather than quietly
 inflating the total.
+
+---
+
+## 20. The books after the test data
+
+On 8 Oct 2026 the module's own test data was taken out of production so that every figure
+below it could be read as real. The rule held throughout: **snapshot first, guard the write,
+confirm before `COMMIT`** — and never move a balance by hand when deleting rows will do.
+
+What was removed, and how it verified:
+
+| Removed | Result |
+|---|---|
+| 4 test shifts | `shifts` table → 0 rows |
+| Transactions #252, #253 | drawer → **₱0.00** exactly, with no manual balance edit |
+
+The zero is not an edit, it is D7: *cash position is read, never stored*. The drawer's figure
+is `Σ current_balance` over `account_types.code = 'cash'` (`cashManagement.ts:140-148`), so
+deleting the rows that held the money returns the reading to zero by construction. Opening a
+shift writes only `INSERT INTO shifts (...)` — never a balance, never a ledger row (D14).
+
+The owner funding that stocked the drawer (**#256**, ₱131,827) was then recorded by the
+operator through the UI rather than written by the agent. An earlier operator shift had opened
+against an empty drawer, and the system did the right thing: it surfaced
+`live.drawerDifference = 131827` rather than quietly reading ₱0 as a full float.
+
+### The six mismatches this exposed
+
+Reading the books after the cleanup found **six accounts whose stored balance disagrees with
+the sum of their own ledger rows** — ₱121,391 unexplained in total:
+
+| Account | Stored `current_balance` | Ledger sum | Rows | Difference |
+|---|---:|---:|---:|---:|
+| Kristine Mae (e-wallet) | 0.00 | −70,020.00 | 2 | 70,020.00 |
+| Steven Joe (bank) | 30,623.00 | — none — | 0 | 30,623.00 |
+| Benito (bank) | 50,024.00 | 32,472.00 | 15 | 17,552.00 |
+| Steven Joe (e-wallet) | 2,087.00 | 700.00 | 1 | 1,387.00 |
+| Jed | 1,903.00 | 931.00 | 111 | 972.00 |
+| Joyce | 21,467.00 | 20,630.00 | 8 | 837.00 |
+| **Total** | | | | **121,391.00** |
+
+Recorded, not repaired. These predate every change in this document, they are outside the
+module, and the owner declined to investigate them. They are written down here so the next
+reader does not mistake them for damage done by sections 11–19.
+
+---
+
+## 21. Business dates are corrected, not rewritten
+
+Two reports disagreed with the page by a day or two, twice, and both were the same defect: a
+**business day** stored as something other than the day the money belongs to. The fix is the
+same each time, and the rule it encodes is narrow — *the business day moves; the posting
+instant never does*.
+
+### D25 — the business day moves; the posting instant never does
+
+The Income Report's ₱2,747 disagreed with the shift panel's figure by **₱98**, all of it
+2026-09-28 activity: fees ₱90.00 (#126 cash_out ₱80, #130 cash_out ₱10) and ₱8.00 load margin
+(loading #16).
+
+It was never arithmetic. Both panels call the same loader, `loadIncomeReport`
+(`reports.ts:753`); the shift panel passes `startDate = endDate = shift_date`
+(`reports.ts:1026`) while the Income Report defaults to `''`/`''` — all history
+(`Reports.tsx:83`). The gap was a **window**, and the seven transactions plus loading #16 sat
+on the wrong day inside it.
+
+| Moved | By |
+|---|---|
+| `transactions.transaction_date` (7 rows) | `− INTERVAL '3 days'` |
+| `ledger_entries.entry_date` (7 rows) | `− INTERVAL '3 days'`, wall-clock time preserved |
+| `loading_transactions.created_at` (loading #16) | `− INTERVAL '3 days'` |
+| **`ledger_entries.created_at`** | **never touched** |
+| **any `amount`, `fee`, `balance_after`** | **never touched** |
+
+Why `created_at` is sacred: `ledgerAudit.ts:62-65` walks rows in `created_at` order, not
+`entry_date`, so the balance-after chain and the audit result are provably unaffected —
+`chain_breaks = 0` before and after.
+
+The commit script was derived from the verified dry run with the diff asserted to be exactly
+one line (`ROLLBACK` → `COMMIT`) before it was allowed to run. Snapshot:
+`backup-before-redate-20261008.dump`.
+
+**Result:** all three readers now agree at **₱2,747.00** — the shift panel, the Income Report
+across all history, and the Income Report filtered to 2026-09-25.
+
+### D26 — transfers file under the day their ledger rows do
+
+The same defect one table over. `TRF-2026-000025` and `TRF-2026-000026` carried
+`transfer_date` on **2026-09-26** while the other six transfers were already on 2026-09-25 —
+they were entered late on 28 Sep but belong to the 25th.
+
+A correction in only one place would re-open the same gap, because the two sides read
+different columns: every report windows transfers on `tr.transfer_date` (income `reports.ts:770`,
+expense `:868`, detail `:1118`, transfer report `:284`) while the statement windows on
+`l.entry_date`. Both moved together, `− INTERVAL '1 day'`, wall-clock time preserved:
+
+| Table | Rows | Column moved | Untouched |
+|---|---:|---|---|
+| `transfers` | 2 | `transfer_date` | `created_at`, `completed_at` |
+| `ledger_entries` | 4 | `entry_date` | `created_at` (the audit's order key) |
+
+Guards asserted before the write: 2 transfers / fees ₱20.00 / 4 ledger rows / transfer-vs-ledger
+day agreement / 0 chain breaks. Unchanged after: total on books **₱222,827.00**, **184** ledger
+rows, all-time transfer fees **₱40.00**, `chain_breaks 0`. Snapshot:
+`backup-before-trf-redate-20261008.dump`.
+
+- **The reported effect.** The Expense report's service fees for 2026-09-25 move
+  **20.00 → 40.00** (5 → 7 transfers); the all-time figure stays ₱40.00, because only the day
+  attribution changes. Total Income is untouched by construction — the income report carries
+  `transferFees` on every row as a reference column and never adds it into `totalIncome`.
+- **The register was never in scope.** None of the six ledger rows sits on a `cash` account
+  (they are e-wallet and bank), so `cashExpenses` read 31,372.00 before and after.
+- **Not a defect — recorded so it is not "fixed" later.** `TRF-2026-000028` reports two
+  transfer-vs-ledger day disagreements. It has four ledger rows: two dated 2026-09-25 (the
+  originals) and two dated 2026-10-01 reading *"Correction: Wrong input from operator. From
+  20,000 to 22,000 plus service charge 10.00."* The correction was **appended on the day it
+  was made** rather than overwriting the original — which is exactly the corrections-append
+  rule. Grouped on first posting, all seven posting transfers agree with their
+  `transfer_date`.
+
+---
+
+## 22. The register totals what it spent
+
+### D27 — the total sits under the column it totals
+
+The register listed every row that touched the drawer and no sum of them, so *"what did we
+spend in cash"* meant adding the Amount column by eye. Two decisions define the figure, and
+the first is the one that would have been wrong by ₱200,000.
+
+**Direction cannot define an expense.** Of the **₱231,372.00** that left the drawer, ₱200,000
+is an `owner_return` and the rest is largely customers being handed their own money. Both are
+debits; neither is spending. Total the wrong set and the register reports the owner's capital
+as company expense. The figure therefore sums only the three buckets where the company was the
+party that paid — `operating_expenses`, `provider_charges`, `payments` (`EXPENSE_BUCKETS`) —
+and only rows facing out:
+
+```
+gross outflow   231,372.00     ← what "every debit" would have printed
+cash expenses    31,372.00     ← Operating Expenses + Provider Charges + Payments & Bills
+```
+
+- **It follows the filters, and it covers all of them.** Computed over the *filtered
+  population*, never the page: page 1 and page 2 both read `31,372.00` while showing five
+  different rows each; a search matching nothing reads `0.00`; and filtering to **Owner
+  Capital** — three rows summing **₱531,827.00** — reads **`0.00`**.
+- **It is placed in the Amount column's footer**, not above the table: a `<tfoot>` of
+  `colSpan 7` + Amount + `colSpan 2` across the ten columns. A figure read under a column is
+  read as that column's sum, which is what it is. The definition and the scope are printed
+  beside it, because a total a reader cannot account for is a number they must take on trust.
+- **It is pure** — `cashExpenseTotal` does no network and no database work, so the endpoint
+  and its test run the same function (AGENTS.md architecture rule 1).
+
+**It also settled the drawer.** The page warned that *Cash on hand* and *Expected now*
+"differ by ₱31,372.00" — the very figure in the footer. The cash account's complete ledger:
+
+```
+seq  entry              amount      balance_after
+  1  Owner funding     200,000.00   200,000.00     #254
+  2  Owner return      −200,000.00        0.00     #255
+  3  Owner funding     131,827.00   131,827.00     #256 — the counted float
+  4–20  17 expenses    − 31,372.00   100,455.00     the footer total
+```
+
+`131,827 − 31,372 = 100,455`, and the seventeen rows sum to exactly **31,372.00**, matching
+the statement's `operating_expenses: 31372, count 17`. **Nothing is missing:** the operator
+counted ₱131,827 at shift open, ₱31,372 has since been paid out of it, and the books read
+₱100,455. The "difference" the page displays *is* the expense total.
+
+What remains is labelling, not money: *Expected now* still shows the raw count rather than
+the count net of movements, which is why the two readings differ at all. That belongs to the
+drawer-window backlog, not to a reconciliation.
