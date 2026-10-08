@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
 import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote, paymentMethodCell } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
-import { denomQty, tallyCents, tallyUsed } from '../lib/tally';
+import { denomQty, tallyCents, tallyUsed, denomSubtotalPesos, tallyPesos } from '../lib/tally';
 import {
   fetchCashRecords, downloadCashRecordsCsv,
   type CashRecord, type CashRecordClass, type CashRecordPage,
@@ -247,10 +247,10 @@ function TallySheet(props: {
   shiftDate: string;
   denoms: { label: string; cents: number }[];
   counts: Record<string, string>;
-  total: number;
+  totalPesos: number;
   printedAt: string;
 }) {
-  const { branchName, shiftDate, denoms, counts, total, printedAt } = props;
+  const { branchName, shiftDate, denoms, counts, totalPesos, printedAt } = props;
   const blank = '________';
 
   const cell = (value: string) => (
@@ -281,14 +281,14 @@ function TallySheet(props: {
               <tr key={d.label}>
                 <td className="border border-black px-3 py-1.5">₱{d.label}</td>
                 {cell(counted ? String(qty) : blank)}
-                {cell(counted ? formatCurrency(money(qty * d.cents)) : blank)}
+                {cell(counted ? formatCurrency(denomSubtotalPesos(d, qty)) : blank)}
               </tr>
             );
           })}
           <tr>
             <td className="border border-black px-3 py-1.5 font-semibold">Total</td>
             {cell('')}
-            {cell(total > 0 ? formatCurrency(money(total)) : blank)}
+            {cell(totalPesos > 0 ? formatCurrency(totalPesos) : blank)}
           </tr>
         </tbody>
       </table>
@@ -2127,7 +2127,7 @@ export default function CashManagement() {
                               <div key={d.label} className="flex items-center gap-3 px-3 py-1.5">
                                 <span className="w-14 shrink-0 tabular-nums text-gray-700">₱{d.label}</span>
                                 <span className="flex-1 text-right tabular-nums text-xs text-gray-400">
-                                  {qty > 0 ? formatCurrency(money(qty * d.cents)) : ''}
+                                  {qty > 0 ? formatCurrency(denomSubtotalPesos(d, qty)) : ''}
                                 </span>
                                 <input
                                   className="w-16 rounded border border-gray-300 px-2 py-1 text-right tabular-nums"
@@ -2147,7 +2147,7 @@ export default function CashManagement() {
                           <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 text-sm">
                             <span className="font-medium">Tally</span>
                             <span className="font-semibold tabular-nums">
-                              {formatCurrency(money(denomTotalCents(shiftClose.denoms)))}
+                              {formatCurrency(tallyPesos(denominations, shiftClose.denoms))}
                             </span>
                           </div>
                         </div>
@@ -2214,7 +2214,7 @@ export default function CashManagement() {
 
                     <div className="flex items-center justify-between rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm">
                       <span className="font-medium text-gray-700">Counted closing cash</span>
-                      <span className="font-semibold tabular-nums">{formatCurrency(money(countedCents))}</span>
+                      <span className="font-semibold tabular-nums">{formatCurrency(countedCents / 100)}</span>
                     </div>
 
                     <div className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm">
@@ -2293,7 +2293,7 @@ export default function CashManagement() {
         shiftDate={shiftClose.shift.shift_date}
         denoms={denominations}
         counts={shiftClose.denoms}
-        total={denomTotalCents(shiftClose.denoms)}
+        totalPesos={tallyPesos(denominations, shiftClose.denoms)}
         printedAt={`${dateKeyLabel(manilaDateValue())} ${manilaTimeLabel(new Date())}`}
       />
     )}

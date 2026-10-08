@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { denomQty, tallyCents, tallyUsed } from './tally';
+import { denomQty, tallyCents, tallyUsed, denomSubtotalPesos, tallyPesos } from './tally';
 import type { Denomination } from './tally';
 
 const DENOMS: Denomination[] = [
@@ -52,5 +52,21 @@ describe('tallyUsed', () => {
 
   it('lets one piece make the grid the count', () => {
     expect(tallyUsed(DENOMS, { '1': '1' })).toBe(true);
+  });
+});
+
+describe('the display unit', () => {
+  it('reports a hundred notes as the hundred thousand pesos they are', () => {
+    // The arithmetic is centavos; the screen is pesos. Getting this wrong by a
+    // factor of a hundred puts 10,040,000.00 in front of an operator counting
+    // 100,400.00, and every figure beside it would look wrong without any of
+    // them being the one that is.
+    expect(tallyCents(DENOMS, { '1000': '100', '100': '4' })).toBe(10_040_000);
+    expect(tallyPesos(DENOMS, { '1000': '100', '100': '4' })).toBe(100_400);
+  });
+
+  it('prints one quarter as the fraction of a peso it is', () => {
+    expect(denomSubtotalPesos({ label: '0.25', cents: 25 }, 4)).toBe(1);
+    expect(denomSubtotalPesos({ label: '1000', cents: 100_000 }, 3)).toBe(3000);
   });
 });

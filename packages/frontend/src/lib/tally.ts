@@ -38,3 +38,19 @@ export function tallyCents(denominations: Denomination[], denoms: Record<string,
 export function tallyUsed(denominations: Denomination[], denoms: Record<string, string>): boolean {
   return denominations.some((d) => denomQty(denoms, d.label) > 0);
 }
+
+/**
+ * One denomination's line, in pesos — the unit it is printed in.
+ *
+ * The arithmetic above stays in centavos and this is the only place that
+ * divides, so a display that reads ten times too large cannot be produced by
+ * feeding centavos to a helper whose name does not say what it holds.
+ */
+export function denomSubtotalPesos(denomination: Denomination, quantity: number): number {
+  return (denomination.cents * quantity) / 100;
+}
+
+/** What a tally adds up to, in pesos. */
+export function tallyPesos(denominations: Denomination[], denoms: Record<string, string>): number {
+  return tallyCents(denominations, denoms) / 100;
+}
