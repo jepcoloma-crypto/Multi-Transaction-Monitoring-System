@@ -1392,3 +1392,113 @@ arrived in migration 036, after the rows were written. Forward of this, the form
 cash movement without a method, so new rows do reach the drawer — but only when money was
 physically handed over, which is the point: a GCash or bank movement landing in a wallet
 never passed through the drawer, and giving it a leg would count the same peso twice.
+
+---
+
+## 25. A count that cannot be gamed, and a discrepancy that cannot be silent
+
+Three of the four things §14 promised were missing in practice. None of them move money;
+every one of them writes a count or a fact about a count (D14 holds throughout).
+
+### D30 — the close is two steps, and the first one knows nothing
+
+The close dialog showed **Expected closing**, **Cash in since**, **Cash out since** and
+**Drawer on the books** above the count field, and computed **Difference** the moment a digit
+was typed. The exploit needed no malice: enter `0`, read the target, enter the target. A count
+whose answer is on screen before the count is taken is not a control, and nothing in this
+document had ever discussed it.
+
+It is now two steps:
+
+| | shows | does |
+|---|---|---|
+| **Count** | the denomination grid and the total. Nothing else | counts |
+| **Review** | opening, cash in, cash out, expected, difference, drawer on the books | compares, requires a reason, closes |
+
+Opening float and the two movement figures go too, not only the expected line — the three of
+them *are* the expected figure, so leaving them would be the same leak wearing a different
+label.
+
+**"Check the count" is one-way.** It writes the count in and reveals the reconciliation in the
+same instant, and there is no Back, because Back is the loophole. Cancel still exists; it
+abandons the close entirely rather than returning to an edited count.
+
+The tally sheet replaced the pre-count print for the same reason. The count sheet carries
+Expected closing and was printed *before* the count, which handed the answer over on paper as
+readily as on screen. `TallySheet` — denomination rows, quantity, subtotal, signatures, and no
+financial figure anywhere — is what the counting step prints now.
+
+**Stated limitation.** `live.expected` is still in `GET /cash-management/shifts` and the
+*Expected Now* card still shows it, so somebody determined can read the answer before they
+begin. Closing that would mean withholding the figure the page exists to display and D16
+requires for its cross-check. What this removes is the ritual handing you the answer while
+you are counting, which is the anchoring the count was always meant to prevent.
+
+**The count is a tally.** Ten denominations — 1000, 500, 200, 100, 50, 20, 10, 5, 1, 0.25 —
+entered as quantities and summed in **centavos**, because one of them is ₱0.25 and has no exact
+binary float. A tally that drifts by a fraction of a centavo cannot be reconciled against a
+count that does not, and a mismatch the operator cannot explain is how a control becomes
+noise.
+
+| | |
+|---|---|
+| grid entered | the total is derived and the field becomes read-only — the grid *is* the count |
+| grid left empty | the total is typed, as before |
+| either way | the pair is checked server-side: `The denominations add to 500.00, which is 50.00 short of the 550.00 declared` |
+| stored in | `shifts.count_detail` (jsonb), only the quantities actually entered |
+
+An empty grid stores nothing rather than a row of zeros, so a hand-typed total leaves behind
+no claim that it was tallied. The vocabulary rides on `GET /cash-management/shifts` instead of
+being copied into the client: a reason list the server would refuse is worse than no list at
+all, and one kept in two places is one kept badly.
+
+### D31 — a shift that differs must say why, in words a report can count
+
+D14 says a discrepancy is *an event needing investigation, not a balance to be adjusted
+away*. `notes` was optional, so a shift could close ₱5,000 short with nothing written, and the
+investigation left no trace anybody could find.
+
+`variance_reason` now fills from a closed list: **recounted**, **a movement was never
+recorded**, **cash left the drawer without a record**, **change or tender handled outside the
+system**, or **other** — and *other* is accepted only alongside notes, so the catch-all still
+has to say something. A closed list rather than free text because the answer is worth
+counting: five shifts short under five different labels is a pattern, and free text never
+aggregates.
+
+**The rule is a database constraint, not a route check.** Migration 040 adds
+
+```sql
+CHECK (status = 'open' OR variance = 0 OR variance_reason IS NOT NULL)
+```
+
+A rule that lives only in application code is one refactor away from being unenforced, and
+this is the rule the whole design rests on. Both shifts closed to date balanced exactly, so
+no existing row is invalidated.
+
+A balanced shift stores no reason. A reason beside a zero variance would read as an incident
+nobody had.
+
+### D32 — a variance stays on the list until somebody has answered for it
+
+D14 promised an investigation. Nothing carried one forward: a shortage recorded at close
+disappeared the moment the next shift opened, which is the same as never having been
+recorded at all.
+
+`variance_resolved_at` / `variance_resolved_by` close the loop, and the Cash Management page
+lists every closed shift with a non-zero variance that carries neither. Each entry shows the
+branch and day, expected against counted, who closed it, the reason and the notes — and an
+administrator marks it investigated.
+
+**These are the only columns here written after the shift locks**, deliberately. An enquiry
+into a shortage is a fact about the enquiry, not a correction of the count: `counted_closing`,
+`expected_closing` and `variance` are untouched by it, and no balance and no ledger row is
+involved. The database holds that apart — resolution is accepted only for a closed shift that
+actually differed, and the two resolution columns are set together or not at all, so a
+variance cannot look answered while its author is missing.
+
+**Administrator-only**, for the reason a reconciliation adjustment is: the shortage happened
+under whoever closed the shift, and they are not the person who gets to say it has been dealt
+with.
+
+What still does not happen, on purpose: nothing writes off the amount. A resolved variance is
+a shortage somebody has explained, not a shortage that stopped existing.

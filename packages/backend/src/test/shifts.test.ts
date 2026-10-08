@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expectedClosing, netMovement, classifyVariance, VARIANCE_LABELS } from '../services/shifts';
+import { expectedClosing, netMovement, classifyVariance, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
 import type { ShiftMovement, VarianceStatus } from '../services/shifts';
 
 const inCash = (amount: string | number): ShiftMovement => ({ entry_type: 'credit', amount });
@@ -78,4 +78,75 @@ test('the shift always reports its own counted float, not a balance read back fr
 
   assert.equal(report.openingFloat, 7500.55);
   assert.equal(report.expected, 7500.55);
+});
+
+test('a tally is added in centavos so a column of twenty-five centavo coins cannot drift', () => {
+  const detail = { '1000': 3, '50': 2, '0.25': 4 };
+
+  assert.equal(countDetailCents(detail), 300_000 + 10_000 + 100);
+  assert.equal(countDetailError(detail, 3101), null);
+});
+
+test('a breakdown that disagrees with the declared count is refused, and says by how much', () => {
+  const detail = { '100': 5 };
+
+  assert.equal(countDetailError(detail, '450'), 'The denominations add to 500.00, which is 50.00 more than the 450.00 declared');
+  assert.equal(countDetailError(detail, '550'), 'The denominations add to 500.00, which is 50.00 short of the 550.00 declared');
+});
+
+test('a total typed by hand, with no breakdown behind it, is not an error', () => {
+  // Every shift recorded before the tally existed has to keep closing, and
+  // counting a total without enumerating notes is still a count.
+  assert.equal(countDetailError(null, '100455'), null);
+  assert.equal(countDetailError(undefined, '100455'), null);
+  assert.equal(countDetailError({}, '100455'), null);
+  assert.equal(countDetailError({ '100': 0 }, '100455'), null);
+});
+
+test('a note this counter does not track cannot enter a tally silently', () => {
+  assert.match(countDetailError({ '3': 1 }, '3') ?? '', /is not a note or coin/);
+  assert.match(countDetailError({ '100': 1.5 }, '150') ?? '', /whole number/);
+});
+
+test('only the counts that were actually entered are stored', () => {
+  assert.deepEqual(normalizeCountDetail({ '1000': 2, '500': 0, '20': '', '3': 4 }), { '1000': 2 });
+  assert.equal(normalizeCountDetail({ '1000': 0 }), null);
+  assert.equal(normalizeCountDetail('1000'), null);
+});
+
+test('a shift that balanced owes no explanation and is never asked for one', () => {
+  assert.equal(varianceReasonError(0, undefined, undefined), null);
+  assert.equal(varianceReasonError(0, 'made-up', ''), null);
+});
+
+test('a shift that differs from the expected count must say why', () => {
+  assert.match(varianceReasonError(-50, '', '') ?? '', /must say why/);
+  assert.match(varianceReasonError(-50, undefined, '') ?? '', /must say why/);
+  assert.match(varianceReasonError(50, 'made-up', '') ?? '', /not a recognised reason/);
+  assert.equal(varianceReasonError(-50, 'recount', ''), null);
+});
+
+test('half a peso is a variance; so is a fraction of a centavo', () => {
+  assert.match(varianceReasonError(0.01, '', '') ?? '', /must say why/);
+});
+
+test('the catch-all reason cannot stand in for saying what happened', () => {
+  assert.match(varianceReasonError(-1, 'other', '   ') ?? '', /needs the notes/);
+  assert.equal(varianceReasonError(-1, 'other', 'Till was short a twenty at lunch'), null);
+});
+
+test('the denominations are the notes a counter here would actually be handed', () => {
+  assert.deepEqual(
+    DENOMINATIONS.map((d) => d.label),
+    ['1000', '500', '200', '100', '50', '20', '10', '5', '1', '0.25'],
+  );
+  for (const denomination of DENOMINATIONS) {
+    assert.equal(countDetailCents({ [denomination.label]: 1 }), denomination.cents);
+  }
+});
+
+test('every reason the screen offers is one the server would accept', () => {
+  for (const key of Object.keys(VARIANCE_REASONS)) {
+    assert.equal(varianceReasonError(-1, key, key === 'other' ? 'stated' : ''), null, key);
+  }
 });

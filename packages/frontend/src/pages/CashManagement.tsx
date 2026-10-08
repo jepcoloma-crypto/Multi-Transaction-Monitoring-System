@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
 import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote, paymentMethodCell } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
+import { denomQty, tallyCents, tallyUsed } from '../lib/tally';
 import {
   fetchCashRecords, downloadCashRecordsCsv,
   type CashRecord, type CashRecordClass, type CashRecordPage,
@@ -66,6 +67,9 @@ interface Shift {
   opened_by_username: string | null;
   closed_by_username: string | null;
   notes: string | null;
+  count_detail: Record<string, number> | null;
+  variance_reason: string | null;
+  variance_resolved_at: string | null;
   live: {
     movementCount: number;
     cashIn: number;
@@ -81,6 +85,24 @@ interface ShiftResult extends Shift {
   varianceLabel?: 'BALANCED' | 'OVER' | 'SHORT';
   drawerBalance?: number;
   drawerDifference?: number;
+}
+
+// A shift that closed short or over and nobody has answered for yet. Served by
+// `GET /cash-management/variances` — the list D14 implies when it calls a
+// discrepancy an event needing investigation.
+interface VarianceRow {
+  id: string;
+  branch_id: string;
+  branch_code: string;
+  branch_name: string;
+  shift_date: string;
+  variance: number | string;
+  counted_closing: number | string;
+  expected_closing: number | string;
+  variance_reason: string | null;
+  notes: string | null;
+  closed_at: string;
+  closed_by_username: string | null;
 }
 
 // One cash-account ledger row inside a shift's window — the rows that produced
@@ -149,11 +171,16 @@ const emptyForm = {
   paymentMethod: 'cash',
 };
 
-// The count sheet is the one thing here that leaves the screen: it is counted
-// against with a pen before the close and filed after it. It is rendered
-// outside the page root because `window.print()` prints the document rather
-// than a subtree — the page takes `print:hidden` for the frame a sheet is up,
+// The count sheet is the one thing here that leaves the screen: it is filed
+// after the close as the record of what was counted. It is rendered outside
+// the page root because `window.print()` prints the document rather than a
+// subtree — the page takes `print:hidden` for the frame a sheet is up,
 // leaving this block as all that is on the paper.
+//
+// It is printed from the review step and never from the counting step,
+// because it carries the expected figure: shown before a count is taken it
+// would put the answer in the counter's hand, which is the whole thing the
+// blind count exists to prevent. The counting step prints TallySheet instead.
 function ShiftCountSheet(props: {
   branchName: string;
   shiftDate: string;
@@ -170,8 +197,8 @@ function ShiftCountSheet(props: {
 }) {
   const { branchName, shiftDate, openedAt, openingFloat, cashIn, cashOut, expected, counted, variance, status, drawerOnBooks, printedAt } = props;
 
-  // Underscores rather than a dash: this half is written on by hand before the
-  // figures exist, and a printed "—" reads as a figure of zero.
+  // Underscores rather than a dash: a blank cell is written on by hand, and a
+  // printed "—" reads as a figure of zero.
   const blank = '________________';
   const row = (label: string, value: string, emphasis = false) => (
     <div className={`flex justify-between gap-8 px-3 py-1.5 ${emphasis ? 'bg-gray-100 font-semibold' : ''}`}>
@@ -200,6 +227,71 @@ function ShiftCountSheet(props: {
         {status && row('Result', status, true)}
         {drawerOnBooks !== undefined && row('Drawer on the books', formatCurrency(drawerOnBooks))}
       </div>
+
+      <div className="mt-12 grid grid-cols-2 gap-12 text-xs">
+        <div className="border-t border-black pt-1">Counted by</div>
+        <div className="border-t border-black pt-1">Date / time</div>
+      </div>
+    </div>
+  );
+}
+
+// The pen-and-paper half of the count: what goes in the drawer, counted note
+// by note. It carries no expected figure and no drawer balance, which is
+// exactly why it is the sheet the counting step may print — the sheet that
+// could answer the question for the counter is the one that must not be in
+// the room yet. Blank cells are for the pen; whatever is already keyed in
+// prints with it.
+function TallySheet(props: {
+  branchName: string;
+  shiftDate: string;
+  denoms: { label: string; cents: number }[];
+  counts: Record<string, string>;
+  total: number;
+  printedAt: string;
+}) {
+  const { branchName, shiftDate, denoms, counts, total, printedAt } = props;
+  const blank = '________';
+
+  const cell = (value: string) => (
+    <td className="border border-black px-3 py-1.5 text-right font-mono">{value}</td>
+  );
+
+  return (
+    <div className="hidden print:block bg-white p-10 text-sm text-black">
+      <div className="border-b-2 border-black pb-3">
+        <h1 className="text-lg font-bold uppercase tracking-wide">Drawer tally sheet</h1>
+        <p className="mt-1">{branchName} · {dateKeyLabel(shiftDate)}</p>
+        <p className="text-xs text-gray-700">printed {printedAt}</p>
+      </div>
+
+      <table className="mt-4 w-full border-collapse text-sm">
+        <thead>
+          <tr>
+            <th className="border border-black px-3 py-1.5 text-left">Denomination</th>
+            <th className="border border-black px-3 py-1.5 text-right">Quantity</th>
+            <th className="border border-black px-3 py-1.5 text-right">Subtotal</th>
+          </tr>
+        </thead>
+        <tbody>
+          {denoms.map((d) => {
+            const qty = parseInt(counts[d.label] ?? '', 10);
+            const counted = Number.isFinite(qty) && qty > 0;
+            return (
+              <tr key={d.label}>
+                <td className="border border-black px-3 py-1.5">₱{d.label}</td>
+                {cell(counted ? String(qty) : blank)}
+                {cell(counted ? formatCurrency(money(qty * d.cents)) : blank)}
+              </tr>
+            );
+          })}
+          <tr>
+            <td className="border border-black px-3 py-1.5 font-semibold">Total</td>
+            {cell('')}
+            {cell(total > 0 ? formatCurrency(money(total)) : blank)}
+          </tr>
+        </tbody>
+      </table>
 
       <div className="mt-12 grid grid-cols-2 gap-12 text-xs">
         <div className="border-t border-black pt-1">Counted by</div>
@@ -275,13 +367,35 @@ export default function CashManagement() {
   const [loadingShifts, setLoadingShifts] = useState(true);
   const [shiftError, setShiftError] = useState('');
   const [shiftOpen, setShiftOpen] = useState<{ branchId: string; openingFloat: string; booksBalance: number; shiftDate: string } | null>(null);
-  const [shiftClose, setShiftClose] = useState<{ shift: Shift; countedClosing: string; notes: string } | null>(null);
+  // `step` is the count's integrity: until it flips to 'review' the dialog
+  // holds nothing the counter could anchor on. Expected, difference and the
+  // drawer's books balance are all in `shift`, but none of them are rendered
+  // in 'count', and pressing "Check the count" moves it forward for good — the
+  // figure you revealed is the figure you close on.
+  const [shiftClose, setShiftClose] = useState<{
+    shift: Shift;
+    step: 'count' | 'review';
+    countedClosing: string;
+    denoms: Record<string, string>;
+    varianceReason: string;
+    notes: string;
+  } | null>(null);
   const [lastClose, setLastClose] = useState<ShiftResult | null>(null);
+
+  // Served by GET /cash-management/shifts rather than copied into this file: a
+  // reason list the server would refuse is worse than no list at all, and one
+  // kept in two places is one kept badly. Both arrive before the shift cards
+  // render, so the dialog can never open without them.
+  const [denominations, setDenominations] = useState<{ label: string; cents: number }[]>([]);
+  const [varianceReasons, setVarianceReasons] = useState<Record<string, string>>({});
+
+  const [variances, setVariances] = useState<VarianceRow[]>([]);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
 
   // Which sheet, if any, is on the paper. `window.print()` prints the whole
   // document, so the sheet has to be in it for one frame and then gone again —
   // left standing it would ride along on the next print, wanted or not.
-  const [printSheet, setPrintSheet] = useState<'count' | 'result' | null>(null);
+  const [printSheet, setPrintSheet] = useState<'tally' | 'count' | 'result' | null>(null);
   useEffect(() => {
     if (!printSheet) return;
     const frame = requestAnimationFrame(() => {
@@ -375,11 +489,16 @@ export default function CashManagement() {
   const loadShifts = useCallback(async () => {
     setLoadingShifts(true);
     try {
-      const value = await api.get<{ shifts: Shift[]; drawers: { branchId: string; balance: number }[] }>(
-        '/cash-management/shifts'
-      );
+      const value = await api.get<{
+        shifts: Shift[];
+        drawers: { branchId: string; balance: number }[];
+        denominations?: { label: string; cents: number }[];
+        varianceReasons?: Record<string, string>;
+      }>('/cash-management/shifts');
       setShifts(value.shifts || []);
       setDrawers(value.drawers || []);
+      if (value.denominations?.length) setDenominations(value.denominations);
+      if (value.varianceReasons) setVarianceReasons(value.varianceReasons);
       setShiftError('');
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Could not load shift status';
@@ -397,6 +516,16 @@ export default function CashManagement() {
       setDrawers([]);
     } finally {
       setLoadingShifts(false);
+    }
+    // Deliberately outside the try above: an older backend that has no
+    // /variances must not take the shift panel down with it, and an empty list
+    // is the honest answer to "could not read them". It refetches on the next
+    // load, so a failure costs one blank panel rather than the shift view.
+    try {
+      const rows = await api.get<VarianceRow[]>('/cash-management/variances');
+      setVariances(Array.isArray(rows) ? rows : []);
+    } catch {
+      setVariances([]);
     }
   }, []);
 
@@ -489,9 +618,40 @@ export default function CashManagement() {
     }
   };
 
+  // The grid is the count: its total becomes the figure the shift closes on,
+  // so the two cannot disagree. The server still checks the pair, because a
+  // request that did not come from this screen might.
+  const denomTotalCents = (denoms: Record<string, string>): number => tallyCents(denominations, denoms);
+
+  const gridUsed = (denoms: Record<string, string>): boolean => tallyUsed(denominations, denoms);
+
+  // The one-way step: the count is committed, and the reconciliation appears
+  // with it. There is no way back because "back" is the loophole — read the
+  // expected figure, then count to it. The operator can still abandon the
+  // close entirely and start again, which is why the expected figure is not
+  // the thing this screen relies on; the ritual is, and it no longer hands
+  // anyone the answer while they are counting.
+  const checkCount = () => {
+    if (!shiftClose) return;
+    const text = gridUsed(shiftClose.denoms)
+      ? (denomTotalCents(shiftClose.denoms) / 100).toFixed(2)
+      : shiftClose.countedClosing.trim();
+    const parsed = parseFloat(text);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      setShiftError('Enter the cash you actually counted in the drawer');
+      return;
+    }
+    if (!shiftClose.shift.live) {
+      setShiftError('This shift has no expected figure to count against yet');
+      return;
+    }
+    setShiftError('');
+    setShiftClose((s) => (s ? { ...s, countedClosing: text, step: 'review' } : s));
+  };
+
   const submitShiftClose = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!shiftClose) return;
+    if (!shiftClose || shiftClose.step !== 'review') return;
     const countedClosing = parseFloat(shiftClose.countedClosing);
     if (!Number.isFinite(countedClosing) || countedClosing < 0) {
       setShiftError('Enter the cash you actually counted in the drawer');
@@ -502,6 +662,8 @@ export default function CashManagement() {
     try {
       const closed = await api.post<ShiftResult>(`/cash-management/shifts/${shiftClose.shift.id}/close`, {
         countedClosing,
+        countDetail: gridUsed(shiftClose.denoms) ? shiftClose.denoms : undefined,
+        varianceReason: shiftClose.varianceReason || undefined,
         notes: shiftClose.notes || undefined,
       });
       setShiftClose(null);
@@ -511,6 +673,25 @@ export default function CashManagement() {
       setShiftError(err instanceof Error ? err.message : 'Could not close the shift');
     } finally {
       setSavingShift(false);
+    }
+  };
+
+  const resolveVariance = async (id: string) => {
+    const confirmed = window.confirm(
+      'Mark this variance as investigated?\n\n' +
+        'This records that somebody looked into it, and when. It does not change the count, ' +
+        'the expected figure, or any balance.',
+    );
+    if (!confirmed) return;
+    setResolvingId(id);
+    setShiftError('');
+    try {
+      await api.post(`/cash-management/shifts/${id}/variance/resolve`, {});
+      await loadShifts();
+    } catch (err) {
+      setShiftError(err instanceof Error ? err.message : 'Could not close the variance');
+    } finally {
+      setResolvingId(null);
     }
   };
 
@@ -1070,6 +1251,63 @@ export default function CashManagement() {
               </div>
             )}
 
+            {variances.length > 0 && (
+              <div className="mt-3 rounded-lg border border-red-300 bg-red-50 p-4 text-sm">
+                <p className="font-semibold text-red-800">
+                  {variances.length} {variances.length === 1 ? 'shift closed' : 'shifts closed'} short or
+                  over, and nobody has answered for it
+                </p>
+                <p className="mt-1 text-xs text-red-700">
+                  A discrepancy is an event to investigate, not a balance to adjust. These stay listed
+                  until somebody has looked into one — a later shift balancing does not settle it.
+                </p>
+                <ul className="mt-3 space-y-3">
+                  {variances.map((v) => {
+                    const cents = Math.round(money(v.variance) * 100);
+                    const over = cents > 0;
+                    return (
+                      <li key={v.id} className="rounded border border-red-200 bg-white p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-medium">
+                            {v.branch_name} · {dateKeyLabel(v.shift_date)}
+                          </span>
+                          <span className={`badge-${over ? 'yellow' : 'red'}`}>
+                            {over ? 'OVER' : 'SHORT'} {formatCurrency(money(v.variance))}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-gray-600">
+                          Expected {formatCurrency(money(v.expected_closing))} · counted{' '}
+                          {formatCurrency(money(v.counted_closing))}
+                          {v.closed_by_username ? ` · closed by ${v.closed_by_username}` : ''}
+                        </p>
+                        <p className="mt-1 text-xs text-gray-700">
+                          <span className="text-gray-500">Why: </span>
+                          {v.variance_reason
+                            ? varianceReasons[v.variance_reason] ?? v.variance_reason
+                            : 'no reason was recorded'}
+                          {v.notes ? ` · ${v.notes}` : ''}
+                        </p>
+                        {isAdmin ? (
+                          <button
+                            type="button"
+                            className="btn-secondary mt-2"
+                            disabled={resolvingId === v.id}
+                            onClick={() => void resolveVariance(v.id)}
+                          >
+                            {resolvingId === v.id ? 'Recording…' : 'Mark as investigated'}
+                          </button>
+                        ) : (
+                          <p className="mt-2 text-xs text-gray-500">
+                            An administrator records the outcome.
+                          </p>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
             {loadingShifts ? (
               <p className="text-sm text-gray-500 mt-3">Loading shift status…</p>
             ) : branches.length === 0 ? (
@@ -1153,7 +1391,7 @@ export default function CashManagement() {
                           <button
                             type="button"
                             className="btn-secondary mt-3 w-full"
-                            onClick={() => { setLastClose(null); setShiftOpen(null); setShiftClose({ shift: open, countedClosing: '', notes: '' }); }}
+                            onClick={() => { setLastClose(null); setShiftOpen(null); setShiftClose({ shift: open, step: 'count', countedClosing: '', denoms: {}, varianceReason: '', notes: '' }); }}
                           >
                             Close shift
                           </button>
@@ -1833,92 +2071,212 @@ export default function CashManagement() {
 
       {shiftClose && (() => {
         const live = shiftClose.shift.live;
-        const counted = Number(shiftClose.countedClosing);
-        const countedOk = shiftClose.countedClosing.trim() !== '' && Number.isFinite(counted);
-        const previewCents = live && countedOk
-          ? Math.round(Math.round(counted * 100) - Math.round(live.expected * 100))
-          : null;
+        const counting = shiftClose.step === 'count';
+        const countedNum = Number(shiftClose.countedClosing);
+        const countedOk = shiftClose.countedClosing.trim() !== '' && Number.isFinite(countedNum) && countedNum >= 0;
+        const countedCents = countedOk ? Math.round(countedNum * 100) : 0;
+        const usedGrid = gridUsed(shiftClose.denoms);
+        // Computed only on the review step, and only ever rendered there: in
+        // the counting step this dialog holds no figure the counter could
+        // count towards.
+        const previewCents = !counting && live ? countedCents - Math.round(live.expected * 100) : null;
+        const differed = previewCents !== null && previewCents !== 0;
+        const reasonKey = shiftClose.varianceReason;
+        const reasonNeedsNotes = reasonKey === 'other';
+        const reasonOk = !differed || (reasonKey !== '' && (!reasonNeedsNotes || shiftClose.notes.trim() !== ''));
 
         return (
           <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4">
             <div className="mx-auto mt-12 max-w-md bg-white rounded-xl shadow-xl border border-gray-200">
               <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
-                <h3 className="text-lg font-semibold">Close shift — {shiftClose.shift.branch_name}</h3>
+                <div>
+                  <h3 className="text-lg font-semibold">Close shift — {shiftClose.shift.branch_name}</h3>
+                  <p className="text-xs text-gray-500">
+                    {counting ? 'Count the drawer. Nothing about what should be in it is shown yet.' : 'Your count is locked. Check it before going on.'}
+                  </p>
+                </div>
                 <button type="button" onClick={() => setShiftClose(null)} aria-label="Close" className="text-gray-400 hover:text-gray-600">
                   <X className="w-5 h-5" />
                 </button>
               </div>
               <form onSubmit={submitShiftClose} className="p-5 space-y-4">
-                <div className="rounded-lg border border-gray-200 divide-y divide-gray-100 text-sm">
-                  <div className="flex justify-between gap-3 px-3 py-2">
-                    <span className="text-gray-500">Opening count</span>
-                    <span className="font-medium">{formatCurrency(money(shiftClose.shift.opening_float))}</span>
-                  </div>
-                  <div className="flex justify-between gap-3 px-3 py-2">
-                    <span className="text-gray-500">Cash in since</span>
-                    <span className="font-medium text-emerald-600">+{formatCurrency(live?.cashIn || 0)}</span>
-                  </div>
-                  <div className="flex justify-between gap-3 px-3 py-2">
-                    <span className="text-gray-500">Cash out since</span>
-                    <span className="font-medium text-red-600">−{formatCurrency(live?.cashOut || 0)}</span>
-                  </div>
-                  <div className="flex justify-between gap-3 px-3 py-2 bg-gray-50">
-                    <span className="text-gray-700 font-medium">Expected closing</span>
-                    <span className="font-semibold">{formatCurrency(live?.expected || 0)}</span>
-                  </div>
-                  <div className="flex justify-between gap-3 px-3 py-2">
-                    <span className="text-gray-500">Drawer on the books</span>
-                    <span className="font-medium">{formatCurrency(live?.drawerBalance || 0)}</span>
-                  </div>
-                </div>
+                {counting && (
+                  <>
+                    <div>
+                      <div className="flex items-end justify-between">
+                        <label className="form-label">Count by denomination</label>
+                        {usedGrid && (
+                          <button
+                            type="button"
+                            className="text-xs text-gray-500 underline hover:text-gray-700"
+                            onClick={() => setShiftClose((s) => s && { ...s, denoms: {} })}
+                          >
+                            Clear
+                          </button>
+                        )}
+                      </div>
+                      {denominations.length === 0 ? (
+                        <p className="text-xs text-gray-500">
+                          The note list has not loaded, so type the total below instead.
+                        </p>
+                      ) : (
+                        <div className="rounded-lg border border-gray-200 divide-y divide-gray-100 text-sm">
+                          {denominations.map((d) => {
+                            const qty = denomQty(shiftClose.denoms, d.label);
+                            return (
+                              <div key={d.label} className="flex items-center gap-3 px-3 py-1.5">
+                                <span className="w-14 shrink-0 tabular-nums text-gray-700">₱{d.label}</span>
+                                <span className="flex-1 text-right tabular-nums text-xs text-gray-400">
+                                  {qty > 0 ? formatCurrency(money(qty * d.cents)) : ''}
+                                </span>
+                                <input
+                                  className="w-16 rounded border border-gray-300 px-2 py-1 text-right tabular-nums"
+                                  inputMode="numeric"
+                                  placeholder="0"
+                                  aria-label={`How many ${d.label} pieces`}
+                                  value={shiftClose.denoms[d.label] ?? ''}
+                                  onChange={(e) =>
+                                    setShiftClose((s) =>
+                                      s && { ...s, denoms: { ...s.denoms, [d.label]: e.target.value.replace(/[^0-9]/g, '') } },
+                                    )
+                                  }
+                                />
+                              </div>
+                            );
+                          })}
+                          <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 text-sm">
+                            <span className="font-medium">Tally</span>
+                            <span className="font-semibold tabular-nums">
+                              {formatCurrency(money(denomTotalCents(shiftClose.denoms)))}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
 
-                <div>
-                  <label className="form-label">Counted closing cash</label>
-                  <input
-                    className="form-input"
-                    inputMode="decimal"
-                    autoFocus
-                    placeholder="0.00"
-                    value={shiftClose.countedClosing}
-                    onChange={(e) => setShiftClose((s) => s && { ...s, countedClosing: e.target.value })}
-                  />
-                </div>
+                    <div>
+                      <label className="form-label">Counted closing cash</label>
+                      <input
+                        className="form-input"
+                        inputMode="decimal"
+                        autoFocus
+                        placeholder="0.00"
+                        readOnly={usedGrid}
+                        value={usedGrid ? (denomTotalCents(shiftClose.denoms) / 100).toFixed(2) : shiftClose.countedClosing}
+                        onChange={(e) => setShiftClose((s) => s && { ...s, countedClosing: e.target.value })}
+                      />
+                      {usedGrid && (
+                        <p className="mt-1 text-xs text-gray-500">
+                          Taken from the tally. Clear the tally if you would rather type it.
+                        </p>
+                      )}
+                    </div>
 
-                <div className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm">
-                  <span className="text-gray-500">Difference</span>
-                  {previewCents === null ? (
-                    <span className="text-gray-400">Enter a count</span>
-                  ) : (
-                    <span className={`font-semibold ${previewCents === 0 ? 'text-emerald-600' : previewCents > 0 ? 'text-amber-600' : 'text-red-600'}`}>
-                      {formatCurrency(previewCents / 100)}
-                    </span>
-                  )}
-                </div>
+                    <div className="flex flex-wrap justify-end gap-3 pt-1">
+                      <button
+                        type="button"
+                        className="btn-secondary flex items-center gap-2"
+                        onClick={() => setPrintSheet('tally')}
+                      >
+                        <Printer className="w-4 h-4" />
+                        Print tally sheet
+                      </button>
+                      <button type="button" className="btn-secondary" onClick={() => setShiftClose(null)}>Cancel</button>
+                      <button type="button" className="btn-primary" onClick={checkCount}>Check the count</button>
+                    </div>
+                  </>
+                )}
 
-                <div>
-                  <label className="form-label">Notes (optional)</label>
-                  <textarea
-                    className="form-input"
-                    rows={2}
-                    value={shiftClose.notes}
-                    onChange={(e) => setShiftClose((s) => s && { ...s, notes: e.target.value })}
-                  />
-                </div>
+                {!counting && (
+                  <>
+                    <div className="rounded-lg border border-gray-200 divide-y divide-gray-100 text-sm">
+                      <div className="flex justify-between gap-3 px-3 py-2">
+                        <span className="text-gray-500">Opening count</span>
+                        <span className="font-medium">{formatCurrency(money(shiftClose.shift.opening_float))}</span>
+                      </div>
+                      <div className="flex justify-between gap-3 px-3 py-2">
+                        <span className="text-gray-500">Cash in since</span>
+                        <span className="font-medium text-emerald-600">+{formatCurrency(live?.cashIn || 0)}</span>
+                      </div>
+                      <div className="flex justify-between gap-3 px-3 py-2">
+                        <span className="text-gray-500">Cash out since</span>
+                        <span className="font-medium text-red-600">−{formatCurrency(live?.cashOut || 0)}</span>
+                      </div>
+                      <div className="flex justify-between gap-3 px-3 py-2 bg-gray-50">
+                        <span className="text-gray-700 font-medium">Expected closing</span>
+                        <span className="font-semibold">{formatCurrency(live?.expected || 0)}</span>
+                      </div>
+                      <div className="flex justify-between gap-3 px-3 py-2">
+                        <span className="text-gray-500">Drawer on the books</span>
+                        <span className="font-medium">{formatCurrency(live?.drawerBalance || 0)}</span>
+                      </div>
+                    </div>
 
-                <div className="flex justify-end gap-3 pt-1">
-                  <button
-                    type="button"
-                    className="btn-secondary flex items-center gap-2"
-                    onClick={() => setPrintSheet('count')}
-                  >
-                    <Printer className="w-4 h-4" />
-                    Print sheet
-                  </button>
-                  <button type="button" className="btn-secondary" onClick={() => setShiftClose(null)}>Cancel</button>
-                  <button type="submit" className="btn-primary" disabled={savingShift || !countedOk}>
-                    {savingShift ? 'Saving…' : 'Close shift'}
-                  </button>
-                </div>
+                    <div className="flex items-center justify-between rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm">
+                      <span className="font-medium text-gray-700">Counted closing cash</span>
+                      <span className="font-semibold tabular-nums">{formatCurrency(money(countedCents))}</span>
+                    </div>
+
+                    <div className="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm">
+                      <span className="text-gray-500">Difference</span>
+                      <span className={`font-semibold ${previewCents === 0 ? 'text-emerald-600' : previewCents! > 0 ? 'text-amber-600' : 'text-red-600'}`}>
+                        {formatCurrency((previewCents || 0) / 100)}
+                      </span>
+                    </div>
+
+                    {differed && (
+                      <div>
+                        <label className="form-label">
+                          Why does the count differ? <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          className="form-input"
+                          value={reasonKey}
+                          onChange={(e) => setShiftClose((s) => s && { ...s, varianceReason: e.target.value })}
+                        >
+                          <option value="">Choose a reason</option>
+                          {Object.entries(varianceReasons).map(([key, label]) => (
+                            <option key={key} value={key}>{label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="form-label">
+                        Notes{reasonNeedsNotes ? ' ' : ' (optional)'}
+                        {reasonNeedsNotes && <span className="text-red-500">*</span>}
+                      </label>
+                      <textarea
+                        className="form-input"
+                        rows={2}
+                        value={shiftClose.notes}
+                        onChange={(e) => setShiftClose((s) => s && { ...s, notes: e.target.value })}
+                      />
+                    </div>
+
+                    {differed && !reasonOk && (
+                      <p className="text-xs text-amber-700">
+                        A count that differs has to say why before this shift can close.
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap justify-end gap-3 pt-1">
+                      <button
+                        type="button"
+                        className="btn-secondary flex items-center gap-2"
+                        onClick={() => setPrintSheet('count')}
+                      >
+                        <Printer className="w-4 h-4" />
+                        Print sheet
+                      </button>
+                      <button type="button" className="btn-secondary" onClick={() => setShiftClose(null)}>Cancel</button>
+                      <button type="submit" className="btn-primary" disabled={savingShift || !countedOk || !reasonOk}>
+                        {savingShift ? 'Saving…' : 'Close shift'}
+                      </button>
+                    </div>
+                  </>
+                )}
               </form>
             </div>
           </div>
@@ -1929,21 +2287,39 @@ export default function CashManagement() {
     {/* Outside the page root deliberately — window.print() prints the document,
         and the root above carries print:hidden for exactly as long as one of
         these is mounted. */}
-    {printSheet === 'count' && shiftClose && (
-      <ShiftCountSheet
+    {printSheet === 'tally' && shiftClose && (
+      <TallySheet
         branchName={shiftClose.shift.branch_name}
         shiftDate={shiftClose.shift.shift_date}
-        openedAt={shiftClose.shift.opened_at}
-        openingFloat={money(shiftClose.shift.opening_float)}
-        cashIn={shiftClose.shift.live?.cashIn}
-        cashOut={shiftClose.shift.live?.cashOut}
-        expected={shiftClose.shift.live?.expected ?? 0}
-        counted={null}
-        variance={null}
-        drawerOnBooks={shiftClose.shift.live?.drawerBalance}
+        denoms={denominations}
+        counts={shiftClose.denoms}
+        total={denomTotalCents(shiftClose.denoms)}
         printedAt={`${dateKeyLabel(manilaDateValue())} ${manilaTimeLabel(new Date())}`}
       />
     )}
+
+    {printSheet === 'count' && shiftClose && (() => {
+      const expected = shiftClose.shift.live?.expected ?? 0;
+      const counted = Number(shiftClose.countedClosing);
+      const hasCount = shiftClose.countedClosing.trim() !== '' && Number.isFinite(counted);
+      const varianceCents = hasCount ? Math.round(counted * 100) - Math.round(expected * 100) : null;
+      return (
+        <ShiftCountSheet
+          branchName={shiftClose.shift.branch_name}
+          shiftDate={shiftClose.shift.shift_date}
+          openedAt={shiftClose.shift.opened_at}
+          openingFloat={money(shiftClose.shift.opening_float)}
+          cashIn={shiftClose.shift.live?.cashIn}
+          cashOut={shiftClose.shift.live?.cashOut}
+          expected={expected}
+          counted={hasCount ? counted : null}
+          variance={varianceCents === null ? null : varianceCents / 100}
+          status={varianceCents === null ? null : varianceCents === 0 ? 'BALANCED' : varianceCents > 0 ? 'OVER' : 'SHORT'}
+          drawerOnBooks={shiftClose.shift.live?.drawerBalance}
+          printedAt={`${dateKeyLabel(manilaDateValue())} ${manilaTimeLabel(new Date())}`}
+        />
+      );
+    })()}
 
     {printSheet === 'result' && lastClose && (
       <ShiftCountSheet

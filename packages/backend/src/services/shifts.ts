@@ -93,3 +93,126 @@ export function classifyVariance(
     status: variance === 0 ? 'balanced' : variance > 0 ? 'over' : 'short',
   };
 }
+
+// The denominations a counter here actually handles, largest first so the tally
+// reads the way cash comes out of a till. Values are held in centavos: a peso
+// of 0.25 has no exact binary float, and subtotals that drift cannot be
+// reconciled against a count that does not.
+export const DENOMINATIONS: readonly { label: string; cents: number }[] = [
+  { label: '1000', cents: 100_000 },
+  { label: '500', cents: 50_000 },
+  { label: '200', cents: 20_000 },
+  { label: '100', cents: 10_000 },
+  { label: '50', cents: 5_000 },
+  { label: '20', cents: 2_000 },
+  { label: '10', cents: 1_000 },
+  { label: '5', cents: 500 },
+  { label: '1', cents: 100 },
+  { label: '0.25', cents: 25 },
+];
+
+const DENOMINATION_CENTS = new Map(DENOMINATIONS.map((d) => [d.label, d.cents]));
+
+const pesos = (cents: number): string => money(cents).toFixed(2);
+
+/**
+ * Why a counted figure differs from the one the movements predict.
+ *
+ * A closed list rather than free text, because the answer is worth counting:
+ * five shifts short under five different labels is a pattern, and free text
+ * never aggregates. `other` is the escape hatch and is accepted only alongside
+ * notes, so the catch-all still has to say something.
+ */
+export const VARIANCE_REASONS: Record<string, string> = {
+  recount: 'Recounted - the first figure was wrong',
+  missing_movement: 'A movement was never recorded',
+  cash_paid_out: 'Cash left the drawer without a record',
+  tender_outside: 'Change or tender handled outside the system',
+  other: 'Something else, described in the notes',
+};
+
+/**
+ * Enforced here rather than only in the route because this is the rule the
+ * design rests on: a discrepancy that closes without a word is
+ * indistinguishable from a discrepancy nobody investigated (D14). A balanced
+ * shift owes no explanation and is never asked for one.
+ */
+export function varianceReasonError(variance: number, reason: unknown, notes: unknown): string | null {
+  if (toCents(variance) === 0) return null;
+
+  const key = typeof reason === 'string' ? reason.trim() : '';
+  if (!key) return 'A count that differs from the expected figure must say why it differs';
+  if (!Object.prototype.hasOwnProperty.call(VARIANCE_REASONS, key)) {
+    return `"${key}" is not a recognised reason for a variance`;
+  }
+  if (key === 'other' && !String(notes ?? '').trim()) {
+    return 'Choosing "something else" needs the notes to say what happened';
+  }
+  return null;
+}
+
+/** What the denomination grid adds up to, in centavos. */
+export function countDetailCents(detail: unknown): number {
+  if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return 0;
+  let cents = 0;
+  for (const [label, raw] of Object.entries(detail as Record<string, unknown>)) {
+    const denomination = DENOMINATION_CENTS.get(label);
+    if (denomination === undefined) continue;
+    const quantity = Number(raw);
+    if (!Number.isInteger(quantity) || quantity <= 0) continue;
+    cents += denomination * quantity;
+  }
+  return cents;
+}
+
+/**
+ * Check a breakdown against the total the shift is closing on.
+ *
+ * Null for a body that carries no breakdown at all: entering a total by hand
+ * is still a legitimate count, and every shift recorded before this feature
+ * exists has to keep closing. But once a breakdown is offered it must add up,
+ * because two different answers for one drawer is precisely the disagreement
+ * this module exists to surface rather than average away.
+ */
+export function countDetailError(detail: unknown, countedClosing: string | number): string | null {
+  if (detail === null || detail === undefined) return null;
+  if (typeof detail !== 'object' || Array.isArray(detail)) {
+    return 'The denomination count must be quantities keyed by denomination';
+  }
+
+  const entries = Object.entries(detail as Record<string, unknown>);
+  if (!entries.some(([, raw]) => Number(raw) > 0)) return null;
+
+  for (const [label, raw] of entries) {
+    if (!DENOMINATION_CENTS.has(label)) return `"${label}" is not a note or coin this counter tracks`;
+    const quantity = Number(raw);
+    if (!Number.isInteger(quantity) || quantity < 0) {
+      return `The count of ${label} must be a whole number of notes or coins`;
+    }
+  }
+
+  const entered = countDetailCents(detail);
+  const declared = toCents(countedClosing);
+  if (entered === declared) return null;
+
+  return entered < declared
+    ? `The denominations add to ${pesos(entered)}, which is ${pesos(declared - entered)} short of the ${pesos(declared)} declared`
+    : `The denominations add to ${pesos(entered)}, which is ${pesos(entered - declared)} more than the ${pesos(declared)} declared`;
+}
+
+/**
+ * The breakdown worth storing: only the quantities that were entered, keyed
+ * the way the grid labels them. An empty grid stores nothing rather than a row
+ * of zeros, so a hand-typed total leaves behind no claim that it was tallied.
+ */
+export function normalizeCountDetail(detail: unknown): Record<string, number> | null {
+  if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return null;
+  const stored: Record<string, number> = {};
+  for (const [label, raw] of Object.entries(detail as Record<string, unknown>)) {
+    const quantity = Number(raw);
+    if (Number.isInteger(quantity) && quantity > 0 && DENOMINATION_CENTS.has(label)) {
+      stored[label] = quantity;
+    }
+  }
+  return Object.keys(stored).length > 0 ? stored : null;
+}

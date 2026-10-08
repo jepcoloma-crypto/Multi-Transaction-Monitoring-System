@@ -5,7 +5,7 @@ import { createError } from '../middleware/error';
 import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
 import { drawerMovements, drawerBalance, drawerMovementRows } from '../services/drawerQuery';
-import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS } from '../services/shifts';
+import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
 import type { BranchBalance, CashBucket, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
@@ -411,7 +411,14 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
     // with it, and the cross-check would have nothing to catch (design D16).
     const drawers = drawerRows.map((row) => ({ branchId: row.branch_id, balance: num(row.balance) }));
 
-    res.json({ success: true, data: { shifts: data, drawers } });
+    // The vocabulary rides along with the shift data rather than being copied
+    // into the client: a reason list the server would reject is worse than no
+    // list at all, and one maintained in two places is a list maintained in
+    // one place badly.
+    res.json({
+      success: true,
+      data: { shifts: data, drawers, denominations: DENOMINATIONS, varianceReasons: VARIANCE_REASONS },
+    });
   } catch (error) {
     next(error);
   }
@@ -478,21 +485,37 @@ router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Re
     if (!Number.isFinite(countedClosing)) throw createError(400, 'Counted closing cash must be a number');
     if (countedClosing < 0) throw createError(400, 'Counted closing cash cannot be negative');
 
+    // Both checks run before anything is written, so a close that would have
+    // been refused leaves the shift open rather than half-recorded.
+    const countDetail = normalizeCountDetail(body.countDetail);
+    const detailProblem = countDetailError(body.countDetail, countedClosing);
+    if (detailProblem) throw createError(400, detailProblem);
+
     const movements = await drawerMovements(shift.branch_id, shift.opened_at, new Date());
     const report = classifyVariance(shift.opening_float, movements, countedClosing);
     const balance = await drawerBalance(shift.branch_id);
+
+    const notes = body.notes ? String(body.notes).trim() || null : null;
+    const reasonProblem = varianceReasonError(report.variance, body.varianceReason, notes);
+    if (reasonProblem) throw createError(400, reasonProblem);
+    // A balanced shift owes no explanation and stores none: a reason beside a
+    // zero variance would read as an incident nobody had.
+    const reason = report.status === 'balanced' ? null : String(body.varianceReason ?? '').trim();
 
     // Guarded on status so two people closing at once cannot both write: the
     // second finds no open row and is refused.
     const updated = await queryOne<any>(
       `UPDATE shifts
        SET status = 'closed', counted_closing = $1, expected_closing = $2, variance = $3,
-           closed_at = NOW(), closed_by = $4, notes = COALESCE($5, notes), updated_at = NOW()
-       WHERE id = $6 AND status = 'open'
+           closed_at = NOW(), closed_by = $4, notes = COALESCE($5, notes),
+           count_detail = $6, variance_reason = $7, updated_at = NOW()
+       WHERE id = $8 AND status = 'open'
        RETURNING *, shift_date::text AS shift_date`,
       [
         report.counted, report.expected, report.variance,
-        req.user!.userId, body.notes ? String(body.notes).trim() || null : null, shift.id,
+        req.user!.userId, notes,
+        countDetail === null ? null : JSON.stringify(countDetail),
+        reason, shift.id,
       ],
     );
     if (!updated) throw createError(409, 'This shift was already closed by someone else');
@@ -511,6 +534,82 @@ router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Re
         drawerDifference: round2(report.expected - balance),
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Shifts that closed short or over and nobody has answered for yet. D14 calls
+// a discrepancy an event needing investigation; this is the list of the ones
+// still waiting for it, so a shortage cannot quietly disappear into history
+// simply because a later shift balanced.
+router.get('/variances', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const conds: string[] = [`s.status = 'closed'`, `s.variance IS NOT NULL`, `s.variance <> 0`, `s.variance_resolved_at IS NULL`];
+    const params: any[] = [];
+    const scope = branchClause(req, 's', 'branches.read_all', 1, 'self');
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+    }
+
+    const rows = await query<any>(
+      `SELECT s.id, s.branch_id, s.shift_date::text AS shift_date, s.variance,
+              s.counted_closing, s.expected_closing, s.variance_reason, s.notes,
+              s.closed_at, b.code AS branch_code, b.name AS branch_name,
+              cu.username AS closed_by_username
+       FROM shifts s
+       JOIN branches b ON b.id = s.branch_id
+       LEFT JOIN users cu ON cu.id = s.closed_by
+       WHERE ${conds.join(' AND ')}
+       ORDER BY s.closed_at DESC
+       LIMIT 100`,
+      params,
+    );
+
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Recording that a variance has been looked into. It moves no money and
+// changes no count — the columns it touches are the only ones here that may be
+// written after the shift locks, because an enquiry into a shortage is a fact
+// about the enquiry rather than a correction of the drawer. Administrator-only
+// for the same reason a reconciliation adjustment is: the shortage happened
+// under whoever closed the shift, and they are not the one who gets to say it
+// has been dealt with.
+router.post('/shifts/:id/variance/resolve', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!(req.user!.roles || []).includes('administrator')) {
+      return next(createError(403, 'Only administrators can close a variance'));
+    }
+
+    const shift = await queryOne<any>(
+      `SELECT s.*, s.shift_date::text AS shift_date FROM shifts s WHERE s.id = $1`,
+      [req.params.id],
+    );
+    if (!shift) throw createError(404, 'Shift not found');
+    await assertShiftBranch(req, shift.branch_id, 'Shift not found');
+
+    if (shift.status !== 'closed') throw createError(400, 'This shift is still open, so it has no variance to close');
+    if (Number(shift.variance) === 0) throw createError(400, 'This shift balanced, so there is no variance to close');
+    if (shift.variance_resolved_at) throw createError(409, 'This variance has already been closed');
+
+    // Guarded on variance_resolved_at rather than on a status field: the row
+    // is otherwise immutable, and the second administrator to click finds no
+    // open variance rather than a second resolution to write.
+    const updated = await queryOne<any>(
+      `UPDATE shifts
+       SET variance_resolved_at = NOW(), variance_resolved_by = $1, updated_at = NOW()
+       WHERE id = $2 AND variance_resolved_at IS NULL
+       RETURNING *`,
+      [req.user!.userId, shift.id],
+    );
+    if (!updated) throw createError(409, 'This variance was already closed by someone else');
+
+    res.json({ success: true, data: { ...updated, resolved_by_username: req.user!.username } });
   } catch (error) {
     next(error);
   }
