@@ -198,6 +198,19 @@ export const paymentMethodLabel = (code: string | null | undefined): string => {
 };
 
 /**
+ * The method as a record displays it, naming an absence instead of hiding it.
+ *
+ * `paymentMethodLabel` stays blank on null because Accounts builds a sentence
+ * out of it — "Owner funding via GCash" must not become "Owner funding via"
+ * when a form field is empty. Here the absence *is* the information: 108
+ * historical cash movements predate the rule that made the column mandatory
+ * and were deliberately left unclassified rather than guessed at (D11), so an
+ * empty cell reads as a rendering bug where "Not recorded" reads as a fact.
+ */
+export const paymentMethodCell = (code: string | null | undefined): string =>
+  paymentMethodLabel(code) || 'Not recorded';
+
+/**
  * The note printed under the Cash on hand figure: which accounts it totals.
  *
  * The drawer is one number under two names — the account holding the cash and

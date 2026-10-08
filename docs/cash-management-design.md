@@ -1091,24 +1091,38 @@ operator through the UI rather than written by the agent. An earlier operator sh
 against an empty drawer, and the system did the right thing: it surfaced
 `live.drawerDifference = 131827` rather than quietly reading ₱0 as a full float.
 
-### The six mismatches this exposed
+### The six "mismatches" this exposed were the query's, not the books'
 
-Reading the books after the cleanup found **six accounts whose stored balance disagrees with
-the sum of their own ledger rows** — ₱121,391 unexplained in total:
+Reading the books after the cleanup appeared to find six accounts whose stored balance
+disagrees with the sum of their own ledger rows — ₱121,391 unexplained in total. It was
+neither unexplained nor a fault. The query compared `current_balance` against `Σ
+ledger_entries` alone and left out `opening_balance`, the first term of the identity in §1:
 
-| Account | Stored `current_balance` | Ledger sum | Rows | Difference |
-|---|---:|---:|---:|---:|
-| Kristine Mae (e-wallet) | 0.00 | −70,020.00 | 2 | 70,020.00 |
-| Steven Joe (bank) | 30,623.00 | — none — | 0 | 30,623.00 |
-| Benito (bank) | 50,024.00 | 32,472.00 | 15 | 17,552.00 |
-| Steven Joe (e-wallet) | 2,087.00 | 700.00 | 1 | 1,387.00 |
-| Jed | 1,903.00 | 931.00 | 111 | 972.00 |
-| Joyce | 21,467.00 | 20,630.00 | 8 | 837.00 |
-| **Total** | | | | **121,391.00** |
+```
+current_balance = opening_balance + Σ credits − Σ debits
+```
 
-Recorded, not repaired. These predate every change in this document, they are outside the
-module, and the owner declined to investigate them. They are written down here so the next
-reader does not mistake them for damage done by sections 11–19.
+Exactly six accounts hold a non-zero `opening_balance`, and they are precisely the six
+reported — each one's opening balance equal to the "difference" it was reported against,
+to the centavo:
+
+| Account | `opening_balance` | Ledger delta | Rows | Stored `current_balance` | Check |
+|---|---:|---:|---:|---:|:--:|
+| Kristine Mae (e-wallet) | 70,020.00 | −70,020.00 | 2 | 0.00 | ✓ |
+| Steven Joe (bank) | 30,623.00 | 0.00 | 0 | 30,623.00 | ✓ |
+| Benito (bank) | 17,552.00 | 32,472.00 | 15 | 50,024.00 | ✓ |
+| Steven Joe (e-wallet) | 1,387.00 | 700.00 | 1 | 2,087.00 | ✓ |
+| Jed (e-wallet) | 972.00 | 931.00 | 111 | 1,903.00 | ✓ |
+| Joyce (e-wallet) | 837.00 | 20,630.00 | 8 | 21,467.00 | ✓ |
+| **Total** | **121,391.00** | | | | ✓ |
+
+`Σ opening_balance` across the whole chart of accounts is **121,391.00** — the figure once
+reported as unexplained is exactly the term the query omitted. A `GROUP BY` over every
+account, testing `abs(current_balance − (opening_balance + ledger_delta)) > 0.009`, returns
+**zero rows**: §1 holds per account and in total, not merely in aggregate.
+
+Nothing was repaired because nothing was broken. No balance, transaction or ledger row was
+written to reach this conclusion — it is a read and a correction to this paragraph.
 
 ---
 

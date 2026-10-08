@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, dateKeyLabel, cashOnHandNote } from './format';
+import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, dateKeyLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel } from './format';
 
 // Manila is UTC+8 all year — no DST — so these boundaries are stable.
 const justAfterManilaMidnight = '2026-10-04T16:30:00.000Z'; // 00:30 on 5 Oct in Manila
@@ -107,5 +107,33 @@ describe('cashOnHandNote', () => {
   it('names nothing that is not there', () => {
     expect(cashOnHandNote(' Revolving Fund ')).toContain('Revolving Fund — in the branch drawers');
     expect(cashOnHandNote(' Revolving Fund ')).not.toContain('  Revolving');
+  });
+});
+
+describe('paymentMethodCell', () => {
+  // 108 historical cash movements predate the rule that made the column
+  // mandatory and were deliberately left unclassified rather than guessed at
+  // (D11). A blank cell there reads as a rendering bug; this reads as a fact.
+  it('names the tender that was recorded', () => {
+    expect(paymentMethodCell('cash')).toBe('Cash');
+    expect(paymentMethodCell('gcash')).toBe('GCash');
+    expect(paymentMethodCell('provider_interest')).toBe('Interest Income from Provider');
+  });
+
+  it('says so rather than leaving the cell empty', () => {
+    expect(paymentMethodCell(null)).toBe('Not recorded');
+    expect(paymentMethodCell(undefined)).toBe('Not recorded');
+    expect(paymentMethodCell('')).toBe('Not recorded');
+  });
+
+  it('shows a code it does not recognise instead of hiding it', () => {
+    expect(paymentMethodCell('wire')).toBe('wire');
+  });
+
+  // The label must stay blank: Accounts builds a sentence out of it, and
+  // "Owner funding via " is worse than an omitted word.
+  it('leaves the sentence-building label blank where the cell would not', () => {
+    expect(paymentMethodLabel(null)).toBe('');
+    expect(paymentMethodCell(null)).not.toBe('');
   });
 });

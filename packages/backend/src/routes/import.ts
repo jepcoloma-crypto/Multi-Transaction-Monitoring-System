@@ -3,6 +3,7 @@ import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { resolveNewAccountBranch } from '../middleware/scope';
 import { createAuditLog } from '../services/audit';
+import { importTypeRefusal } from '../services/cashManagement';
 import multer from 'multer';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -60,8 +61,13 @@ router.post('/transactions', authorize('transactions.write'), upload.single('fil
         const typeName = row.type_name || row.type || row.transaction_type;
         if (!typeName) { results.errors.push(`Missing type for row`); results.failed++; continue; }
 
-        const txType = await queryOne<{ id: string; direction: string }>('SELECT id, direction FROM transaction_types WHERE name = $1 OR code = $1', [typeName]);
+        const txType = await queryOne<{ id: string; direction: string; code: string }>('SELECT id, direction, code FROM transaction_types WHERE name = $1 OR code = $1', [typeName]);
         if (!txType) { results.errors.push(`Unknown type: ${typeName}`); results.failed++; continue; }
+
+        // Checked before anything is read or written for the row, so a refused
+        // type leaves no balance, no ledger row and no half-committed account.
+        const refusal = importTypeRefusal(txType.code);
+        if (refusal) { results.errors.push(refusal); results.failed++; continue; }
 
         const amount = parseFloat(row.amount || row.total || '0');
         if (isNaN(amount) || amount <= 0) { results.errors.push(`Invalid amount: ${row.amount}`); results.failed++; continue; }

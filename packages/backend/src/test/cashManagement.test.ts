@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
 import type { BranchBalance, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
@@ -161,6 +161,25 @@ test('only the four money-through-the-drawer codes count as cash movements', () 
   assert.equal(isCashMovement('adjustment_in'), false);
   assert.equal(isCashMovement(null), false);
   assert.equal(isCashMovement(undefined), false);
+});
+
+test('import refuses a cash movement rather than inventing a tender', () => {
+  // A CSV row has nowhere to declare how the money changed hands, and import
+  // sits outside the shift gate as well. Both are enforced by the entry form,
+  // so the refusal has to land before any row, balance or ledger entry exists.
+  const codes = ['cash_in', 'cash_out', 'customer_payment', 'customer_withdrawal'];
+  for (const code of codes) {
+    const reason = importTypeRefusal(code);
+    assert.notEqual(reason, null, `${code} would be imported undeclared`);
+    assert.match(reason as string, /cannot be imported/);
+    assert.match(reason as string, /entry form/);
+  }
+});
+
+test('import still accepts every type that needs no tender', () => {
+  for (const code of ['owner_funding', 'owner_return', 'operating_expense', 'transfer_in', 'transfer_out', 'bill_payment', 'adjustment_in', 'load_purchase', null, undefined, '']) {
+    assert.equal(importTypeRefusal(code), null, `${String(code)} should import`);
+  }
 });
 
 test('every cash movement code reports into the customer cash bucket', () => {

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, manilaDateTimeValue, paymentMethodLabel, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
+import { formatCurrency, manilaDateTimeValue, paymentMethodCell, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
@@ -643,7 +643,7 @@ export default function Transactions() {
                 <div><p className="text-xs text-gray-500">Status</p><p className="font-medium">{showDetail.status}</p></div>
                 <div><p className="text-xs text-gray-500">Date</p><p className="font-medium">{manilaDateTimeLabel(showDetail.transaction_date)}</p></div>
                 <div><p className="text-xs text-gray-500">Reference</p><p className="font-medium">{showDetail.reference_number || '-'}</p></div>
-                {showDetail.payment_method && <div><p className="text-xs text-gray-500">Method</p><p className="font-medium">{paymentMethodLabel(showDetail.payment_method)}</p></div>}
+                {(showDetail.payment_method || isCashMovementCode(showDetail.type_code)) && <div><p className="text-xs text-gray-500">Method</p><p className="font-medium">{paymentMethodCell(showDetail.payment_method)}</p></div>}
                 {showDetail.customer_name && <div><p className="text-xs text-gray-500">Customer</p><p className="font-medium">{showDetail.customer_name}</p></div>}
               </div>
               {showDetail.description && <div><p className="text-xs text-gray-500">Description</p><p className="text-sm">{showDetail.description}</p></div>}

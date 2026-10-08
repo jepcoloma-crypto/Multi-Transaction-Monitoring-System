@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote } from '../lib/format';
+import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote, paymentMethodCell } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
 import {
   fetchCashRecords, downloadCashRecordsCsv,
@@ -1376,7 +1376,7 @@ export default function CashManagement() {
                       <td className="px-4 py-3 text-sm text-gray-600 max-w-[22rem] truncate" title={row.description || row.payee || ''}>
                         {row.description || row.payee || <span className="text-gray-400">—</span>}
                       </td>
-                      <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-500">{row.paymentMethod || <span className="text-gray-400">—</span>}</td>
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-500">{paymentMethodCell(row.paymentMethod)}</td>
                       <td className={`px-4 py-3 text-sm text-right font-mono whitespace-nowrap ${row.direction === 'in' ? 'text-emerald-600' : 'text-red-600'}`}>
                         {row.direction === 'in' ? '+' : '−'}{formatCurrency(Number(row.amount))}
                       </td>

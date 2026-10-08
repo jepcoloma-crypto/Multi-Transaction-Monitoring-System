@@ -102,6 +102,23 @@ export function isMovementPaymentMethod(value: unknown): value is MovementPaymen
   return typeof value === 'string' && (MOVEMENT_PAYMENT_METHODS as readonly string[]).includes(value);
 }
 
+// Why a transaction type may not be created by file import, or null when it may.
+//
+// A CSV or JSON row has nowhere to declare how the money changed hands, and the
+// drawer leg cannot be decided without that (D11). An imported cash movement
+// would therefore be born single-leg and permanently undeclared — exactly the
+// state D11 exists to prevent going forward — and import also sits outside the
+// shift gate (D17), so it would move physical cash with no open shift behind
+// it. The entry form is where both are enforced, so this refuses rather than
+// defaulting to a method nobody chose.
+//
+// Returning the reason rather than a boolean keeps it beside the policy it
+// explains and lets the refusal be tested without standing up a route.
+export function importTypeRefusal(typeCode: string | null | undefined): string | null {
+  if (!isCashMovement(typeCode)) return null;
+  return `Cash movement "${typeCode}" cannot be imported: a file cannot declare how the money changed hands. Record it through the entry form.`;
+}
+
 export interface DrawerLeg {
   amount: number;
   entryType: 'debit' | 'credit';
