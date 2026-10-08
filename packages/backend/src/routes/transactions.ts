@@ -330,11 +330,15 @@ async function resolveDrawerLeg(
   if (paymentMethod !== 'cash') return null;
 
   const drawer = await queryOne<{ id: string }>(
+    // The branch's oldest open cash account. `t.code = 'cash'` is what makes it
+    // the drawer; what it is called is a label, so nothing downstream may
+    // depend on the name — this used to prefer `'Revolving Fund'` by string and
+    // renaming the account would have silently moved every drawer leg.
     `SELECT a.id FROM accounts a
      JOIN account_types t ON t.id = a.account_type_id
      WHERE t.code = 'cash' AND a.status <> 'closed'
        AND a.branch_id = (SELECT branch_id FROM accounts WHERE id = $1)
-     ORDER BY (a.name = 'Revolving Fund') DESC, a.created_at ASC
+     ORDER BY a.created_at ASC
      LIMIT 1`,
     [accountId]
   );

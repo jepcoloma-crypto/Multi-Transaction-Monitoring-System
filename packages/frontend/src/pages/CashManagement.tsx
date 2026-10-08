@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions } from '../lib/format';
+import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
 import {
   fetchCashRecords, downloadCashRecordsCsv,
@@ -46,6 +46,7 @@ const elapsedLabel = (openedAt: string): string => {
 interface Statement {
   totals: { current: number };
   drawer?: number;
+  drawerAccounts?: string;
   expenseApprovalThreshold?: number;
 }
 
@@ -557,15 +558,19 @@ export default function CashManagement() {
   const openForm = () => {
     setForm({ ...emptyForm, transactionDate: manilaDateValue() });
     setFormError('');
-    // The revolving fund is where cash-on-hand expenses belong, so it is
+    // Cash-on-hand expenses belong on the branch's cash account, so it is
     // preselected rather than made the operator hunt for it among the wallets.
+    // Found by `type_code`, not by name: every other query that reaches the
+    // drawer matches `account_types.code = 'cash'`, and this one matching the
+    // text `'Revolving Fund'` meant renaming the account would have quietly
+    // emptied the default while the account itself kept holding the money.
     // Prefer this user's own branch's float: the list holds every branch's
     // wallet, and preselecting someone else's cash would be an easy mistake to
     // approve.
     const ownBranches = (user?.branches || []).map((b) => b.name);
     const float =
-      accounts.find((a) => a.name === 'Revolving Fund' && !!a.branch_name && ownBranches.includes(a.branch_name))
-      || accounts.find((a) => a.name === 'Revolving Fund');
+      accounts.find((a) => a.type_code === 'cash' && !!a.branch_name && ownBranches.includes(a.branch_name))
+      || accounts.find((a) => a.type_code === 'cash');
     if (float) setForm((f) => ({ ...f, accountId: float.id }));
     setShowForm(true);
   };
@@ -822,7 +827,7 @@ export default function CashManagement() {
                   <p className="text-xs font-semibold uppercase tracking-wide">Cash on hand</p>
                 </div>
                 <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{formatCurrency(statement.drawer)}</p>
-                <p className="text-sm text-gray-500">In the branch drawers — already counted in the total</p>
+                <p className="text-sm text-gray-500">{cashOnHandNote(statement.drawerAccounts)}</p>
               </div>
             )}
 

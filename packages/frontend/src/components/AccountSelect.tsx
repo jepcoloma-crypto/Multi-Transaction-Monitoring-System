@@ -11,6 +11,8 @@ export interface AccountOption {
   current_balance?: number;
   /** Two branches can hold an identically named account; without this the picker is ambiguous. */
   branch_name?: string | null;
+  /** `account_types.code` — the only thing that says which accounts are drawers. */
+  type_code?: string | null;
 }
 
 function AccountLabel({ account }: { account: AccountOption }) {

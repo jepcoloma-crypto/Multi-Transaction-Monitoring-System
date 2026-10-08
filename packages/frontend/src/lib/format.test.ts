@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, dateKeyLabel } from './format';
+import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, dateKeyLabel, cashOnHandNote } from './format';
 
 // Manila is UTC+8 all year — no DST — so these boundaries are stable.
 const justAfterManilaMidnight = '2026-10-04T16:30:00.000Z'; // 00:30 on 5 Oct in Manila
@@ -71,5 +71,41 @@ describe('dateKeyLabel', () => {
 
   it('keeps the last key of a month on that month, not the next', () => {
     expect(dateKeyLabel('2026-10-31', { month: 'short', day: 'numeric' })).toBe('Oct 31');
+  });
+});
+
+describe('cashOnHandNote', () => {
+  // The drawer is one number under two names: the account holding the cash and
+  // the line totalling it. Without the account named, a reader sees two pots
+  // holding the same peso and has to be told which of them is real.
+  it('names the account the figure is the sum of', () => {
+    expect(cashOnHandNote('Revolving Fund')).toBe(
+      'Revolving Fund — in the branch drawers, already counted in the total',
+    );
+  });
+
+  it('lists every account when a branch has split its cash across two', () => {
+    expect(cashOnHandNote('Petty Cash, Revolving Fund')).toBe(
+      'Petty Cash, Revolving Fund — in the branch drawers, already counted in the total',
+    );
+  });
+
+  it('says each name once when two branches hold the same account name', () => {
+    expect(cashOnHandNote('Revolving Fund, Revolving Fund')).toBe(
+      'Revolving Fund — in the branch drawers, already counted in the total',
+    );
+  });
+
+  it('falls back to the bare note rather than naming a blank account', () => {
+    expect(cashOnHandNote('')).toBe('In the branch drawers — already counted in the total');
+    expect(cashOnHandNote(null)).toBe('In the branch drawers — already counted in the total');
+    expect(cashOnHandNote(undefined)).toBe('In the branch drawers — already counted in the total');
+    expect(cashOnHandNote('   ')).toBe('In the branch drawers — already counted in the total');
+    expect(cashOnHandNote(', ,')).toBe('In the branch drawers — already counted in the total');
+  });
+
+  it('names nothing that is not there', () => {
+    expect(cashOnHandNote(' Revolving Fund ')).toContain('Revolving Fund — in the branch drawers');
+    expect(cashOnHandNote(' Revolving Fund ')).not.toContain('  Revolving');
   });
 });

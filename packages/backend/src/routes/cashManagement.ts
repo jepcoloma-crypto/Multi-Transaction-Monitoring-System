@@ -138,8 +138,9 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     // while the cash accounts held nothing. Two figures, two names, never
     // summed (design D14).
     const drawerConds = [`t.code = 'cash'`, ...branchConds];
-    const drawerRow = await queryOne<{ balance: string }>(
-      `SELECT COALESCE(SUM(a.current_balance), 0) AS balance
+    const drawerRow = await queryOne<{ balance: string; account_names: string | null }>(
+      `SELECT COALESCE(SUM(a.current_balance), 0) AS balance,
+              string_agg(DISTINCT a.name, ', ' ORDER BY a.name) AS account_names
        FROM branches b
        JOIN accounts a ON a.branch_id = b.id
        JOIN account_types t ON t.id = a.account_type_id
@@ -160,6 +161,10 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
         },
         ...statement,
         drawer: num(drawerRow?.balance),
+        // The accounts that figure sums. The drawer is one number under two
+        // names — the account holding the cash and the line totalling it — and
+        // a reader who does not know that sees two pots holding the same peso.
+        drawerAccounts: drawerRow?.account_names ?? '',
         // Served beside the drawer figure for the same reason: the expense form
         // on this page has to say what the books will do, and the create route
         // decides that from this number. The operator role holds no

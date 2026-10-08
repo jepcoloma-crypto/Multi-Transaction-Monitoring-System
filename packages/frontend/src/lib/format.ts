@@ -196,3 +196,26 @@ export const paymentMethodLabel = (code: string | null | undefined): string => {
   if (!code) return '';
   return paymentMethodOptions.find((o) => o.value === code)?.label || code;
 };
+
+/**
+ * The note printed under the Cash on hand figure: which accounts it totals.
+ *
+ * The drawer is one number under two names — the account holding the cash and
+ * the line totalling it — so a reader who does not know that sees two pots
+ * holding the same peso and asks which of them is real. Naming the accounts
+ * says it outright.
+ *
+ * Falls back to the bare note rather than to a partial one: a label that
+ * explains nothing is better than one that names the wrong account, and the
+ * server is the only place that knows which accounts are cash.
+ */
+export const cashOnHandNote = (accountNames?: string | null): string => {
+  const names = String(accountNames ?? '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .filter((name, index, all) => all.indexOf(name) === index);
+  return names.length > 0
+    ? `${names.join(', ')} — in the branch drawers, already counted in the total`
+    : 'In the branch drawers — already counted in the total';
+};

@@ -1317,3 +1317,64 @@ and both still read `expected = counted, variance 0`.
 | cash-out during the shift | 0.00 | **31,372.00** |
 | rows in the drill-down | 0 | **17** |
 | shift report `totalCashOut` | 0.00 | **31,372.00** |
+
+---
+
+## 24. One number, two names
+
+### D29 — the drawer is identified by its type, and named by the card that totals it
+
+*Cash on hand* and *Revolving Fund* read as two pots holding the same peso, and the question
+that follows — which of them is real, and which is a copy? — is exactly the right question to
+ask of a money screen. Neither is a copy, and neither can be removed.
+
+They are two different things:
+
+| | what it is |
+|---|---|
+| **Revolving Fund** | one account — a row with `current_balance`, a twenty-row ledger chain, a statement, an audit trail |
+| **Cash on hand** | `SUM(current_balance)` over **every** cash-type account on the branch |
+
+They print the same figure only because each branch holds exactly one cash account today.
+The drawer is keyed on the *type* rather than on one named account precisely so that a
+branch's physical cash may be split across two (`drawerQuery.ts`) — the aggregate exists so
+it can be, and the account exists because the ledger needs a row to post to.
+
+**Deleting the account would not merge the two figures. It would delete the money.**
+
+```
+TOTAL ON THE BOOKS   222,827.00
+ACCOUNTS (NON-CASH)  122,372.00   ← everything that would remain
+```
+
+₱100,455 leaves the books, twenty ledger rows orphan, the balance-after chain breaks, and
+`resolveDrawerLeg` starts refusing every cash movement with *"this branch has no cash account
+to take the money from."*
+
+So the work is in the two places the confusion actually lives.
+
+**The card names what it totals.** `/cash-management/statement` returns `drawerAccounts`
+beside `drawer`, and the note under the figure reads *"Revolving Fund — in the branch
+drawers, already counted in the total."* One number, one name, said out loud. It falls back
+to the bare note when the server sends nothing, because a label that explains nothing is
+better than one that names the wrong account — the server is the only place that knows which
+accounts are cash.
+
+**Nothing finds the drawer by its name any more.** `'Revolving Fund'` was string-matched in
+two runtime places: the expense form's preselected account, and the drawer leg in
+`resolveDrawerLeg`. Both now match `account_types.code = 'cash'`, which is what every other
+drawer query already did. The risk was live rather than theoretical — rename the account and
+the default would have quietly emptied while the account went on holding the money.
+
+Migration 034 keeps its copy of the name and is deliberately left alone. There the string is
+a seed label and the idempotency guard for that same seed row, not a lookup anything depends
+on; and it has been applied, so rewriting it would desynchronise `_migrations` from the files
+on disk.
+
+**What the drawer contains, and why it is only two things.** All twenty of its rows are owner
+capital and operating expenses. `cash_in` and `cash_out` contribute nothing, because all 108
+of them carry `payment_method = NULL` and `touchesDrawer` is true only for `cash`. That rule
+arrived in migration 036, after the rows were written. Forward of this, the form refuses a
+cash movement without a method, so new rows do reach the drawer — but only when money was
+physically handed over, which is the point: a GCash or bank movement landing in a wallet
+never passed through the drawer, and giving it a leg would count the same peso twice.
