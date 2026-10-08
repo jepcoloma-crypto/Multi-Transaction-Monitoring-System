@@ -1234,6 +1234,86 @@ the statement's `operating_expenses: 31372, count 17`. **Nothing is missing:** t
 counted ₱131,827 at shift open, ₱31,372 has since been paid out of it, and the books read
 ₱100,455. The "difference" the page displays *is* the expense total.
 
-What remains is labelling, not money: *Expected now* still shows the raw count rather than
-the count net of movements, which is why the two readings differ at all. That belongs to the
-drawer-window backlog, not to a reconciliation.
+What remains is the drawer-window backlog: *Expected now* still prints the raw count rather
+than the count net of movements, which is why the two readings differ at all. §23 closes it —
+and the answer was not labelling.
+
+---
+
+## 23. The drawer's window reads the posting instant
+
+### D28 — a shift's window is bounded by when a row was posted, not by the day it files under
+
+§22 left the two readings ₱31,372 apart and called it labelling. It was not labelling. The
+figure was wrong, and wrong in a way that would have closed the shift as short.
+
+**The confusion was reasonable.** *Cash on hand* (₱100,455) and *Expected now* (₱131,827) are
+meant to be two independent readings of one drawer (D16), and they disagreed by exactly the
+expense total. The ledger had it right — `131,827 − 31,372 = 100,455` — so it looked as though
+the expenses had come off the balance but not off the expectation. They had come off neither
+display, because **the arithmetic behind them could not see them at all.** The shift was opened
+on **8 October** for the **25 September** business day:
+
+```
+shift        shift_date   2026-09-25
+             opened_at    2026-10-08 20:39:46 +08
+cash rows    entry_date   2026-09-25        (all 20 — the business day they file under)
+             created_at   2026-10-08 20:17 – 22:03   (when they were actually posted)
+```
+
+`drawerMovements` filtered `l.entry_date >= opened_at`, comparing *25 September* against
+*8 October*. It returned **0 rows**, so `expectedClosing` had nothing to add and printed the
+count back at itself:
+
+```
+before   movements  0    expected 131,827.00   cash on hand 100,455.00   difference 31,372.00
+after    movements 17    expected 100,455.00   cash on hand 100,455.00   difference      0.00
+```
+
+**Why it mattered more than a label.** `classifyVariance` measures the counted close against
+`expected`, so closing this shift while holding the ₱100,455 the drawer actually holds would
+have reported **SHORT ₱31,372** — a shortage equal to every expense the shift had legitimately
+paid. D16 warns about precisely this: *"a reconciliation that is always wrong is one operators
+learn to ignore."*
+
+**The window now reads `created_at`.** A shift is a physical span — the drawer opens at an
+instant and cash leaves it when a row is written. `entry_date` is an accounting attribution
+picked from a date field, and it need not fall inside that span at all.
+
+**The minute-flooring had to go with it.** `drawerWindow` used to open at the start of
+`opened_at`'s minute, because `entry_date` carried no seconds. Against `created_at` — stamped
+by the database with sub-second precision — that widening is wrong, not merely unnecessary:
+this shift opened **9.7 seconds after** the funding that set its float, so a window starting at
+the top of that minute admits the funding as a movement on top of the count that already
+includes it.
+
+```
+created_at, exact open    17 rows   net −31,372    expected 100,455   ✓
+created_at, floored       18 rows   net +100,455   expected 232,282   ✗ the float counted twice
+```
+
+**One query, not two.** The drill-down listing the rows behind the figure carried its own copy
+of the window predicate — in the very file whose header promises these are *"kept in one place
+so a shift's expected figure and the report that later audits it can never drift apart"*. That
+promise was false, and drift between the two is exactly this bug. The rows query moved into
+`drawerQuery.ts` as `drawerMovementRows`, and `drawerMovements` is now a projection of it.
+There is one SQL string defining the drawer's window, so the list and the number above it
+cannot disagree.
+
+**Transfer service fees were never part of this.** Zero ledger rows on cash accounts come from
+`transfers`; the ₱40 of Sep-25 service fees comes off the source e-wallet. That is why the
+shift's Expense panel reads **₱31,412** while the drawer falls **₱31,372** —
+`31,372 drawer + 40 off-drawer`.
+
+**What it did not touch.** A read path only: no balance, no transaction and no shift row was
+written. The two closed shifts are unaffected — their windows contain no postings either way,
+and both still read `expected = counted, variance 0`.
+
+| | before | after |
+|---|---:|---:|
+| *Expected now* | 131,827.00 | **100,455.00** |
+| Cash on hand | 100,455.00 | 100,455.00 |
+| difference | 31,372.00 | **0** |
+| cash-out during the shift | 0.00 | **31,372.00** |
+| rows in the drill-down | 0 | **17** |
+| shift report `totalCashOut` | 0.00 | **31,372.00** |

@@ -88,6 +88,7 @@ interface ShiftResult extends Shift {
 interface DrawerMovement {
   id: string;
   entry_date: string;
+  created_at: string;
   entry_type: string;
   amount: number | string;
   balance_after: number | string;
@@ -1231,7 +1232,11 @@ export default function CashManagement() {
                                   </div>
                                   <div className="mt-0.5 flex justify-between gap-2 text-gray-500">
                                     <span className="truncate">
-                                      {row.account_name} · {manilaTimeLabel(row.entry_date)}
+                                      {/* The posting time, because that is what puts a row
+                                          inside the window: the business day it files under
+                                          can be weeks away and reads as a time the shift
+                                          was never open. */}
+                                      {row.account_name} · {manilaTimeLabel(row.created_at)}
                                     </span>
                                     <span className="shrink-0 font-mono">after {formatCurrency(money(row.balance_after))}</span>
                                   </div>

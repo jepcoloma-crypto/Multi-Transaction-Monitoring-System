@@ -4,7 +4,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
 import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
-import { drawerMovements, drawerBalance, drawerWindow } from '../services/drawerQuery';
+import { drawerMovements, drawerBalance, drawerMovementRows } from '../services/drawerQuery';
 import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -517,22 +517,7 @@ router.get('/shifts/:id/movements', authorize('reports.read'), async (req: Reque
     if (!shift) throw createError(404, 'Shift not found');
     await assertShiftBranch(req, shift.branch_id, 'Shift not found');
 
-    const { from, to } = drawerWindow(shift.opened_at, shift.closed_at);
-
-    const rows = await query<any>(
-      `SELECT l.id, l.entry_date, l.entry_type, l.amount, l.balance_after, l.source_type,
-              l.reference_number, l.description, a.name AS account_name,
-              t.transaction_number, t.payee, tt.code AS txn_code
-       FROM ledger_entries l
-       JOIN accounts a ON a.id = l.account_id
-       JOIN account_types ct ON ct.id = a.account_type_id
-       LEFT JOIN transactions t ON t.id = l.transaction_id
-       LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
-       WHERE ct.code = 'cash' AND a.branch_id = $1
-         AND l.entry_date >= $2 AND l.entry_date < $3
-       ORDER BY l.entry_date, l.id`,
-      [shift.branch_id, from.toISOString(), to.toISOString()],
-    );
+    const rows = await drawerMovementRows(shift.branch_id, shift.opened_at, shift.closed_at);
 
     res.json({
       success: true,
