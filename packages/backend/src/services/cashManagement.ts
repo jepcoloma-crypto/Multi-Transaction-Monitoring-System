@@ -48,6 +48,20 @@ export const BUCKET_LABELS: Record<CashBucket, string> = {
   other: 'Other',
 };
 
+// The buckets where the drawer paid out the company's own money, and the only
+// rows that make up a cash expense.
+//
+// Direction alone cannot answer this. `owner_return` and `cash_out` both leave
+// the drawer, but an owner drawing capital back out and a customer being handed
+// their money are settlements, not spending — totalling every debit would have
+// booked a 200,000 owner return as an expense. These three are the rows where
+// the company was the party that paid.
+export const EXPENSE_BUCKETS: readonly CashBucket[] = [
+  'operating_expenses',
+  'provider_charges',
+  'payments',
+];
+
 const toCents = (value: unknown): number => {
   if (value === null || value === undefined || value === '') return 0;
   const parsed = typeof value === 'number' ? value : parseFloat(String(value));
@@ -416,6 +430,28 @@ export function toCashRecordRow(raw: CashRecordRaw): CashRecordRow {
     description: raw.description,
     recordedBy: raw.created_by_username,
   };
+}
+
+export function isExpenseBucket(bucket: CashBucket): boolean {
+  return EXPENSE_BUCKETS.includes(bucket);
+}
+
+// The expense total for exactly the rows the register is showing.
+//
+// Sums money out only: an expense-bucket row facing the other way is a refund
+// coming back, not spending, and reversals post to `adjustments` rather than
+// into the bucket they reverse. Computed over the filtered population rather
+// than the current page, so the figure describes every row the record count
+// names instead of one screen of them.
+//
+// Pure — no network, no database — so the endpoint and its test run the same
+// function (AGENTS.md architecture rule 1).
+export function cashExpenseTotal(rows: CashRecordRow[]): string {
+  let cents = 0;
+  for (const row of rows) {
+    if (row.direction === 'out' && isExpenseBucket(row.bucket)) cents += toCents(row.amount);
+  }
+  return (cents / 100).toFixed(2);
 }
 
 const csvCell = (value: unknown): string => {

@@ -10,6 +10,7 @@ const get = vi.mocked(api.get);
 const payload: CashRecordPage = {
   records: [],
   classes: [],
+  totals: { cashExpenses: '0.00' },
   pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
 };
 

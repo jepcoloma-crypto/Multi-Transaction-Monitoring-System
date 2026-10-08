@@ -246,6 +246,9 @@ export default function CashManagement() {
   const [records, setRecords] = useState<CashRecord[]>([]);
   const [recordClasses, setRecordClasses] = useState<CashRecordClass[]>([]);
   const [recordPage, setRecordPage] = useState<CashRecordPage['pagination'] | null>(null);
+  // Held apart from the pagination because the totals describe every filtered
+  // row while the pagination describes one page of them.
+  const [recordTotals, setRecordTotals] = useState<CashRecordPage['totals'] | null>(null);
   const [loadingRecords, setLoadingRecords] = useState(true);
   const [recordError, setRecordError] = useState('');
   const [recordType, setRecordType] = useState('');
@@ -341,11 +344,13 @@ export default function CashManagement() {
       setRecords(page.records || []);
       setRecordClasses(page.classes || []);
       setRecordPage(page.pagination || null);
+      setRecordTotals(page.totals || null);
       setRecordError('');
     } catch (err) {
       setRecords([]);
       setRecordClasses([]);
       setRecordPage(null);
+      setRecordTotals(null);
       setRecordError(err instanceof Error ? err.message : 'Could not load the cash records');
     } finally {
       setLoadingRecords(false);
@@ -1310,6 +1315,23 @@ export default function CashManagement() {
             {recordPage ? `${recordPage.total} record(s)` : ''}
           </p>
         </div>
+
+        {recordTotals && (
+          <div className="mx-4 mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-red-100 bg-red-50 px-4 py-3">
+            <div className="flex items-center gap-2 text-red-700">
+              <TrendingDown className="w-4 h-4" />
+              <span className="text-xs font-semibold uppercase tracking-wide">Cash expenses</span>
+            </div>
+            <div className="flex items-baseline gap-3">
+              <span className="text-xl font-bold tabular-nums text-red-700">
+                {formatCurrency(Number(recordTotals.cashExpenses))}
+              </span>
+              <span className="text-xs text-red-900/60">
+                Operating Expenses, Provider Charges and Payments &amp; Bills — every matching record, not just this page
+              </span>
+            </div>
+          </div>
+        )}
 
         {recordError && (
           <p className="px-4 pb-3 text-sm text-red-600">{recordError}</p>

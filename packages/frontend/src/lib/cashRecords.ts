@@ -35,6 +35,10 @@ export interface CashRecordClass {
 export interface CashRecordPage {
   records: CashRecord[];
   classes: CashRecordClass[];
+  // Figures over the whole filtered population, not the page — so the expense
+  // total describes every row `pagination.total` names. Amounts arrive as fixed
+  // two-decimal strings for the same reason the rows do.
+  totals: { cashExpenses: string };
   pagination: { page: number; limit: number; total: number; totalPages: number };
 }
 

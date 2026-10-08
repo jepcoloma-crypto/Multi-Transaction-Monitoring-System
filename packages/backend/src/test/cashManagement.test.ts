@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
 import type { BranchBalance, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
@@ -405,4 +405,44 @@ test('the CSV writes a null field as an empty cell, never as the text null', () 
     toCashRecordRow(raw({ payee: null, reference_number: null, transaction_number: null, payment_method: null })),
   ]);
   assert.ok(!csv.includes('null'), `a null leaked into the file: ${csv}`);
+});
+
+test('cash expenses count only the rows where the company was the party that paid', () => {
+  // The owner drawing capital back out and a customer being handed their money
+  // both leave the drawer, and neither is spending. Totalling every debit would
+  // have booked a 200,000 owner return as an expense.
+  const rows = [
+    toCashRecordRow(raw({ id: 'e1', amount: '1045.00' })),                          // operating_expenses
+    toCashRecordRow(raw({ id: 'e2', amount: '30.00', txn_code: 'expense' })),       // provider_charges
+    toCashRecordRow(raw({ id: 'e3', amount: '50.00', txn_code: 'bill_payment' })),  // payments
+    toCashRecordRow(raw({ id: 'x1', amount: '200000.00', txn_code: 'owner_return' })),
+    toCashRecordRow(raw({ id: 'x2', amount: '7220.00', txn_code: 'cash_out' })),
+    toCashRecordRow(raw({ id: 'x3', amount: '1500.00', txn_code: 'transfer_out' })),
+  ];
+  assert.equal(cashExpenseTotal(rows), '1125.00');
+});
+
+test('money coming back through an expense bucket is not counted as spending', () => {
+  // A credit in an expense bucket is a refund arriving, so adding it would
+  // overstate what was paid out.
+  const rows = [
+    toCashRecordRow(raw({ id: 'e1', amount: '1000.00' })),
+    toCashRecordRow(raw({ id: 'e2', amount: '400.00', entry_type: 'credit' })),
+  ];
+  assert.equal(cashExpenseTotal(rows), '1000.00');
+});
+
+test('a register with nothing to total reads 0.00, never an empty or NaN figure', () => {
+  assert.equal(cashExpenseTotal([]), '0.00');
+  assert.equal(
+    cashExpenseTotal([toCashRecordRow(raw({ id: 'i1', txn_code: 'owner_funding', entry_type: 'credit' }))]),
+    '0.00',
+  );
+});
+
+test('the total adds up across every row it is handed, not one page of them', () => {
+  const rows = Array.from({ length: 7 }, (_, i) =>
+    toCashRecordRow(raw({ id: `m${i}`, amount: '1045.00' })),
+  );
+  assert.equal(cashExpenseTotal(rows), '7315.00');
 });

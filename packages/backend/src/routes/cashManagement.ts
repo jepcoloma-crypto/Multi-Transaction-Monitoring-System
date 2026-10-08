@@ -3,7 +3,7 @@ import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
 import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
-import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv } from '../services/cashManagement';
+import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
 import { drawerMovements, drawerBalance, drawerWindow } from '../services/drawerQuery';
 import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
@@ -650,6 +650,9 @@ router.get('/records', authorize('reports.read'), async (req: Request, res: Resp
       data: {
         records,
         classes,
+        // Over `filtered`, never `records`: the page is a slice, so a total
+        // taken here would read as the register's while describing one screen.
+        totals: { cashExpenses: cashExpenseTotal(filtered) },
         pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
       },
     });
