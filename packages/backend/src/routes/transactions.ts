@@ -7,7 +7,7 @@ import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
 import type { CounterpartyLeg } from '../services/balance';
-import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal } from '../services/cashManagement';
+import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
 import { calculateTieredFee } from '../services/feeCalc';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -547,24 +547,19 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     const totalCharges = (additionalCharges || []).reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
     const totalAmount = netAmount + totalCharges;
 
-    const isOwnerFund = txType.code === 'owner_funding' || txType.code === 'owner_return';
-    const isOperatingExpense = txType.code === 'operating_expense';
-    const isControlled = isOwnerFund || isOperatingExpense;
-    const isAdminCreator = (req.user!.roles || []).includes('administrator');
-    // An administrator who creates an owner fund settles it at once — that
-    // path's established behaviour, deliberately left alone. An operating
-    // expense settles when it is recorded at or below the configured threshold
-    // and waits for a second signature above it, so small purchases no longer
-    // sit in a queue nobody needed. The same threshold is served to the expense
-    // form, so what the operator is told matches what the books will do.
+    // Who may settle at once and who must wait, decided in one place so the
+    // three rules cannot drift apart (see `controlledApproval`).
     const expenseThreshold = await expenseApprovalThreshold();
-    const requiresApproval = isOperatingExpense
-      ? amountNum > expenseThreshold
-      : isControlled && !isAdminCreator;
+    const { controlled: isControlled, requiresApproval } = controlledApproval(
+      txType.code,
+      amountNum,
+      expenseThreshold,
+      (req.user!.roles || []).includes('administrator'),
+    );
     const finalStatus = requiresApproval ? 'pending' : (status || 'completed');
 
     if (finalStatus !== 'completed' && !isControlled) {
-      throw createError(400, 'Only owner fund movements and operating expenses can be created as pending');
+      throw createError(400, 'Only owner fund movements, operating expenses and borrowings can be created as pending');
     }
 
     // Rejected rather than silently dropped: a charge the operator typed in

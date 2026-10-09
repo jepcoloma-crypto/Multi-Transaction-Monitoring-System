@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
 import type { BranchBalance, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
@@ -32,7 +32,8 @@ test('every reachable bucket has a display label', () => {
     'cash_in', 'cash_out', 'customer_payment', 'customer_withdrawal',
     'load_purchase', 'operating_expense', 'expense', 'service_fee',
     'bill_payment', 'refund', 'other_income', 'refund_received',
-    'adjustment_in', 'adjustment_out', 'something_unrecognised',
+    'adjustment_in', 'adjustment_out', 'loan_received', 'loan_repayment',
+    'something_unrecognised',
   ];
   for (const code of codes) {
     const bucket = bucketFor('transaction', code);
@@ -464,6 +465,68 @@ test('the total adds up across every row it is handed, not one page of them', ()
     toCashRecordRow(raw({ id: `m${i}`, amount: '1045.00' })),
   );
   assert.equal(cashExpenseTotal(rows), '7315.00');
+});
+
+test('borrowed cash is a source of its own, never owner capital and never income', () => {
+  // The three ways this could have been recorded are the three ways it would
+  // have lied. As `owner_funding` it reports debt as equity; as `other_income`
+  // it claims the company earned money it has to give back; as an adjustment it
+  // claims the balance had been wrong. A bucket of its own is also what makes
+  // the outstanding balance readable as sources less uses.
+  assert.equal(bucketFor('transaction', 'loan_received'), 'borrowings');
+  assert.equal(bucketFor('transaction', 'loan_repayment'), 'borrowings');
+  assert.equal(BUCKET_LABELS.borrowings, 'Borrowings');
+});
+
+test('paying a loan back is not spending', () => {
+  // Handing back principal leaves the drawer exactly as an owner return does:
+  // the money was never the company's to spend, so totalling it as a cost would
+  // report the size of the loan as the cost of being in business. Interest on
+  // that loan is a real cost and still arrives as its own expense row.
+  const rows = [
+    toCashRecordRow(raw({ id: 'b1', amount: '50000.00', txn_code: 'loan_received', entry_type: 'credit' })),
+    toCashRecordRow(raw({ id: 'b2', amount: '10000.00', txn_code: 'loan_repayment' })),
+    toCashRecordRow(raw({ id: 'c1', amount: '1045.00' })),
+  ];
+  assert.equal(cashExpenseTotal(rows), '1045.00');
+});
+
+test('a borrowing waits for a second signature unless an administrator records it', () => {
+  // A loan creates a debt the company has to repay, so it follows the owner
+  // money rule rather than the threshold: anyone else leaves it for approval,
+  // an administrator takes it at once because the cash has already arrived in
+  // the drawer and a pending row would leave the shift's expected figure behind
+  // the physical count.
+  assert.deepEqual(controlledApproval('loan_received', 50000, 3000, true), {
+    controlled: true,
+    requiresApproval: false,
+  });
+  assert.deepEqual(controlledApproval('loan_repayment', 10000, 3000, false), {
+    controlled: true,
+    requiresApproval: true,
+  });
+});
+
+test('only controlled types may be created as a pending request', () => {
+  // `controlled` is the whole answer the create route needs before it either
+  // accepts `status: 'pending'` or refuses it, and a borrowing has to be in
+  // the set or an administrator's loan could not be left for approval at all.
+  assert.equal(controlledApproval('loan_received', 1, 3000, false).controlled, true);
+  assert.equal(controlledApproval('loan_repayment', 1, 3000, false).controlled, true);
+  assert.equal(controlledApproval('owner_funding', 1, 3000, false).controlled, true);
+  assert.equal(controlledApproval('operating_expense', 1, 3000, false).controlled, true);
+  assert.equal(controlledApproval('cash_in', 1, 3000, false).controlled, false);
+  assert.equal(controlledApproval('refund', 1, 3000, false).controlled, false);
+});
+
+test('an operating expense still settles under the threshold and waits above it', () => {
+  // Untouched by the borrowing work: the threshold is about size, not about
+  // who recorded it, so an administrator goes through approval above it too.
+  assert.equal(controlledApproval('operating_expense', 2999, 3000, false).requiresApproval, false);
+  assert.equal(controlledApproval('operating_expense', 3001, 3000, false).requiresApproval, true);
+  assert.equal(controlledApproval('operating_expense', 3001, 3000, true).requiresApproval, true);
+  // Below it an ordinary operator settles at once, as they always have.
+  assert.equal(controlledApproval('operating_expense', 100, 3000, false).requiresApproval, false);
 });
 
 test('a cash account can only have been paid by cash', () => {

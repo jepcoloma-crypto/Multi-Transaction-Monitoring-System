@@ -718,6 +718,12 @@ New, carried into implementation:
    physical by definition. Confirm it should be forced to `cash` when the account is
    `cash`-typed, rather than left to the operator. *(resolved by D33: confirmed, and
    broader than expenses — the rule is the account's, not the type's)*
+3. **Borrowed cash, and what else should feed Cash on hand.** The branch holds cash it neither
+   received as capital nor earned, and no type said so; the question also asked what other
+   movements belong in the drawer. *(resolved by D35 and D36 — §28. Measured first: only three
+   type codes have ever touched a cash account — `owner_funding`, `operating_expense`,
+   `owner_return` — and they tie out to the ₱100,455 on hand exactly. The drawer needed no
+   change; the vocabulary did.)*
 
 ---
 
@@ -1582,3 +1588,81 @@ says the same from the other side.
 `ledger_entries` has no column distinguishing the account leg from the drawer leg — only
 `transaction_id` links the pair — so bucketing the internal leg separately would have been a
 schema change to solve a presentation problem. The label does the same job for nothing.
+
+## 28. Borrowed cash, and what it does to the total
+
+### D35 — borrowed money gets two types of its own, not an account
+
+A peso borrowed from a lender arrives in the drawer exactly as owner capital does: physically,
+countably, and moving the branch's cash figure. The drawer does not care where it came from —
+`Cash on hand` is `SUM(current_balance)` over the cash-typed accounts, and a shift's expected
+figure is the opening float plus every cash row posted in its window regardless of type
+(`drawerQuery.ts`). Post it anywhere on the drawer and both move on their own.
+
+What did not exist was a way to say *who it came from*.
+
+Every available answer lied in a different direction. `owner_funding` reports debt as equity,
+and the day anyone asks what is still owed the answer becomes unrecoverable without re-reading
+every description. `adjustment_in` asserts the balance had been wrong and was corrected, when a
+loan asserts the balance was right and has genuinely grown. `other_income` files it as earnings
+the company keeps. So migration 041 seeds `loan_received` and `loan_repayment`, and the
+statement gives them a `borrowings` bucket of their own — which is also what makes the
+outstanding balance readable by subtraction.
+
+**A `loan_payable` account type was considered and rejected.** This system's headline is the sum
+of every account balance, and a liability account would be summed alongside the cash it produced.
+Borrow ₱50,000 with a payable on the books and the total rises by ₱100,000 — the peso counted
+twice, once as cash and once as a debt. This is a cash-position system (D7), not a double-entry
+ledger, and it would rather state one true thing than imply two.
+
+**A repayment is not spending.** `borrowings` stays out of `EXPENSE_BUCKETS` on the same
+reasoning that keeps `owner_return` out: the money was never the company's to spend, so totalling
+it as a cost would report the size of the loan as the cost of being in business. Interest on that
+loan is a real cost and still arrives as its own expense row.
+
+### D36 — the cash-event form, and why the approval rule lives in a function
+
+Five type codes move physical cash while carrying no fee, and the entry form cannot reach any of
+them: its `Fee Rule` field is required, so the rule picks the type and there are only five rules
+in the database (`load_purchase`, `customer_withdrawal`, `cash_out`, `bill_payment`, `cash_in`).
+`refund` and `other_income` had buckets waiting for rows that no screen could write. They sit
+beside the borrowing pair on a **Record cash event** form on Cash Management, curated rather than
+offered as a free picker — a dropdown of all nineteen types would hand straight back the choice
+that fee rules and D3 exist to avoid.
+
+**Borrowings are controlled, following the owner-money rule.** A loan creates a debt the company
+has to repay, so anyone who is not an administrator leaves it for a second signature, and an
+administrator takes it at once. That asymmetry is not convenience: the cash has already arrived
+in the drawer, so a row left `pending` would put the shift's expected figure behind the physical
+count until somebody approved it — a variance nobody created.
+
+The three rules — owner money, the expense threshold, borrowings — are one function,
+`controlledApproval`, rather than three inline branches, because a route that recomputed them
+would be one refactor from letting a type settle that should not. It is tested directly.
+
+**The readout states the debt as its own fact.** `Still owed` is the sum of borrowings from the
+start of the books to now, not a movement across a window, and it is hidden at zero so a business
+carrying no debt says so by showing nothing rather than by adding a permanent ₱0.00 to every
+read.
+
+### Why `Total on the books` is not netted
+
+§17 asked whether the headline should subtract liabilities, and §27 settled its twin — the
+gross-versus-net question — by labelling rather than restating. This one goes the same way, for a
+reason that is arithmetic rather than editorial.
+
+**Netting would break the statement's tie-out.** `opening + sources − uses = closing` is the
+invariant the whole statement exists to satisfy, and a borrowing moves *both* sides: the cash
+account rises by ₱50,000 and the `borrowings` line in Sources rises by the same ₱50,000. Subtract
+the debt from `totals.current` alone and the two stop matching — `balanced` reads false on a
+statement that is, row for row, perfectly correct. Two sources of truth for one headline is
+exactly the disagreement §24 was written to prevent.
+
+**And no "of which" note would stay true.** Borrow ₱50,000 and the total rises by ₱50,000. Spend
+₱20,000 of it and the total has risen by ₱30,000 while the debt is still ₱50,000 — so any
+sub-line saying the total *includes* ₱50,000 of borrowing becomes false the moment the money is
+used. The card says `Every account totalled`, and that is precisely what it does.
+
+**What was deliberately not built:** a net-worth figure. It would be one subtraction away from
+two cards that already sit beside each other, and §24 is the cautionary tale — three names for
+one drawer is how the reader ends up trusting none of them.

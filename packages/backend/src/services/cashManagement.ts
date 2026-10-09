@@ -21,6 +21,7 @@ import { manilaDateTimeKey } from './manilaTime';
 
 export type CashBucket =
   | 'owner_capital'
+  | 'borrowings'
   | 'transfers'
   | 'customer_cash'
   | 'load'
@@ -35,6 +36,7 @@ export type CashBucket =
 
 export const BUCKET_LABELS: Record<CashBucket, string> = {
   owner_capital: 'Owner Capital',
+  borrowings: 'Borrowings',
   transfers: 'Branch Transfers',
   customer_cash: 'Customer Cash',
   load: 'Load',
@@ -235,6 +237,47 @@ export function expenseFeeRefusal(typeCode: string | null | undefined, fee: numb
     'The amount is what the provider charged.';
 }
 
+/**
+ * Which types need a second signature, and which of those may be created as a
+ * request rather than an entry.
+ *
+ * Three rules in one place because a route that recomputed them would be one
+ * refactor from letting a type settle it should not have:
+ *
+ * - **Owner money** (funding and returns) waits unless an administrator records
+ *   it. That path's established behaviour, deliberately unchanged.
+ * - **Operating expenses** wait above the configured threshold and settle below
+ *   it, so small purchases never sat in a queue nobody needed.
+ * - **Borrowings** follow the owner-money rule: a loan creates a debt the
+ *   company has to repay, so anyone who is not an administrator leaves it for a
+ *   second signature. An administrator takes it at once, because the cash has
+ *   already arrived in the drawer and leaving the row pending would put the
+ *   shift's expected figure behind the physical count until someone approved
+ *   it — a variance nobody created.
+ *
+ * `controlled` is the other half of the answer: only these types may be created
+ * as pending at all, so it is what the create route checks against a caller
+ * who asked for `status: 'pending'` on something ordinary.
+ */
+export function controlledApproval(
+  typeCode: string | null | undefined,
+  amount: number,
+  expenseThreshold: number,
+  isAdminCreator: boolean,
+): { controlled: boolean; requiresApproval: boolean } {
+  const isOperatingExpense = typeCode === 'operating_expense';
+  const controlled =
+    typeCode === 'owner_funding' ||
+    typeCode === 'owner_return' ||
+    isOperatingExpense ||
+    typeCode === 'loan_received' ||
+    typeCode === 'loan_repayment';
+  const requiresApproval = isOperatingExpense
+    ? amount > expenseThreshold
+    : controlled && !isAdminCreator;
+  return { controlled, requiresApproval };
+}
+
 const money = (cents: number): number => cents / 100;
 
 // A ledger row carries either a transaction (source_type 'transaction', with
@@ -273,6 +316,13 @@ export function bucketFor(sourceType: string | null | undefined, txnCode: string
       case 'adjustment_in':
       case 'adjustment_out':
         return 'adjustments';
+      // Borrowed money and the principal paid back. Kept out of EXPENSE_BUCKETS
+      // on the same reasoning that keeps `owner_return` out: a repayment hands
+      // back money the company never spent, so totalling it as spending would
+      // report the cost of being in business as everything borrowed and repaid.
+      case 'loan_received':
+      case 'loan_repayment':
+        return 'borrowings';
       default:
         return 'other';
     }

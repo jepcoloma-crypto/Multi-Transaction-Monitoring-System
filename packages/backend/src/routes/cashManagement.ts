@@ -148,6 +148,38 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
       branchParams,
     );
 
+    // What is still owed, counted from the beginning of the books up to the
+    // end of the period rather than across it.
+    //
+    // Across the window would be wrong in the one case this figure exists for:
+    // a loan taken in September and untouched in October reads ₱0 owed under an
+    // October period, which is precisely when the operator wants to know it.
+    // Ending where the period ends keeps it true for any period, and still
+    // answers "what do I owe now" whenever the period reaches today — with no
+    // end date it runs to the end of the ledger. The upper bound is the same
+    // `entryDateBounds` the flow above uses, so the two cannot drift apart.
+    const borrowBounds = entryDateBounds('l', 1, null, end);
+    const borrowConds = [`tt.code IN ('loan_received', 'loan_repayment')`, ...borrowBounds.conds];
+    const borrowParams: any[] = [...borrowBounds.params];
+    const borrowScope = branchClause(req, 'l', 'accounts.read_all', borrowParams.length + 1, 'account');
+    if (borrowScope.clause) {
+      borrowConds.push(borrowScope.clause);
+      borrowParams.push(...borrowScope.params);
+    }
+    if (branchFilter) {
+      borrowConds.push(`a.branch_id = $${borrowParams.length + 1}`);
+      borrowParams.push(branchFilter);
+    }
+    const borrowRow = await queryOne<{ outstanding: string }>(
+      `SELECT COALESCE(SUM(CASE WHEN l.entry_type = 'credit' THEN l.amount ELSE -l.amount END), 0) AS outstanding
+       FROM ledger_entries l
+       JOIN accounts a ON a.id = l.account_id
+       LEFT JOIN transactions t ON t.id = l.transaction_id
+       LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       WHERE ${borrowConds.join(' AND ')}`,
+      borrowParams,
+    );
+
     res.json({
       success: true,
       data: {
@@ -165,6 +197,11 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
         // names — the account holding the cash and the line totalling it — and
         // a reader who does not know that sees two pots holding the same peso.
         drawerAccounts: drawerRow?.account_names ?? '',
+        // Borrowed money still outstanding. Deliberately beside the drawer
+        // figure rather than inside `statement.totals`: a liability is not part
+        // of the opening-plus-sources-minus-uses identity, and folding it in
+        // would break the tie-out the statement exists to satisfy.
+        borrowingsOutstanding: num(borrowRow?.outstanding),
         // Served beside the drawer figure for the same reason: the expense form
         // on this page has to say what the books will do, and the create route
         // decides that from this number. The operator role holds no

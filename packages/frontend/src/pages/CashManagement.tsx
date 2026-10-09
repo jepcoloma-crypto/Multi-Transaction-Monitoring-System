@@ -49,6 +49,7 @@ interface Statement {
   drawer?: number;
   drawerAccounts?: string;
   expenseApprovalThreshold?: number;
+  borrowingsOutstanding?: number;
 }
 
 interface Shift {
@@ -169,6 +170,53 @@ const emptyForm = {
   referenceNumber: '',
   transactionDate: manilaDateValue(),
   paymentMethod: 'cash',
+};
+
+// Cash events the entry form has no path to. That form picks its type from the
+// fee rule it runs, so anything without a fee is unreachable from there — and
+// these five move physical cash while carrying none.
+//
+// Curated rather than every type on the server: a picker offering all nineteen
+// would hand straight back the free choice that fee rules and D3 exist to
+// avoid. Each one here is a real counter event with no fee and no other form.
+const CASH_EVENT_TYPES = [
+  {
+    code: 'loan_received',
+    label: 'Borrowed cash received',
+    hint: 'Cash taken into the drawer from a lender. It is the company\u2019s cash to hold but not to keep \u2014 Sources and Uses files it under Borrowings so what is still owed reads off the statement.',
+  },
+  {
+    code: 'loan_repayment',
+    label: 'Loan repaid',
+    hint: 'Principal handed back to the lender out of the drawer. Not a running cost, so it stays out of the expense totals.',
+  },
+  {
+    code: 'other_income',
+    label: 'Other income received',
+    hint: 'Money taken in that no fee rule covers \u2014 a rebate, a sale, a charge collected at the counter.',
+  },
+  {
+    code: 'refund',
+    label: 'Refund paid out',
+    hint: 'Money handed back to a customer at the counter. Record it so the drawer does not close short of an explanation.',
+  },
+  {
+    code: 'refund_received',
+    label: 'Refund received back',
+    hint: 'Money returned to the company by a provider or partner.',
+  },
+] as const;
+
+type CashEventCode = (typeof CASH_EVENT_TYPES)[number]['code'];
+
+const emptyEventForm = {
+  code: 'loan_received' as CashEventCode,
+  accountId: '',
+  amount: '',
+  payee: '',
+  description: '',
+  referenceNumber: '',
+  transactionDate: manilaDateValue(),
 };
 
 // The count sheet is the one thing here that leaves the screen: it is filed
@@ -413,6 +461,15 @@ export default function CashManagement() {
   const [formError, setFormError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // The second form: a cash event with no fee rule behind it, so its type is
+  // chosen here rather than implied by a rule. Type ids arrive from setup —
+  // the server is the only place that knows them, and a type this build does
+  // not have is reported rather than silently dropped.
+  const [showEventForm, setShowEventForm] = useState(false);
+  const [eventForm, setEventForm] = useState(emptyEventForm);
+  const [eventError, setEventError] = useState('');
+  const [typeIds, setTypeIds] = useState<Record<string, string>>({});
+
   // A cash account's balance is the drawer's physical cash, so the only method
   // it can carry is `cash` — and the server refuses anything else (D33).
   const formPaysFromDrawer = accounts.find((a) => a.id === form.accountId)?.type_code === 'cash';
@@ -544,8 +601,12 @@ export default function CashManagement() {
       if (branchVal.status === 'fulfilled') setBranches(unwrapRows(branchVal.value));
       if (accountVal.status === 'fulfilled') setAccounts(unwrapRows(accountVal.value));
       if (typeVal.status === 'fulfilled') {
-        const opex = unwrapRows<TypeRow>(typeVal.value).find((t) => t.code === 'operating_expense');
+        const rows = unwrapRows<TypeRow>(typeVal.value);
+        const opex = rows.find((t) => t.code === 'operating_expense');
         setExpenseTypeId(opex?.id || '');
+        const byCode: Record<string, string> = {};
+        for (const t of rows) byCode[t.code] = t.id;
+        setTypeIds(byCode);
       }
       if (categoryVal.status === 'fulfilled') setCategories(unwrapRows(categoryVal.value));
     } catch {
@@ -794,6 +855,54 @@ export default function CashManagement() {
     }
   };
 
+  const openEventForm = () => {
+    setEventForm({ ...emptyEventForm, transactionDate: manilaDateValue() });
+    setEventError('');
+    // The drawer is preselected the same way the expense form preselects it,
+    // for the same reason: a borrowed peso and a refund paid at the counter
+    // are both cash in the branch's hands, and hunting for the right wallet is
+    // how the wrong one gets picked.
+    const ownBranches = (user?.branches || []).map((b) => b.name);
+    const float =
+      accounts.find((a) => a.type_code === 'cash' && !!a.branch_name && ownBranches.includes(a.branch_name))
+      || accounts.find((a) => a.type_code === 'cash');
+    if (float) setEventForm((f) => ({ ...f, accountId: float.id }));
+    setShowEventForm(true);
+  };
+
+  const submitCashEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEventError('');
+    const typeId = typeIds[eventForm.code];
+    if (!typeId) {
+      setEventError('That transaction type is not available on this server.');
+      return;
+    }
+    if (!eventForm.accountId) { setEventError('Choose the wallet this belongs to.'); return; }
+    if (!eventForm.amount || Number(eventForm.amount) <= 0) { setEventError('Enter an amount greater than zero.'); return; }
+    if (!eventForm.description.trim()) { setEventError('Describe what happened.'); return; }
+
+    setSaving(true);
+    try {
+      await api.post('/transactions', {
+        accountId: eventForm.accountId,
+        transactionTypeId: typeId,
+        amount: Number(eventForm.amount),
+        description: eventForm.description.trim(),
+        payee: eventForm.payee.trim() || null,
+        referenceNumber: eventForm.referenceNumber.trim() || null,
+        transactionDate: eventForm.transactionDate,
+      });
+      setShowEventForm(false);
+      await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity(), loadRecords()]);
+      window.dispatchEvent(new Event('approvals-changed'));
+    } catch (err) {
+      setEventError(err instanceof Error ? err.message : 'Could not record the cash event');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const decide = async (expense: PendingExpense, action: 'approve' | 'reject') => {
     const verb = action === 'approve' ? 'Approve' : 'Reject';
     if (action === 'approve') {
@@ -853,6 +962,18 @@ export default function CashManagement() {
     Number.isFinite(enteredAmount) &&
     enteredAmount > 0 &&
     enteredAmount <= threshold;
+
+  // What the cash-event form will tell the operator, mirroring the expense
+  // banner. A borrowing waits for a second signature when anyone other than an
+  // administrator records it: a loan creates a debt the company has to repay,
+  // and D6's two-person rule does not stop at the administrator. An
+  // administrator takes it at once, exactly as owner funding already does.
+  const eventIsBorrowing = eventForm.code === 'loan_received' || eventForm.code === 'loan_repayment';
+  const eventSettlesNow = !eventIsBorrowing || isAdmin;
+  const eventIsMoneyIn =
+    eventForm.code === 'loan_received' ||
+    eventForm.code === 'other_income' ||
+    eventForm.code === 'refund_received';
 
   // The drawer's expectation, not a balance: opening count plus the movements
   // the shift has already taken. Summed across the open shifts the caller can
@@ -926,16 +1047,32 @@ export default function CashManagement() {
                 Disabled rather than hidden so the operator can still see that
                 the action exists and read why it is shut. */}
             {canWrite && (
-              <button
-                type="button"
-                onClick={openForm}
-                className="btn-primary"
-                disabled={openShiftCount === 0}
-                title={openShiftCount === 0 ? 'No shift is open in this scope' : undefined}
-              >
-                <Plus className="w-4 h-4" />
-                Record expense
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={openForm}
+                  className="btn-primary"
+                  disabled={openShiftCount === 0}
+                  title={openShiftCount === 0 ? 'No shift is open in this scope' : undefined}
+                >
+                  <Plus className="w-4 h-4" />
+                  Record expense
+                </button>
+                {/* Beside the expense button rather than folded into it: an
+                    expense is a running cost and this is everything else the
+                    drawer takes in or hands back — borrowed cash, income with
+                    no fee, a refund. Same shift gate, same disabled reason. */}
+                <button
+                  type="button"
+                  onClick={openEventForm}
+                  className="btn-secondary"
+                  disabled={openShiftCount === 0}
+                  title={openShiftCount === 0 ? 'No shift is open in this scope' : undefined}
+                >
+                  <Coins className="w-4 h-4" />
+                  Record cash event
+                </button>
+              </>
             )}
           </div>
           {canWrite && openShiftCount === 0 && (
@@ -984,7 +1121,7 @@ export default function CashManagement() {
               period it is shaped by (D18, R3), so what stays here is the live
               position — what is on the books, what the drawers hold, and what
               the open shift's own day earned and spent. */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 2xl:grid-cols-7 gap-4">
             <div className="card">
               <div className="flex items-center gap-2 text-gray-500">
                 <Wallet className="w-4 h-4" />
@@ -1013,6 +1150,28 @@ export default function CashManagement() {
                 </div>
                 <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{formatCurrency(statement.drawer)}</p>
                 <p className="text-sm text-gray-500">{cashOnHandNote(statement.drawerAccounts)}</p>
+              </div>
+            )}
+
+            {/* Borrowed money still outstanding, from every borrowing in the
+                books rather than from a window: this screen has no period
+                (D18), so the figure is simply what is owed now. Held out of
+                `totals` because a liability is not part of the statement's
+                opening-plus-sources-minus-uses identity — and hidden at zero so
+                a business carrying no debt says so by showing nothing rather
+                than by adding a permanent ₱0.00 to every read. */}
+            {statement.borrowingsOutstanding !== undefined && statement.borrowingsOutstanding !== 0 && (
+              <div className="card border border-amber-300">
+                <div className="flex items-center gap-2 text-amber-700">
+                  <Receipt className="w-4 h-4" />
+                  <p className="text-xs font-semibold uppercase tracking-wide">Still owed</p>
+                </div>
+                <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">
+                  {formatCurrency(statement.borrowingsOutstanding)}
+                </p>
+                <p className="text-sm text-gray-500">
+                  Borrowed and not yet repaid — counted from the start of the books
+                </p>
               </div>
             )}
 
@@ -1997,6 +2156,187 @@ export default function CashManagement() {
                   </button>
                   <button type="submit" className="btn-primary" disabled={saving}>
                     {saving ? 'Saving…' : settlesNow ? 'Record expense' : 'Send for approval'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showEventForm && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
+          <div className="mx-auto my-10 max-w-2xl bg-white rounded-xl shadow-2xl border border-gray-200">
+            <div className="flex items-start gap-3 px-6 pt-6 pb-5 border-b border-gray-200">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
+                <Coins className="w-5 h-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-lg font-semibold text-gray-900">Record cash event</h3>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  Money the drawer takes in or hands back that carries no fee of its own.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowEventForm(false)}
+                aria-label="Close"
+                className="-mr-1 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={submitCashEvent}>
+              <div className="px-6 py-5 space-y-6">
+                {eventError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {eventError}
+                  </div>
+                )}
+
+                <div className={`flex gap-3 rounded-lg border px-4 py-3 ${
+                  eventSettlesNow ? 'border-emerald-200 bg-emerald-50' : 'border-blue-200 bg-blue-50'
+                }`}>
+                  <ShieldAlert className={`mt-0.5 h-4 w-4 shrink-0 ${eventSettlesNow ? 'text-emerald-600' : 'text-blue-600'}`} />
+                  <p className={`text-xs leading-relaxed ${eventSettlesNow ? 'text-emerald-800' : 'text-blue-800'}`}>
+                    {eventSettlesNow
+                      ? <>Recorded <span className="font-semibold">now</span> — this reaches the books and the
+                        drawer the moment you save, and counts in the current shift. Check the figure first.</>
+                      : <>Saved as a <span className="font-semibold">request</span>. A borrowing creates a debt the
+                        company has to repay, so a second person signs before it counts — nobody approves
+                        their own request.</>}
+                  </p>
+                </div>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    What happened
+                  </h4>
+                  <select
+                    required
+                    className="form-input"
+                    value={eventForm.code}
+                    onChange={(e) => setEventForm((f) => ({ ...f, code: e.target.value as CashEventCode }))}
+                  >
+                    {CASH_EVENT_TYPES.map((t) => (
+                      <option key={t.code} value={t.code}>{t.label}</option>
+                    ))}
+                  </select>
+                  <p className="mt-2 rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-600">
+                    {CASH_EVENT_TYPES.find((t) => t.code === eventForm.code)?.hint}
+                  </p>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    {eventIsMoneyIn ? 'Amount received' : 'Amount paid out'}
+                  </h4>
+                  <div className="relative">
+                    <span className="pointer-events-none absolute inset-y-0 left-0 flex w-10 items-center justify-center border-r border-gray-200 text-gray-500">
+                      ₱
+                    </span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      required
+                      autoFocus
+                      className="form-input pl-12 text-2xl font-semibold tabular-nums"
+                      value={eventForm.amount}
+                      onChange={(e) => setEventForm((f) => ({ ...f, amount: e.target.value }))}
+                      placeholder="0.00"
+                    />
+                  </div>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Wallet
+                  </h4>
+                  <AccountSelect
+                    accounts={accounts}
+                    value={eventForm.accountId}
+                    onChange={(v) => setEventForm((f) => ({ ...f, accountId: v }))}
+                    placeholder="Select the wallet this belongs to"
+                    className="form-input"
+                  />
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    Borrowed cash lands in the drawer, so the revolving fund is already selected.
+                    Any visible wallet may be used.
+                  </p>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Details
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="sm:col-span-2">
+                      <label className="form-label" htmlFor="event-description">Description *</label>
+                      <textarea
+                        id="event-description"
+                        required
+                        rows={2}
+                        className="form-input"
+                        value={eventForm.description}
+                        onChange={(e) => setEventForm((f) => ({ ...f, description: e.target.value }))}
+                        placeholder={eventIsMoneyIn
+                          ? 'e.g. Cash advance from lender, 60-day term'
+                          : 'e.g. First repayment of the 60-day loan'}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label" htmlFor="event-payee">
+                        {eventIsMoneyIn ? 'Received from' : 'Paid to'}
+                      </label>
+                      <input
+                        id="event-payee"
+                        type="text"
+                        className="form-input"
+                        value={eventForm.payee}
+                        onChange={(e) => setEventForm((f) => ({ ...f, payee: e.target.value }))}
+                        placeholder={eventIsMoneyIn ? 'Lender or source' : 'Lender or recipient'}
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label" htmlFor="event-reference">Reference</label>
+                      <input
+                        id="event-reference"
+                        type="text"
+                        className="form-input"
+                        value={eventForm.referenceNumber}
+                        onChange={(e) => setEventForm((f) => ({ ...f, referenceNumber: e.target.value }))}
+                        placeholder="Receipt, voucher or agreement no."
+                      />
+                    </div>
+                    <div>
+                      <label className="form-label" htmlFor="event-date">Date</label>
+                      <input
+                        id="event-date"
+                        type="date"
+                        className="form-input"
+                        value={eventForm.transactionDate}
+                        onChange={(e) => setEventForm((f) => ({ ...f, transactionDate: e.target.value }))}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">Shown in Manila time.</p>
+                    </div>
+                  </div>
+                </section>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4 rounded-b-xl">
+                <p className="text-xs text-gray-500 hidden sm:block">
+                  {eventSettlesNow
+                    ? <>Posted to the wallet and to the current shift <span className="font-medium text-gray-600">on save</span>.</>
+                    : <>Goes to <span className="font-medium text-gray-600">Awaiting approval</span> for a second signature.</>}
+                </p>
+                <div className="flex gap-3 ml-auto">
+                  <button type="button" className="btn-secondary" onClick={() => setShowEventForm(false)} disabled={saving}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={saving}>
+                    {saving ? 'Saving…' : eventSettlesNow ? 'Record cash event' : 'Send for approval'}
                   </button>
                 </div>
               </div>
