@@ -275,3 +275,27 @@ export const cashOnHandNote = (accountNames?: string | null): string => {
     ? `${names.join(', ')} — in the branch drawers, already counted in the total`
     : 'In the branch drawers — already counted in the total';
 };
+
+/**
+ * What the opening count says against the books, or null when they agree.
+ *
+ * The float is never blocked when it differs — D16 makes the two readings
+ * independent on purpose, so that a disagreement is a finding rather than a
+ * refused action. But the operator typing the count cannot see the drawer's
+ * book figure unless it is handed to them, so a mistyped digit was discovered
+ * only when the shift closed, a whole shift later. This states the difference
+ * beside the field while there is still time to recount.
+ *
+ * Returns null when the two agree, so the form can render nothing at all rather
+ * than a line asserting they match, and null when either side is not yet a
+ * number, so an empty field never reads as a shortage.
+ */
+export const floatAgainstBooks = (openingFloat: string, booksBalance: number): string | null => {
+  const typed = Number(String(openingFloat).trim());
+  if (String(openingFloat).trim() === '' || !Number.isFinite(typed)) return null;
+  const difference = Math.round((typed - booksBalance) * 100) / 100;
+  if (difference === 0) return null;
+  return difference > 0
+    ? `This is ${formatCurrency(difference)} more than the ${formatCurrency(booksBalance)} the books show.`
+    : `This is ${formatCurrency(-difference)} less than the ${formatCurrency(booksBalance)} the books show.`;
+};

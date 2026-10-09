@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote, paymentMethodCell } from '../lib/format';
+import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote, paymentMethodCell, floatAgainstBooks } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
 import { denomQty, tallyCents, tallyUsed, denomSubtotalPesos, tallyPesos } from '../lib/tally';
 import {
@@ -2477,6 +2477,14 @@ export default function CashManagement() {
                   The books say this drawer holds {formatCurrency(shiftOpen.booksBalance)}. That figure is
                   deliberately not filled in for you — if the two disagree at close, the difference is the finding.
                 </p>
+                {/* Stated, not enforced: a float that differs is accepted on
+                    purpose (D16), but the operator should hear about it now
+                    rather than at close. */}
+                {floatAgainstBooks(shiftOpen.openingFloat, shiftOpen.booksBalance) && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1">
+                    {floatAgainstBooks(shiftOpen.openingFloat, shiftOpen.booksBalance)}
+                  </p>
+                )}
               </div>
 
               <div className="flex justify-end gap-3 pt-1">

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel } from './format';
+import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel, floatAgainstBooks } from './format';
 
 // Manila is UTC+8 all year — no DST — so these boundaries are stable.
 const justAfterManilaMidnight = '2026-10-04T16:30:00.000Z'; // 00:30 on 5 Oct in Manila
@@ -167,5 +167,37 @@ describe('manilaInputToIso', () => {
   // silent rollover would file a correction under a day nobody typed.
   it('refuses a date the calendar cannot hold rather than rolling it over', () => {
     expect(manilaInputToIso('2026-02-30T10:00')).toBeNull();
+  });
+});
+
+describe('floatAgainstBooks', () => {
+  it('says nothing when the count and the books agree', () => {
+    expect(floatAgainstBooks('74680', 74680)).toBeNull();
+    expect(floatAgainstBooks('74680.00', 74680)).toBeNull();
+  });
+
+  it('names the excess when the count is higher than the books', () => {
+    expect(floatAgainstBooks('74860', 74680)).toBe('This is ₱180.00 more than the ₱74,680.00 the books show.');
+  });
+
+  it('names the shortfall when the count is lower than the books', () => {
+    expect(floatAgainstBooks('74500', 74680)).toBe('This is ₱180.00 less than the ₱74,680.00 the books show.');
+  });
+
+  // An empty field is not a shortage, so nothing is claimed about it.
+  it('says nothing while the field is empty or not yet a number', () => {
+    for (const blank of ['', '  ', 'abc', '-']) {
+      expect(floatAgainstBooks(blank, 74680)).toBeNull();
+    }
+  });
+
+  // The comparison is in centavos so a fraction of a peso cannot read as a
+  // difference; a drawer counted to the centavo either matches or it does not.
+  it('treats a difference below one centavo as agreement', () => {
+    expect(floatAgainstBooks('74680.001', 74680)).toBeNull();
+  });
+
+  it('reads a float above a zero drawer as strictly more', () => {
+    expect(floatAgainstBooks('5000', 0)).toBe('This is ₱5,000.00 more than the ₱0.00 the books show.');
   });
 });
