@@ -37,6 +37,17 @@ const manilaDateTimeFmt = new Intl.DateTimeFormat('en-CA', {
   hourCycle: 'h23',
 });
 
+const manilaFullFmt = new Intl.DateTimeFormat('en-CA', {
+  timeZone: MANILA_TZ,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
 const partsOf = (formatter: Intl.DateTimeFormat, d: Date): Record<string, string> => {
   const parts: Record<string, string> = {};
   for (const part of formatter.formatToParts(d)) {
@@ -53,6 +64,38 @@ export const manilaDateValue = (d: Date = new Date()): string => {
 export const manilaDateTimeValue = (d: Date = new Date()): string => {
   const p = partsOf(manilaDateTimeFmt, d);
   return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+};
+
+/**
+ * The inverse of `manilaDateTimeValue`. A wall-clock minute read off a
+ * `datetime-local` input is turned back into the UTC instant it names, which is
+ * what the database stores and what must be sent back when a date is corrected.
+ *
+ * The clock is read as if it were UTC, then stepped back by the offset the zone
+ * carried at that instant. Manila is a fixed UTC+8 with no daylight saving, so
+ * one step is exact — but the offset is read from the zone rather than assumed,
+ * so the pairing stays correct if that ever changes.
+ */
+export const manilaInputToIso = (value: string): string | null => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!m) return null;
+  const [, year, month, day, hour, minute] = m.map(Number);
+
+  const readAsUtc = Date.UTC(year, month - 1, day, hour, minute);
+  const seen = partsOf(manilaFullFmt, new Date(readAsUtc));
+  const seenAsUtc = Date.UTC(
+    Number(seen.year),
+    Number(seen.month) - 1,
+    Number(seen.day),
+    Number(seen.hour),
+    Number(seen.minute),
+    Number(seen.second)
+  );
+
+  const iso = new Date(readAsUtc - (seenAsUtc - readAsUtc)).toISOString();
+  // A value the zone cannot represent would round-trip to a different clock
+  // than the one typed, so it is refused rather than silently shifted.
+  return manilaDateTimeValue(new Date(iso)) === value ? iso : null;
 };
 
 /**

@@ -9,7 +9,7 @@ import { loadScopedLedger, loadLedgerRowsBySource } from '../services/ledgerQuer
 import { strategyFor, verifyShape } from '../services/correctionStrategy';
 import { randomUUID } from 'crypto';
 import { simulateCorrection, appendPlannedRows } from '../services/correctionPreview';
-import { validateTierA, TIER_A_FIELDS } from '../services/correctionFields';
+import { validateTierA, TIER_A_FIELDS, planDateCascade } from '../services/correctionFields';
 import { planReEntry, RE_ENTERABLE } from '../services/reEntryPlan';
 import { planGapFix, isGapFixDirection, GAP_FIX_DIRECTIONS, GAP_FIX_LABELS } from '../services/gapFixPlan';
 import { planAmountCorrection, columnsChanged, AMOUNT_FIELDS, isAmountable } from '../services/amountFields';
@@ -374,16 +374,29 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
         columns: plan ? plan.columns : null,
         recordChanged,
         amountFields: isAmountable(sourceType) ? AMOUNT_FIELDS[sourceType] : [],
+        // The whitelist is the single source of truth for what is editable.
+        // Sent to the client so the Details form is rendered from it rather
+        // than hardcoded — a field added here appears in the form untouched.
+        metadataFields: Object.entries(TIER_A_FIELDS[sourceType] ?? {}).map(([key, kind]) => ({ key, kind })),
       },
     });
   } catch (error) { next(error); }
 });
 
-// Tier A: metadata only. No ledger row, no balance, nothing numeric — so it is
-// a single guarded UPDATE with a whitelist deciding which columns are reachable.
+// The ledger keeps a copy of the source's date, and every statement files a
+// row by that copy rather than by the source itself. Correcting the date on
+// one and not the other leaves the Cash records register showing the new day
+// while each report still files it under the old one, so the two move together.
+
+// Tier A: a whitelist decides which columns are reachable. entry_date is a
+// display and windowing column and nothing else — the balance chain is read in
+// write order (created_at, then id), never by date — so a date correction here
+// provably moves zero pesos.
 router.patch('/:sourceType/:sourceId', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
+  const { sourceType, sourceId } = req.params;
+  const client = await getClient();
+  let started = false;
   try {
-    const { sourceType, sourceId } = req.params;
     const table = requireSource(sourceType, sourceId);
     if (!TIER_A_FIELDS[sourceType]) {
       throw createError(400, `No metadata fields are correctable for ${sourceType}`);
@@ -393,15 +406,46 @@ router.patch('/:sourceType/:sourceId', authorize('transactions.correct'), async 
     const record = await requireCompleted(sourceType, sourceId, table);
 
     const { columns, values } = validateTierA(sourceType, req.body?.fields);
+    const cascade = planDateCascade(sourceType, columns, values);
+
+    await client.query('BEGIN');
+    started = true;
+
     const assignments = columns.map((c, i) => `${c} = $${i + 1}`);
     if (TABLES_WITH_UPDATED_AT.has(table)) assignments.push('updated_at = NOW()');
 
-    await query(
+    await client.query(
       `UPDATE ${table} SET ${assignments.join(', ')} WHERE id = $${values.length + 1}`,
       [...values, sourceId]
     );
 
-    const updated = await queryOne(`SELECT * FROM ${table} WHERE id = $1`, [sourceId]);
+    let ledgerRows: { id: string; entry_date: Date }[] = [];
+    if (cascade) {
+      const before = await client.query(
+        `SELECT id, entry_date FROM ledger_entries
+          WHERE source_type = $1 AND source_id = $2
+          ORDER BY created_at, id`,
+        [sourceType, sourceId]
+      );
+      ledgerRows = before.rows;
+
+      const cascaded = await client.query(
+        `UPDATE ledger_entries SET entry_date = $1
+          WHERE source_type = $2 AND source_id = $3`,
+        [cascade.value, sourceType, sourceId]
+      );
+      // A record with no ledger rows of its own is not an error — it has not
+      // posted yet. A count that moved between the read and the write is, and
+      // the guard refuses rather than commit half a correction.
+      if (cascaded.rowCount !== ledgerRows.length) {
+        throw createError(409, `Refusing to commit — ${cascaded.rowCount} ledger rows changed but ${ledgerRows.length} were read`);
+      }
+    }
+
+    const updated = (await client.query(`SELECT * FROM ${table} WHERE id = $1`, [sourceId])).rows[0];
+
+    await client.query('COMMIT');
+    started = false;
 
     await createAuditLog({
       userId: req.user!.userId,
@@ -410,12 +454,33 @@ router.patch('/:sourceType/:sourceId', authorize('transactions.correct'), async 
       entityId: sourceId,
       ipAddress: req.ip,
       reason,
-      oldData: pick(record, columns),
-      newData: pick(updated, columns),
+      oldData: {
+        ...pick(record, columns),
+        ...(cascade
+          ? { ledgerEntries: ledgerRows.map((r) => ({ id: r.id, entryDate: r.entry_date })) }
+          : {}),
+      },
+      newData: {
+        ...pick(updated, columns),
+        ...(cascade
+          ? { ledgerEntries: ledgerRows.map((r) => ({ id: r.id, entryDate: cascade.value })) }
+          : {}),
+      },
     });
 
-    res.json({ success: true, data: { changed: pick(updated, columns) } });
-  } catch (error) { next(error); }
+    res.json({
+      success: true,
+      data: {
+        changed: pick(updated, columns),
+        ...(cascade ? { ledgerRowsUpdated: ledgerRows.length } : {}),
+      },
+    });
+  } catch (error) {
+    if (started) await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
 });
 
 // Tier B: an amount correction that moves money. One transaction per call, the

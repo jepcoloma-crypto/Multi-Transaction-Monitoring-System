@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateTierA, TIER_A_FIELDS } from '../services/correctionFields';
+import { validateTierA, TIER_A_FIELDS, planDateCascade } from '../services/correctionFields';
 
 test('a valid metadata edit produces parameterised columns and values', () => {
   const result = validateTierA('transaction', {
@@ -113,4 +113,55 @@ test('field values must match their declared type and length', () => {
     () => validateTierA('transaction', { transaction_date: 1789000000000 }),
     (e: any) => e.statusCode === 400 && /must be an ISO date string/.test(e.message)
   );
+});
+
+test('correcting a transaction date cascades to the ledger copy', () => {
+  const { columns, values } = validateTierA('transaction', {
+    description: 'Filed under the wrong day',
+    transaction_date: '2026-09-15T08:30:00.000Z',
+  });
+  const cascade = planDateCascade('transaction', columns, values);
+
+  assert.ok(cascade, 'a date correction must cascade');
+  assert.equal(cascade.column, 'transaction_date');
+  assert.ok(cascade.value instanceof Date);
+  assert.equal((cascade.value as Date).toISOString(), '2026-09-15T08:30:00.000Z');
+});
+
+test('correcting a transfer date cascades to the ledger copy', () => {
+  const { columns, values } = validateTierA('transfer', {
+    transfer_date: '2026-10-02T01:00:00.000Z',
+  });
+  const cascade = planDateCascade('transfer', columns, values);
+
+  assert.ok(cascade, 'a transfer date correction must cascade');
+  assert.equal((cascade.value as Date).toISOString(), '2026-10-02T01:00:00.000Z');
+});
+
+test('a metadata-only correction does not cascade', () => {
+  const { columns, values } = validateTierA('transaction', {
+    reference_number: 'REF-4471',
+    notes: 'Corrected the reference only',
+  });
+  assert.equal(planDateCascade('transaction', columns, values), null);
+});
+
+test('a source with no date mirror never cascades', () => {
+  const { columns, values } = validateTierA('loading', { notes: 'Corrected a note' });
+  assert.equal(planDateCascade('loading', columns, values), null);
+});
+
+test('the cascade carries the value at the date column, not the first value', () => {
+  const { columns, values } = validateTierA('transaction', {
+    description: 'First in the payload',
+    transaction_date: '2026-09-15T08:30:00.000Z',
+    notes: 'Last in the payload',
+  });
+
+  assert.equal(columns[0], 'description');
+  assert.equal(columns[1], 'transaction_date');
+
+  const cascade = planDateCascade('transaction', columns, values);
+  assert.ok(cascade);
+  assert.equal((cascade.value as Date).toISOString(), '2026-09-15T08:30:00.000Z');
 });

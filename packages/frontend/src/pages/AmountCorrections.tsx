@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
-import { formatCurrency } from '../lib/format';
+import {
+  formatCurrency,
+  manilaDateTimeValue,
+  manilaInputToIso,
+  paymentMethodOptions,
+} from '../lib/format';
 import Pagination from '../components/Pagination';
 import { AlertTriangle, CheckCircle2, Pencil, RefreshCw, Search, X } from 'lucide-react';
 
@@ -12,6 +17,13 @@ interface AmountField {
   label: string;
   kind: 'money' | 'qty';
   min: number | null;
+}
+
+type MetadataKind = 'text' | 'timestamp';
+
+interface MetadataField {
+  key: string;
+  kind: MetadataKind;
 }
 
 interface AuditAccount {
@@ -44,6 +56,7 @@ interface PreviewData {
   columns: Record<string, number> | null;
   recordChanged: boolean;
   amountFields: AmountField[];
+  metadataFields: MetadataField[];
 }
 
 interface ListedRow {
@@ -61,6 +74,40 @@ const TABS: { key: SourceType; label: string; endpoint: string; supportsStatus: 
 const money = (value: unknown): string => {
   const n = Number(value);
   return formatCurrency(Number.isFinite(n) ? n : 0);
+};
+
+// Labels are derived from the column name rather than listed, so a field added
+// to the server-side whitelist is labelled and rendered without touching this
+// file.
+const humanize = (key: string) =>
+  key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+
+// These are free-text notes an operator writes in sentences, so they get a
+// box rather than a single line. It is a presentational choice only — the
+// server whitelist, not this set, decides what may be written.
+const LONG_TEXT_FIELDS = new Set(['description', 'notes', 'purpose']);
+
+// A stored timestamp is a UTC instant, but the form edits it as the Manila
+// wall clock the operator actually means, and it is converted back on save.
+const readMetadata = (
+  specs: MetadataField[],
+  record: Record<string, unknown> | null
+): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const spec of specs) {
+    const raw = record?.[spec.key];
+    if (raw === null || raw === undefined || raw === '') {
+      out[spec.key] = '';
+      continue;
+    }
+    if (spec.kind === 'timestamp') {
+      const d = new Date(String(raw));
+      out[spec.key] = Number.isNaN(d.getTime()) ? '' : manilaDateTimeValue(d);
+      continue;
+    }
+    out[spec.key] = String(raw);
+  }
+  return out;
 };
 
 const describe = (type: SourceType, row: ListedRow) => {
@@ -110,6 +157,15 @@ export default function AmountCorrections() {
   const [reason, setReason] = useState('');
   const [applying, setApplying] = useState(false);
   const [applied, setApplied] = useState<string | null>(null);
+
+  const [dialogTab, setDialogTab] = useState<'figures' | 'details'>('figures');
+  const [metaSpecs, setMetaSpecs] = useState<MetadataField[]>([]);
+  const [metaValues, setMetaValues] = useState<Record<string, string>>({});
+  const [metaOriginal, setMetaOriginal] = useState<Record<string, string>>({});
+  const [metaTouched, setMetaTouched] = useState<string[]>([]);
+  const [metaApplying, setMetaApplying] = useState(false);
+  const [metaApplied, setMetaApplied] = useState<string | null>(null);
+  const [metaError, setMetaError] = useState<string | null>(null);
 
   const load = useCallback(
     async (page = 1) => {
@@ -179,6 +235,12 @@ export default function AmountCorrections() {
     setTouched([]);
     setValues({});
     setFieldSpecs([]);
+    setDialogTab('figures');
+    setMetaSpecs([]);
+    setMetaValues({});
+    setMetaTouched([]);
+    setMetaApplied(null);
+    setMetaError(null);
     const data = await runPreview(tab, row.id, {});
     if (data?.amountFields) {
       setFieldSpecs(data.amountFields);
@@ -188,6 +250,12 @@ export default function AmountCorrections() {
         initial[field.key] = raw === null || raw === undefined ? '' : String(raw);
       }
       setValues(initial);
+    }
+    if (data?.metadataFields) {
+      setMetaSpecs(data.metadataFields);
+      const initial = readMetadata(data.metadataFields, data.record);
+      setMetaValues(initial);
+      setMetaOriginal({ ...initial });
     }
   };
 
@@ -204,6 +272,13 @@ export default function AmountCorrections() {
     setPreview(null);
     setFieldSpecs([]);
     setApplied(null);
+    setDialogTab('figures');
+    setMetaSpecs([]);
+    setMetaValues({});
+    setMetaOriginal({});
+    setMetaTouched([]);
+    setMetaApplied(null);
+    setMetaError(null);
   };
 
   const handleApply = async () => {
@@ -231,6 +306,66 @@ export default function AmountCorrections() {
       setPreviewError(err.message || 'Correction failed');
     } finally {
       setApplying(false);
+    }
+  };
+
+  // Details travel to the metadata endpoint, which cannot touch an amount by
+  // construction: its whitelist names text and dates only, so there is no path
+  // from this form to a figure. Only the fields the operator actually changed
+  // are sent, so a column is never rewritten with the value it already holds.
+  const handleSaveDetails = async () => {
+    if (!selected) return;
+    if (!reason.trim()) {
+      setMetaError('A reason is required before details can be saved.');
+      return;
+    }
+
+    const fields: Record<string, string | null> = {};
+    for (const key of metaTouched) {
+      const spec = metaSpecs.find((s) => s.key === key);
+      const value = metaValues[key];
+      if (!spec) continue;
+      if (value === '') {
+        fields[key] = null;
+        continue;
+      }
+      if (spec.kind === 'timestamp') {
+        const iso = manilaInputToIso(value);
+        if (!iso) {
+          setMetaError(`${humanize(key)} is not a valid date and time.`);
+          return;
+        }
+        fields[key] = iso;
+        continue;
+      }
+      fields[key] = value;
+    }
+
+    if (Object.keys(fields).length === 0) {
+      setMetaError('Nothing has been changed yet.');
+      return;
+    }
+
+    setMetaApplying(true);
+    setMetaError(null);
+    try {
+      const res = await api.patch<{ changed: Record<string, unknown>; ledgerRowsUpdated?: number }>(
+        `/corrections/${tab}/${selected.id}`,
+        { fields, reason: reason.trim() }
+      );
+      const moved = res?.ledgerRowsUpdated ?? 0;
+      setMetaApplied(
+        moved > 0
+          ? `Saved. The record and ${moved} ledger row(s) now carry the corrected date, so reports file it under the same day.`
+          : 'Saved. The record details have been corrected.'
+      );
+      setMetaTouched([]);
+      setReason('');
+      load(pagination.page);
+    } catch (err: any) {
+      setMetaError(err.message || 'Could not save the details');
+    } finally {
+      setMetaApplying(false);
     }
   };
 
@@ -270,14 +405,29 @@ export default function AmountCorrections() {
 
   const canApply = Boolean(preview?.safeToCorrect && !stale && !previewing && !applying && !applied);
 
+  // A field touched and then put back is not a change, so it is not sent —
+  // and the save button only opens once something actually differs.
+  const metaDiff = metaTouched
+    .filter((key) => (metaValues[key] ?? '') !== (metaOriginal[key] ?? ''))
+    .map((key) => ({ key, from: metaOriginal[key] ?? '', to: metaValues[key] ?? '' }));
+
+  const canSaveDetails = metaDiff.length > 0 && reason.trim().length > 0 && !metaApplying && !metaApplied;
+
+  const updateMeta = (key: string, next: string) => {
+    setMetaValues((v) => ({ ...v, [key]: next }));
+    setMetaTouched((t) => (t.includes(key) ? t : [...t, key]));
+    setMetaApplied(null);
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Amount Corrections</h1>
         <p className="text-sm text-gray-600 mt-1">
-          Correct the amount on a completed cash transaction, fund transfer or loading entry. The ledger is
-          reconciled in the same step, so reports keep matching the record. Completed records are never
-          rewritten — each correction is appended and audited.
+          Correct a completed cash transaction, fund transfer or loading entry. Amounts are reconciled
+          against the ledger in the same step, so reports keep matching the record. Details — the date,
+          reference, description and payment method — are corrected separately and cannot move a figure.
+          Completed records are never rewritten; each correction is appended and audited.
         </p>
       </div>
 
@@ -350,7 +500,7 @@ export default function AmountCorrections() {
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-primary-600 text-white hover:bg-primary-700"
                     >
                       <Pencil className="w-3.5 h-3.5" />
-                      Correct amount
+                      Correct
                     </button>
                   </td>
                 </tr>
@@ -373,7 +523,7 @@ export default function AmountCorrections() {
           <div className="bg-white rounded-xl shadow-xl w-full max-w-2xl my-8">
             <div className="flex items-center justify-between px-6 py-4 border-b">
               <div>
-                <h2 className="font-semibold text-gray-900">Correct amount</h2>
+                <h2 className="font-semibold text-gray-900">Correct record</h2>
                 <p className="text-xs text-gray-500">
                   {describe(tab, selected).title} · {describe(tab, selected).subtitle}
                 </p>
@@ -390,7 +540,35 @@ export default function AmountCorrections() {
                   <p className="text-sm text-green-800">{applied}</p>
                 </div>
               )}
+              {metaApplied && (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex items-start gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-green-600 mt-0.5" />
+                  <p className="text-sm text-green-800">{metaApplied}</p>
+                </div>
+              )}
 
+              <div className="flex rounded-lg bg-gray-100 p-1 w-fit">
+                {(['figures', 'details'] as const).map((key) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      setDialogTab(key);
+                      setMetaError(null);
+                      setPreviewError(null);
+                    }}
+                    className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      dialogTab === key
+                        ? 'bg-white text-gray-900 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    {key === 'figures' ? 'Amounts' : 'Details'}
+                  </button>
+                ))}
+              </div>
+
+              {dialogTab === 'figures' && (
+              <>
               <section>
                 <h3 className="text-xs font-semibold uppercase text-gray-500 mb-2">Figures</h3>
                 <div className="grid grid-cols-2 gap-3">
@@ -474,6 +652,108 @@ export default function AmountCorrections() {
                   </div>
                 )}
               </section>
+              </>
+              )}
+
+              {dialogTab === 'details' && (
+              <section>
+                <h3 className="text-xs font-semibold uppercase text-gray-500 mb-2">Details</h3>
+                <p className="text-xs text-gray-500 mb-3">
+                  These correct how a record is described and when it is dated. The server refuses an
+                  amount, a fee or a status through this path, so nothing here can move a figure.
+                </p>
+
+                {metaSpecs.length === 0 ? (
+                  <p className="text-sm text-gray-500">Loading the correctable fields…</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    {metaSpecs.map((spec) => {
+                      const current = metaValues[spec.key] ?? '';
+                      const isLongText = LONG_TEXT_FIELDS.has(spec.key);
+                      const controlClass =
+                        'mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500';
+                      return (
+                        <label key={spec.key} className={`block ${isLongText ? 'col-span-2' : ''}`}>
+                          <span className="text-xs text-gray-600">
+                            {humanize(spec.key)}
+                            {spec.kind === 'timestamp' ? ' (Manila)' : ''}
+                          </span>
+                          {spec.kind === 'timestamp' ? (
+                            <input
+                              type="datetime-local"
+                              value={current}
+                              onChange={(e) => updateMeta(spec.key, e.target.value)}
+                              className={controlClass}
+                            />
+                          ) : spec.key === 'payment_method' ? (
+                            <select
+                              value={current}
+                              onChange={(e) => updateMeta(spec.key, e.target.value)}
+                              className={`${controlClass} bg-white`}
+                            >
+                              <option value="">— blank —</option>
+                              {current !== '' &&
+                                !paymentMethodOptions.some((o) => o.value === current) && (
+                                  <option value={current}>{current} (not a listed method)</option>
+                                )}
+                              {paymentMethodOptions.map((o) => (
+                                <option key={o.value} value={o.value}>
+                                  {o.label}
+                                </option>
+                              ))}
+                            </select>
+                          ) : isLongText ? (
+                            <textarea
+                              value={current}
+                              rows={2}
+                              onChange={(e) => updateMeta(spec.key, e.target.value)}
+                              className={controlClass}
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={current}
+                              onChange={(e) => updateMeta(spec.key, e.target.value)}
+                              className={controlClass}
+                            />
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {metaError && (
+                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 mt-3">
+                    {metaError}
+                  </p>
+                )}
+
+                {metaDiff.length > 0 && (
+                  <div className="mt-4">
+                    <h4 className="text-xs font-semibold uppercase text-gray-500 mb-2">Will change</h4>
+                    <dl className="space-y-1">
+                      {metaDiff.map((d) => (
+                        <div
+                          key={d.key}
+                          className="flex items-start gap-3 text-sm bg-amber-50 border border-amber-200 rounded-lg px-3 py-2"
+                        >
+                          <dt className="text-gray-600 w-44 shrink-0">{humanize(d.key)}</dt>
+                          <dd className="text-gray-900">
+                            <span className="text-gray-500 line-through">{d.from || '—'}</span>
+                            <span className="mx-2 text-gray-400">→</span>
+                            <span>{d.to || '—'}</span>
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Nothing on this tab changes an amount, an account balance or a ledger row.
+                    </p>
+                  </div>
+                )}
+              </section>
+              )}
 
               <section>
                 <h3 className="text-xs font-semibold uppercase text-gray-500 mb-2">Reason</h3>
@@ -481,7 +761,11 @@ export default function AmountCorrections() {
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
                   rows={2}
-                  placeholder="Why is this figure being corrected? Recorded in the audit trail."
+                  placeholder={
+                    dialogTab === 'figures'
+                      ? 'Why is this figure being corrected? Recorded in the audit trail.'
+                      : 'Why are these details being corrected? Recorded in the audit trail.'
+                  }
                   className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                 />
               </section>
@@ -492,15 +776,24 @@ export default function AmountCorrections() {
                 onClick={closeDialog}
                 className="px-4 py-2 rounded-lg text-sm font-medium text-gray-700 bg-white border border-gray-300 hover:bg-gray-100"
               >
-                {applied ? 'Close' : 'Cancel'}
+                {applied || metaApplied ? 'Close' : 'Cancel'}
               </button>
-              {!applied && (
+              {dialogTab === 'figures' && !applied && (
                 <button
                   onClick={handleApply}
                   disabled={!canApply}
                   className="px-4 py-2 rounded-lg text-sm font-medium bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {applying ? 'Applying…' : 'Apply correction'}
+                  {applying ? 'Applying…' : 'Apply amount correction'}
+                </button>
+              )}
+              {dialogTab === 'details' && !metaApplied && (
+                <button
+                  onClick={handleSaveDetails}
+                  disabled={!canSaveDetails}
+                  className="px-4 py-2 rounded-lg text-sm font-medium bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {metaApplying ? 'Saving…' : 'Save details'}
                 </button>
               )}
             </div>

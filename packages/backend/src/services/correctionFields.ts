@@ -99,3 +99,29 @@ export function validateTierA(sourceType: string, fields: unknown): ValidatedUpd
 
   return { columns, values };
 }
+
+// A date correction has to reach the ledger's copy of that date as well, or
+// every statement goes on filing the record under the old day. Which column
+// mirrors into the ledger, and whether this correction touches it, is decided
+// here rather than in the route so the rule is testable without a database.
+export const DATE_COLUMN_BY_SOURCE: Record<string, string> = {
+  transaction: 'transaction_date',
+  transfer: 'transfer_date',
+};
+
+export interface DateCascade {
+  column: string;
+  value: string | Date | null;
+}
+
+export function planDateCascade(
+  sourceType: string,
+  columns: string[],
+  values: (string | Date | null)[]
+): DateCascade | null {
+  const column = DATE_COLUMN_BY_SOURCE[sourceType];
+  if (column === undefined) return null;
+  const index = columns.indexOf(column);
+  if (index === -1) return null;
+  return { column, value: values[index] };
+}

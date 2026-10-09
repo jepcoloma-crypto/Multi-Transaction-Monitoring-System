@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, dateKeyLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel } from './format';
+import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel } from './format';
 
 // Manila is UTC+8 all year — no DST — so these boundaries are stable.
 const justAfterManilaMidnight = '2026-10-04T16:30:00.000Z'; // 00:30 on 5 Oct in Manila
@@ -135,5 +135,37 @@ describe('paymentMethodCell', () => {
   it('leaves the sentence-building label blank where the cell would not', () => {
     expect(paymentMethodLabel(null)).toBe('');
     expect(paymentMethodCell(null)).not.toBe('');
+  });
+});
+
+describe('manilaInputToIso', () => {
+  it('turns the Manila wall clock back into the UTC instant it names', () => {
+    // The owner funding on TXN #256 was booked at 8:38 PM in Manila, which is
+    // 12:38 UTC the same day. A corrected date has to go back the same way.
+    expect(manilaInputToIso('2026-09-25T20:38')).toBe('2026-09-25T12:38:00.000Z');
+  });
+
+  it('carries a wall clock just past Manila midnight back to the previous UTC day', () => {
+    expect(manilaInputToIso('2026-10-05T00:30')).toBe('2026-10-04T16:30:00.000Z');
+  });
+
+  it('round-trips with manilaDateTimeValue, so a form and its source agree', () => {
+    const stored = '2026-10-04T16:30:45.000Z';
+    const edited = manilaDateTimeValue(new Date(stored));
+    // The seconds are the display's, not the editor's, so the round trip
+    // lands on the minute the operator actually saw.
+    expect(manilaInputToIso(edited)).toBe('2026-10-04T16:30:00.000Z');
+  });
+
+  it('is refused rather than guessed at when the input is not a wall clock', () => {
+    for (const bad of ['', 'not-a-date', '2026-09-25', '2026-09-25T20:38:00', '25:00']) {
+      expect(manilaInputToIso(bad)).toBeNull();
+    }
+  });
+
+  // A calendar day that does not exist rolls over under the date maths, and a
+  // silent rollover would file a correction under a day nobody typed.
+  it('refuses a date the calendar cannot hold rather than rolling it over', () => {
+    expect(manilaInputToIso('2026-02-30T10:00')).toBeNull();
   });
 });
