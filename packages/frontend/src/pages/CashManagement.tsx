@@ -413,6 +413,10 @@ export default function CashManagement() {
   const [formError, setFormError] = useState('');
   const [busy, setBusy] = useState(false);
 
+  // A cash account's balance is the drawer's physical cash, so the only method
+  // it can carry is `cash` — and the server refuses anything else (D33).
+  const formPaysFromDrawer = accounts.find((a) => a.id === form.accountId)?.type_code === 'cash';
+
   const loadStatement = useCallback(async () => {
     setLoading(true);
     try {
@@ -1853,7 +1857,14 @@ export default function CashManagement() {
                   <AccountSelect
                     accounts={accounts}
                     value={form.accountId}
-                    onChange={(v) => setForm((f) => ({ ...f, accountId: v }))}
+                    onChange={(v) => setForm((f) => ({
+                      ...f,
+                      accountId: v,
+                      // Switching onto a drawer account answers the payment
+                      // question for you: its balance is physical cash, so
+                      // nothing but cash can have reached or left it.
+                      paymentMethod: accounts.find((a) => a.id === v)?.type_code === 'cash' ? 'cash' : f.paymentMethod,
+                    }))}
                     placeholder="Select the wallet the cash comes out of"
                     className="form-input"
                   />
@@ -1934,13 +1945,20 @@ export default function CashManagement() {
                       <select
                         id="exp-method"
                         className="form-input"
-                        value={form.paymentMethod}
+                        value={formPaysFromDrawer ? 'cash' : form.paymentMethod}
                         onChange={(e) => setForm((f) => ({ ...f, paymentMethod: e.target.value }))}
+                        disabled={formPaysFromDrawer}
                       >
                         {movementPaymentMethodOptions.map((o) => (
                           <option key={o.value} value={o.value}>{o.label}</option>
                         ))}
                       </select>
+                      {formPaysFromDrawer && (
+                        <p className="text-xs text-gray-500 mt-1.5">
+                          This account holds physical cash, so the money can only have been
+                          handed over by hand. The server refuses anything else anyway.
+                        </p>
+                      )}
                     </div>
 
                     <div className="sm:col-span-2">

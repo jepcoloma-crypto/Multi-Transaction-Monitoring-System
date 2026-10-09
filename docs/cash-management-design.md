@@ -703,7 +703,7 @@ own, exactly as Phase B was.
 | 2 | Expense categories | Reuse the nine existing codes; nothing seeded. *(delivered)* |
 | 3 | May an expense debit any wallet? | Any visible wallet, revolving fund preselected — matching this user's branch. *(delivered)* |
 | 4 | Overdraft | Blocked by the existing guard. *(delivered)* |
-| 5 | `expense` provider-charge path, 0 rows | **Still open** — worth a separate look; it also has no fee-rule guard. |
+| 5 | `expense` provider-charge path, 0 rows | **Resolved by D34.** Not dead code — it is the provider-charge path, and it has never run because no operator has ever entered a provider charge (0 rows carry `linked_transaction_id` anywhere). The form has no free type picker, so the type was reachable only over the API, where a hand-typed row would have settled instantly with no fee guard. |
 
 New, carried into implementation:
 
@@ -713,10 +713,11 @@ New, carried into implementation:
    Sources and Uses. **Accept, and label the headline accordingly** — or, if the figure is
    meant to be net company funds, the statement needs a netting view. Flagged rather than
    assumed: the tie-out holds either way, so this is a reporting question, not a
-   correctness one.
+   correctness one. *(decided: accept and label — see the note under §25)*
 2. **`payment_method` on operating expenses** — an expense paid from the drawer is
    physical by definition. Confirm it should be forced to `cash` when the account is
-   `cash`-typed, rather than left to the operator.
+   `cash`-typed, rather than left to the operator. *(resolved by D33: confirmed, and
+   broader than expenses — the rule is the account's, not the type's)*
 
 ---
 
@@ -1502,3 +1503,52 @@ with.
 
 What still does not happen, on purpose: nothing writes off the amount. A resolved variance is
 a shortage somebody has explained, not a shortage that stopped existing.
+
+---
+
+## 26. Two doors the entry form does not have
+
+The transaction form is driven by fee rules and carries no free type picker, which made both
+of these reachable only by hand-crafting a request. Neither is reachable from the browser.
+
+### D33 — a cash account can only have been paid by cash
+
+§17 raised this for expenses. It turns out to be the account's rule rather than the type's, so
+it is applied to every transaction on a cash-typed account.
+
+A cash account's balance *is* the drawer's physical cash. Crediting one means cash walked in
+and debiting one means it walked out, so `gcash` against it describes a wallet movement the
+drawer never saw — and the shift then closes short against money nobody counted. The field was
+free text among five options, with nothing tying it to the account behind it.
+
+**A blank is filled in, a method that disagrees is refused.** The account answers the question,
+so asking again only produces a 400 where the books already know. Refusing rather than
+overwriting a wrong method matters for the opposite reason: a quiet overwrite would record
+something the operator did not choose, and they would never learn the rule existed.
+
+**Nothing needed backfilling, which is why this was safe to ship.** Measured before the change:
+all 20 transactions already on cash accounts carry `cash`, and every one of the 4 non-cash
+methods sits on a bank or e-wallet account. The rule was already the practice; it just was not
+enforced. It is now enforced on creation and on edit, because an administrator editing a
+pending row's method is the other way to write the same lie.
+
+### D34 — the Expense row belongs to the system
+
+`expense` is the row the provider-charge path writes beside a cash movement, linked back
+through `linked_transaction_id` (migration 032). Typed in by hand it posts a debit with no
+recipient and describes no movement.
+
+The sharper problem was the queue. Only owner fund movements and operating expenses route
+through approval, so a hand-typed `expense` would have settled **immediately** — spending
+company money with no second signature, which is exactly what the queue exists to prevent. A
+cost the company chose to pay is an operating expense; a charge the provider made and never
+billed the customer is not something anyone chose, and is what this type means.
+
+**A fee is refused on the same row.** A fee is income, and this row is a cost: booking one
+would report the company as having earned from an expense. No fee rule has ever targeted the
+type, so the refusal closes a door nothing was using.
+
+**§9's question — is this path in use?** It is not dead code and it is not live either. It has
+never run, because no operator has ever keyed in a provider charge: 0 rows anywhere in the
+database carry a `linked_transaction_id`. The path is wired and correctly bucketed; it is
+waiting for the first charge, not waiting to be deleted.

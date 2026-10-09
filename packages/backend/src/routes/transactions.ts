@@ -7,7 +7,7 @@ import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
 import type { CounterpartyLeg } from '../services/balance';
-import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg } from '../services/cashManagement';
+import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal } from '../services/cashManagement';
 import { calculateTieredFee } from '../services/feeCalc';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -446,7 +446,12 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     }
     feeNum = Math.ceil(feeNum - 1e-9);
 
-    const account = await queryOne('SELECT id, name, status, created_by FROM accounts WHERE id = $1', [accountId]);
+    const account = await queryOne<{ id: string; name: string; status: string; created_by: string; type_code: string }>(
+      `SELECT a.id, a.name, a.status, a.created_by, t.code AS type_code
+       FROM accounts a JOIN account_types t ON t.id = a.account_type_id
+       WHERE a.id = $1`,
+      [accountId]
+    );
     if (!account) throw createError(404, 'Account not found');
     if (account.status === 'closed') throw createError(400, 'Cannot add transactions to a closed account');
 
@@ -454,6 +459,15 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       'SELECT id, direction, code FROM transaction_types WHERE id = $1', [resolvedTypeId]
     );
     if (!txType) throw createError(404, 'Transaction type not found');
+
+    // Two things a hand-crafted request can do that the entry form cannot. The
+    // form is driven by fee rules and has no free type picker, so both were
+    // reachable only over the API — and one of them would have spent company
+    // money with no second signature behind it.
+    const typeRefusal = directTypeRefusal(txType.code);
+    if (typeRefusal) throw createError(400, typeRefusal);
+    const feeRefusal = expenseFeeRefusal(txType.code, feeNum);
+    if (feeRefusal) throw createError(400, feeRefusal);
 
     // Before anything is written, and before the payment-method question: if the
     // branch is shut there is nothing an operator can fix by filling in a field
@@ -471,7 +485,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // have made every one of them un-reversible the moment it ran, and
     // backfilling them would mean guessing which were physical cash. Migration
     // 036 records that reasoning and carries the value check instead.
-    const paymentMethodValue =
+    let paymentMethodValue =
       paymentMethod === undefined || paymentMethod === null || String(paymentMethod).trim() === ''
         ? null
         : String(paymentMethod).trim();
@@ -483,6 +497,16 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       throw createError(400,
         `A ${txType.code.replace(/_/g, ' ')} needs a payment method: ${MOVEMENT_PAYMENT_METHODS.join(', ')}`);
     }
+
+    // A cash account's balance *is* the drawer's cash, so it can only have been
+    // paid in or paid out physically. Left to the operator this is the field
+    // that records a wallet movement the drawer never saw, and the shift then
+    // closes short against money nobody counted. A blank is answered by the
+    // account; a method that disagrees is refused rather than quietly
+    // overwritten, because overwriting would record something nobody chose.
+    const cashMethod = resolveCashAccountMethod(account.type_code, paymentMethodValue);
+    if (cashMethod.action === 'refuse') throw createError(400, cashMethod.message);
+    if (cashMethod.action === 'force') paymentMethodValue = cashMethod.method;
 
     // A provider charge on a cash movement is the company's own cost: the
     // customer is never billed for it, so it cannot be folded into this row's
@@ -842,7 +866,20 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
     if (provided('description')) set('description', String(body.description).trim() || null);
     if (provided('customerName')) set('customer_name', String(body.customerName).trim() || null);
     if (provided('customerContact')) set('customer_contact', String(body.customerContact).trim() || null);
-    if (provided('paymentMethod')) set('payment_method', String(body.paymentMethod).trim() || null);
+    // The same rule as creation: an edit is the other way to put a wallet
+    // movement on a drawer account, and the label is what the shift report
+    // reads back. Blank comes out as cash; a method that disagrees is refused
+    // rather than overwritten, so nobody's edit is silently rewritten.
+    if (provided('paymentMethod')) {
+      const acct = await queryOne<{ type_code: string }>(
+        `SELECT t.code AS type_code FROM accounts a
+         JOIN account_types t ON t.id = a.account_type_id WHERE a.id = $1`,
+        [row.account_id]
+      );
+      const outcome = resolveCashAccountMethod(acct?.type_code, body.paymentMethod);
+      if (outcome.action === 'refuse') throw createError(400, outcome.message);
+      set('payment_method', outcome.action === 'force' ? outcome.method : String(body.paymentMethod).trim() || null);
+    }
     if (provided('notes')) set('notes', String(body.notes).trim() || null);
 
     const amountInput = provided('amount') ? Number(body.amount) : parseFloat(row.amount);

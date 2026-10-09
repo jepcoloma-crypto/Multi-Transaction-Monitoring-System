@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal } from '../services/cashManagement';
 import type { BranchBalance, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
@@ -464,4 +464,80 @@ test('the total adds up across every row it is handed, not one page of them', ()
     toCashRecordRow(raw({ id: `m${i}`, amount: '1045.00' })),
   );
   assert.equal(cashExpenseTotal(rows), '7315.00');
+});
+
+test('a cash account can only have been paid by cash', () => {
+  // Its balance *is* the drawer's cash, so a blank is answered by the account
+  // rather than refused — every one of the 20 transactions already on a cash
+  // account in production carries `cash`, and this makes that impossible to
+  // get wrong rather than merely true so far.
+  assert.deepEqual(resolveCashAccountMethod('cash', null), { action: 'force', method: 'cash' });
+  assert.deepEqual(resolveCashAccountMethod('cash', undefined), { action: 'force', method: 'cash' });
+  assert.deepEqual(resolveCashAccountMethod('cash', ''), { action: 'force', method: 'cash' });
+  assert.deepEqual(resolveCashAccountMethod('cash', 'cash'), { action: 'accept', method: 'cash' });
+});
+
+test('a wallet method on a drawer account is refused, not silently overwritten', () => {
+  // Overwriting would record something the operator did not choose, and a
+  // refusal is the only outcome that tells them why the shift would otherwise
+  // close short against money nobody counted.
+  for (const method of ['gcash', 'bank', 'maya', 'provider_interest']) {
+    const outcome = resolveCashAccountMethod('cash', method);
+    assert.equal(outcome.action, 'refuse', `${method} should be refused on a cash account`);
+    assert.match(outcome.action === 'refuse' ? outcome.message : '', new RegExp(method));
+  }
+  assert.deepEqual(resolveCashAccountMethod('cash', '  '), { action: 'force', method: 'cash' });
+});
+
+test('wallet and bank accounts keep every method the operator may name', () => {
+  // Bank and e-wallet accounts are not the drawer, so forcing `cash` on one
+  // would invent a physical handover nobody made.
+  for (const accountType of ['e-wallet', 'bank', 'other', 'loading']) {
+    assert.deepEqual(
+      resolveCashAccountMethod(accountType, 'bank'),
+      { action: 'accept', method: 'bank' },
+      `${accountType} should accept bank`,
+    );
+    assert.deepEqual(
+      resolveCashAccountMethod(accountType, null),
+      { action: 'accept', method: null },
+      `${accountType} should leave a blank alone`,
+    );
+  }
+  assert.deepEqual(resolveCashAccountMethod(null, 'gcash'), { action: 'accept', method: 'gcash' });
+  assert.deepEqual(resolveCashAccountMethod(undefined, null), { action: 'accept', method: null });
+});
+
+test('a hand-typed Expense row is refused and points at the queue it would have skipped', () => {
+  // `expense` is the system's own row: written beside a cash movement carrying
+  // a provider charge and linked back through linked_transaction_id. Typed in
+  // it posts a debit with no recipient, and settles instantly — only owner
+  // funding and operating expenses route through the approval queue, so it
+  // would have spent company money with no second signature.
+  const reason = directTypeRefusal('expense');
+  assert.ok(reason, 'a standalone Expense row must be refused');
+  assert.match(reason as string, /provider charge/);
+  assert.match(reason as string, /operating expense/);
+  assert.match(reason as string, /system/);
+});
+
+test('every other type may still be recorded directly', () => {
+  for (const code of [
+    'operating_expense', 'cash_in', 'cash_out', 'owner_funding', 'owner_return',
+    'bill_payment', 'load_purchase', 'adjustment_in', 'service_fee', null, undefined, '',
+  ]) {
+    assert.equal(directTypeRefusal(code), null, `${String(code)} should be recordable`);
+  }
+});
+
+test('a fee on a cost would report the company as having earned from an expense', () => {
+  assert.notEqual(expenseFeeRefusal('expense', 10), null);
+  assert.notEqual(expenseFeeRefusal('expense', 0.01), null);
+  assert.match(expenseFeeRefusal('expense', 10) as string, /fee is income/);
+
+  assert.equal(expenseFeeRefusal('expense', 0), null);
+  assert.equal(expenseFeeRefusal('expense', -5), null);
+  for (const code of ['operating_expense', 'cash_in', 'bill_payment', null, undefined]) {
+    assert.equal(expenseFeeRefusal(code, 10), null, `${String(code)} may carry a fee`);
+  }
 });

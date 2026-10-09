@@ -162,6 +162,79 @@ export function touchesDrawer(paymentMethod: string | null | undefined): boolean
   return paymentMethod === 'cash';
 }
 
+/**
+ * What a cash-typed account may say about how money reached or left it.
+ *
+ * A cash account's balance *is* the drawer's cash, so crediting one means
+ * physical cash walked in and debiting one means it walked out. The only
+ * method that says so is `cash`: recording `gcash` against it books a wallet
+ * movement the drawer never saw, and the next shift closes short against
+ * money nobody counted. Every one of the 20 transactions already sitting on a
+ * cash account in production carries `cash` — this makes that impossible to
+ * get wrong rather than merely true so far.
+ *
+ * A missing method is filled in rather than refused: the account answers the
+ * question, so asking again produces a 400 where the books already know. A
+ * method that *disagrees* is refused rather than quietly overwritten, because
+ * overwriting would record something the operator did not choose.
+ */
+export type CashAccountMethodOutcome =
+  | { action: 'accept'; method: string | null }
+  | { action: 'force'; method: 'cash' }
+  | { action: 'refuse'; message: string };
+
+export function resolveCashAccountMethod(
+  accountTypeCode: string | null | undefined,
+  paymentMethod: string | null | undefined
+): CashAccountMethodOutcome {
+  if (String(accountTypeCode) !== 'cash') {
+    return { action: 'accept', method: paymentMethod ?? null };
+  }
+
+  const method =
+    typeof paymentMethod === 'string' && paymentMethod.trim() !== '' ? paymentMethod.trim() : null;
+
+  if (method === null) return { action: 'force', method: 'cash' };
+  if (method === 'cash') return { action: 'accept', method: 'cash' };
+
+  return {
+    action: 'refuse',
+    message:
+      `A cash account holds physical cash, so it cannot have been paid by ${method}. ` +
+      'Record it as cash, or choose the account that method actually paid.',
+  };
+}
+
+/**
+ * Why a transaction type may not be recorded directly, or null when it may.
+ *
+ * `expense` is the system's own row. It is written beside a cash movement
+ * carrying a provider charge and links back through `linked_transaction_id`;
+ * typed in by hand it posts a debit with no recipient and describes nothing.
+ * It is also the one cost that would settle instantly, because only owner
+ * funding and operating expenses route through the approval queue — so a
+ * hand-typed Expense spends company money with no second signature, which is
+ * exactly what the queue exists to prevent.
+ *
+ * A cost the company chose to pay is an operating expense.
+ */
+export function directTypeRefusal(typeCode: string | null | undefined): string | null {
+  if (typeCode !== 'expense') return null;
+  return 'The Expense type records a provider charge the company paid and was never billed for. ' +
+    'It is written by the system when a cash movement carries a provider charge, and cannot be ' +
+    'typed in. To record a cost the company chose to pay, use an operating expense.';
+}
+
+/**
+ * A fee is income. Booking one on a cost would report the company as having
+ * earned from an expense.
+ */
+export function expenseFeeRefusal(typeCode: string | null | undefined, fee: number): string | null {
+  if (typeCode !== 'expense' || !(fee > 0)) return null;
+  return 'An Expense row cannot carry a fee: a fee is income, and this row is a cost. ' +
+    'The amount is what the provider charged.';
+}
+
 const money = (cents: number): number => cents / 100;
 
 // A ledger row carries either a transaction (source_type 'transaction', with
