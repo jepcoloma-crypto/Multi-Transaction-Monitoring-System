@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import type { ReactNode } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, manilaDateTimeValue, paymentMethodCell, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
@@ -29,6 +30,23 @@ const formatBreakdown = (value: number): string =>
 
 const toNum = (v: number | string | null | undefined): number =>
   v === null || v === undefined ? 0 : Number(v);
+
+// A small caps header that gives the long create form visible structure. The
+// border separates groups without the column needing to know how many follow.
+const FormSection = ({ title, children }: { title: string; children: ReactNode }) => (
+  <div className="space-y-3 border-t pt-4 first:border-t-0 first:pt-0">
+    <h4 className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">{title}</h4>
+    {children}
+  </div>
+);
+
+// Every required field reads red, so an operator can see at a glance what a
+// transaction is still missing instead of hunting for a grey asterisk.
+const RequiredLabel = ({ htmlFor, children }: { htmlFor?: string; children: ReactNode }) => (
+  <label htmlFor={htmlFor} className="block text-sm font-medium text-red-600 mb-1">
+    {children} <span className="text-red-500">*</span>
+  </label>
+);
 
 interface Transaction {
   id: string;
@@ -99,7 +117,7 @@ export default function Transactions() {
     accountId: '', feeRuleId: '', amount: '',
     fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(),
     feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select' as 'select' | 'manual', customerPhone: '',
-    providerCharge: '', paymentMethod: '',
+    providerCharge: '', paymentMethod: 'cash',
   });
   const [error, setError] = useState('');
   const [customerHistory, setCustomerHistory] = useState<CustomerHistory | null>(null);
@@ -332,7 +350,7 @@ export default function Transactions() {
     const rule = feeRules.find(r => r.id === ruleId);
     const amount = parseFloat(formData.amount) || 0;
     const autoFee = (feeMode === 'auto' && rule && amount > 0) ? String(calculateFee(rule, amount)) : formData.fee;
-    setFormData({ ...formData, feeRuleId: ruleId, fee: autoFee, paymentMethod: '' });
+    setFormData({ ...formData, feeRuleId: ruleId, fee: autoFee, paymentMethod: 'cash' });
   };
 
   const handleAmountChange = (amount: string) => {
@@ -346,7 +364,7 @@ export default function Transactions() {
       accountId: accounts.find(a => a.status === 'active')?.id || '', feeRuleId: '',
       amount: '', fee: '0', referenceNumber: '', description: '', customerName: '',
       transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
-      providerCharge: '', paymentMethod: '',
+      providerCharge: '', paymentMethod: 'cash',
     });
     setCreateCharges([]);
     setFeeMode('auto');
@@ -379,10 +397,10 @@ export default function Transactions() {
         providerCharge: chargeApplies ? formData.providerCharge || undefined : undefined,
         notes: formData.notes || undefined,
         customerId: formData.customerMode === 'select' ? formData.customerId || undefined : undefined,
-        paymentMethod: formData.paymentMethod || undefined,
+        paymentMethod: movementRequested ? (formData.paymentMethod || undefined) : undefined,
       });
       setShowModal(false);
-      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: '' });
+      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: 'cash' });
       fetchTransactions(pagination.page);
       fetchSummary();
     } catch (err: any) { setError(err.message); }
@@ -759,9 +777,10 @@ export default function Transactions() {
               {error && <div className="bg-red-50 text-red-700 px-3 py-2 rounded-lg text-sm">{error}</div>}
 
               <div className="flex flex-col lg:flex-row gap-4">
-                <div className="lg:w-1/2 space-y-3">
+                <div className="lg:w-1/2 space-y-5">
+                  <FormSection title="Transaction Details">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Account *</label>
+                    <RequiredLabel>Account</RequiredLabel>
                     <AccountSelect
                       accounts={accounts.filter(a => a.status === 'active')}
                       value={formData.accountId}
@@ -771,8 +790,8 @@ export default function Transactions() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Fee Rule *</label>
-                    <select required value={formData.feeRuleId} onChange={(e) => handleRuleChange(e.target.value)} className="input text-sm">
+                    <RequiredLabel htmlFor="feeRuleId">Fee Rule</RequiredLabel>
+                    <select id="feeRuleId" required value={formData.feeRuleId} onChange={(e) => handleRuleChange(e.target.value)} className="input text-sm">
                       <option value="">Select fee rule</option>
                       {feeRules.map(r => (
                         <option key={r.id} value={r.id}>
@@ -789,12 +808,13 @@ export default function Transactions() {
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Amount *</label>
-                      <input type="number" step="0.01" min="0" required value={formData.amount} onChange={(e) => handleAmountChange(e.target.value)} className="input text-sm" />
+                      <RequiredLabel htmlFor="amount">Amount</RequiredLabel>
+                      <input id="amount" type="number" step="0.01" min="0" required value={formData.amount} onChange={(e) => handleAmountChange(e.target.value)} className="input text-sm" />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Fee</label>
+                      <label htmlFor="fee" className="block text-sm font-medium text-gray-700 mb-1">Fee</label>
                       <input
+                        id="fee"
                         type="number" step="0.01" min="0" required
                         value={formData.fee}
                         readOnly={feeMode === 'auto'}
@@ -814,7 +834,9 @@ export default function Transactions() {
                       </div>
                     </div>
                   </div>
+                  </FormSection>
 
+                  <FormSection title="Fee Handling">
                   <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
                     <div className="flex items-center gap-2">
                       <label className="relative inline-flex items-center cursor-pointer">
@@ -833,20 +855,45 @@ export default function Transactions() {
                       <span className="text-xs text-gray-500">({feeMode === 'auto' ? 'Fee auto-calculated from rule' : 'You decide the fee amount'})</span>
                     </div>
                   </div>
+                  </FormSection>
 
+                  <FormSection title="Date, Reference &amp; Payment">
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Date &amp; Time *</label>
-                      <input type="datetime-local" required value={formData.transactionDate} onChange={(e) => setFormData({ ...formData, transactionDate: e.target.value })} className="input text-sm" />
+                      <RequiredLabel htmlFor="transactionDate">Date &amp; Time</RequiredLabel>
+                      <input id="transactionDate" type="datetime-local" required value={formData.transactionDate} onChange={(e) => setFormData({ ...formData, transactionDate: e.target.value })} className="input text-sm" />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">Reference # *</label>
-                      <input type="text" required value={formData.referenceNumber} onChange={(e) => setFormData({ ...formData, referenceNumber: e.target.value })} className="input text-sm" placeholder="Enter reference number" />
+                      <RequiredLabel htmlFor="referenceNumber">Reference #</RequiredLabel>
+                      <input id="referenceNumber" type="text" required value={formData.referenceNumber} onChange={(e) => setFormData({ ...formData, referenceNumber: e.target.value })} className="input text-sm" placeholder="Enter reference number" />
                     </div>
                   </div>
+
+                  {movementRequested && (
+                    <div>
+                      <RequiredLabel htmlFor="paymentMethod">Payment Method</RequiredLabel>
+                      <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
+                        How the money actually changed hands. <strong>Cash</strong> means the operator took it out of or
+                        put it into the branch's cash drawer, and it is the only method that moves the drawer balance.
+                        GCash, Bank Transfer and Maya land in the wallet without touching it.
+                      </p>
+                      <select
+                        id="paymentMethod"
+                        value={formData.paymentMethod}
+                        onChange={(e) => setFormData({ ...formData, paymentMethod: e.target.value })}
+                        className="input text-sm w-40"
+                      >
+                        {movementPaymentMethodOptions.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  </FormSection>
                 </div>
 
-                <div className="lg:flex-1 space-y-3">
+                <div className="lg:flex-1 space-y-5">
+                  <FormSection title="Summary">
                   {selectedRule && parseFloat(formData.amount) > 0 && (
                     <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
                       <div className="flex justify-between">
@@ -902,22 +949,21 @@ export default function Transactions() {
                       )}
                     </div>
                   )}
+                  </FormSection>
 
-                  {/* Customer Section */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <label className="text-sm font-medium text-gray-700">Customer</label>
-                      <div className="flex bg-gray-100 rounded-lg p-0.5">
-                        <button type="button" onClick={() => setFormData({ ...formData, customerMode: 'select', customerId: '', customerName: '' })}
-                          className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${formData.customerMode === 'select' ? 'bg-white text-primary-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-                          Select from List
-                        </button>
-                        <button type="button" onClick={() => setFormData({ ...formData, customerMode: 'manual', customerId: '', customerName: '' })}
-                          className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${formData.customerMode === 'manual' ? 'bg-white text-primary-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-                          Type Manually
-                        </button>
-                      </div>
+                  <FormSection title="Customer">
+                  <div className="flex items-center justify-end mb-2">
+                    <div className="flex bg-gray-100 rounded-lg p-0.5">
+                      <button type="button" onClick={() => setFormData({ ...formData, customerMode: 'select', customerId: '', customerName: '' })}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${formData.customerMode === 'select' ? 'bg-white text-primary-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                        Select from List
+                      </button>
+                      <button type="button" onClick={() => setFormData({ ...formData, customerMode: 'manual', customerId: '', customerName: '' })}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${formData.customerMode === 'manual' ? 'bg-white text-primary-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
+                        Type Manually
+                      </button>
                     </div>
+                  </div>
                     {formData.customerMode === 'select' ? (
                       <select value={formData.customerId} onChange={(e) => {
                         const cid = e.target.value;
@@ -940,8 +986,9 @@ export default function Transactions() {
                         {customers.find(c => c.id === formData.customerId)?.phone || 'No phone number on file'}
                       </p>
                     )}
-                  </div>
+                  </FormSection>
 
+                  <FormSection title="Description &amp; Notes">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
                     <textarea value={formData.description} onChange={(e) => setFormData({ ...formData, description: e.target.value })} className="input text-sm" rows={2} placeholder="Transaction description" />
@@ -950,27 +997,24 @@ export default function Transactions() {
                     <label className="block text-sm font-medium text-gray-700 mb-1">Notes (Internal)</label>
                     <textarea value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input text-sm" rows={2} placeholder="Internal notes (not visible to customer)" />
                   </div>
+                  </FormSection>
                 </div>
               </div>
 
-              {/* Additional Charges */}
-              <div className="border-t pt-3">
-                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
-                  <label className="text-sm font-medium text-gray-700">Additional Charges</label>
-                  <div className="flex items-center gap-2">
-                    {chargeTypes.length > 0 && (
-                      <select onChange={e => { if (e.target.value) { addPredefinedCharge(e.target.value); e.target.value = ''; } }} className="input py-1 text-xs w-auto">
-                        <option value="">+ Select charge type</option>
-                        {chargeTypes.map(ct => (
-                          <option key={ct.id} value={ct.id}>{ct.name} ({formatCurrency(ct.default_amount)})</option>
-                        ))}
-                      </select>
-                    )}
-                    <button type="button" onClick={() => setCreateCharges([...createCharges, { description: '', amount: '' }])}
-                      className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
-                      <Plus className="w-3 h-3" /> Custom Charge
-                    </button>
-                  </div>
+              <FormSection title="Additional Charges">
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  {chargeTypes.length > 0 && (
+                    <select onChange={e => { if (e.target.value) { addPredefinedCharge(e.target.value); e.target.value = ''; } }} className="input py-1 text-xs w-auto">
+                      <option value="">+ Select charge type</option>
+                      {chargeTypes.map(ct => (
+                        <option key={ct.id} value={ct.id}>{ct.name} ({formatCurrency(ct.default_amount)})</option>
+                      ))}
+                    </select>
+                  )}
+                  <button type="button" onClick={() => setCreateCharges([...createCharges, { description: '', amount: '' }])}
+                    className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
+                    <Plus className="w-3 h-3" /> Custom Charge
+                  </button>
                 </div>
                 {createCharges.length > 0 && (
                   <div className="space-y-1.5">
@@ -990,35 +1034,10 @@ export default function Transactions() {
                     <p className="text-[11px] text-gray-500">Total charges: {formatCurrency(createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0))}</p>
                   </div>
                 )}
-              </div>
-
-              {movementRequested && (
-                <div className="border-t pt-3">
-                  <label htmlFor="paymentMethod" className="text-sm font-medium text-gray-700">
-                    Payment Method <span className="text-red-500">*</span>
-                  </label>
-                  <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
-                    How the money actually changed hands. <strong>Cash</strong> means the operator took it out of or
-                    put it into the branch's cash drawer, and it is the only method that moves the drawer balance.
-                    GCash, Bank Transfer and Maya land in the wallet without touching it.
-                  </p>
-                  <select
-                    id="paymentMethod"
-                    value={formData.paymentMethod}
-                    onChange={(e) => setFormData({ ...formData, paymentMethod: e.target.value })}
-                    className="input text-sm w-40"
-                  >
-                    <option value="">Select payment method</option>
-                    {movementPaymentMethodOptions.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              </FormSection>
 
               {chargeApplies && (
-                <div className="border-t pt-3">
-                  <label htmlFor="providerCharge" className="text-sm font-medium text-gray-700">Provider Charge</label>
+                <FormSection title="Provider Charge">
                   <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
                     Only when the provider deducted a fee from the account balance for this movement and did not
                     bill the customer for it. It is written as a separate linked <strong>Expense</strong> row: the
@@ -1027,6 +1046,7 @@ export default function Transactions() {
                   </p>
                   <input
                     id="providerCharge"
+                    aria-label="Provider charge"
                     type="number"
                     step="0.01"
                     min="0"
@@ -1035,10 +1055,10 @@ export default function Transactions() {
                     className="input text-sm w-40"
                     placeholder="0.00"
                   />
-                </div>
+                </FormSection>
               )}
 
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-2 border-t pt-4">
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
                 <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!!hasInsufficientBalance || !formData.referenceNumber.trim() || (movementRequested && !formData.paymentMethod)}>Create Transaction</button>
               </div>
