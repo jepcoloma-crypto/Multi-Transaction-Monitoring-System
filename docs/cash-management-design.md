@@ -713,7 +713,7 @@ New, carried into implementation:
    Sources and Uses. **Accept, and label the headline accordingly** — or, if the figure is
    meant to be net company funds, the statement needs a netting view. Flagged rather than
    assumed: the tie-out holds either way, so this is a reporting question, not a
-   correctness one. *(decided: accept and label — see the note under §25)*
+   correctness one. *(decided: accept and label the headline — §27)*
 2. **`payment_method` on operating expenses** — an expense paid from the drawer is
    physical by definition. Confirm it should be forced to `cash` when the account is
    `cash`-typed, rather than left to the operator. *(resolved by D33: confirmed, and
@@ -1552,3 +1552,33 @@ type, so the refusal closes a door nothing was using.
 never run, because no operator has ever keyed in a provider charge: 0 rows anywhere in the
 database carry a `linked_transaction_id`. The path is wired and correctly bucketed; it is
 waiting for the first charge, not waiting to be deleted.
+
+---
+
+## 27. Gross, and labelled as gross
+
+§17's first new question asked whether `Σ account balances` still means anything once both
+legs post, and whether Sources and Uses should report gross movement or be netted.
+
+**Measured first, because the question assumed a state that had not happened.** The
+counterparty leg has never posted: 149 transactions, 149 ledger rows, one each. And 0 of the
+108 cash movements carry `payment_method` at all, so none of them can ever take one — D11
+stands, history is never backfilled. Those 149 rows add up to Sources of ₱482,456 and Uses of
+₱383,231, one row apiece with no second leg anywhere, and that is the only slice a second leg
+could ever appear in — so it is not inflated today, and never will be on existing data.
+
+**The inflation starts with the first cash-settled movement booked from now on.** At that
+point a ₱500 cash-in with a ₱10 fee writes two rows: Sources +500, Uses +490, net +10 — the
+fee, exactly what the income report books. The tie-out holds either way, which is why this was
+a reporting question and not a correctness one.
+
+**Gross is the honest reading, so it is kept.** Both rows describe something that really
+happened: the wallet really was credited ₱500 and the drawer really did hand over ₱490. What
+was missing is the label. Sources now says on its face that it counts movement in full rather
+than netting it, and names the pair — so it cannot be read as "new company money in". Uses
+says the same from the other side.
+
+**What was deliberately not built:** a netting view, and a leg discriminator.
+`ledger_entries` has no column distinguishing the account leg from the drawer leg — only
+`transaction_id` links the pair — so bucketing the internal leg separately would have been a
+schema change to solve a presentation problem. The label does the same job for nothing.

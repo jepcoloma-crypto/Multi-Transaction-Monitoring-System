@@ -159,7 +159,12 @@ export function CashStatementPanel({ statement, branchId }: { statement: CashSta
         <div className="card overflow-hidden">
           <div className="px-4 pt-4 pb-1">
             <h4 className="font-medium">Sources</h4>
-            <p className="text-xs text-gray-500">Click a line to see the rows behind it.</p>
+            <p className="text-xs text-gray-500">
+              Counted in full, not netted. A cash movement booked in physical cash credits the
+              account here and pays the drawer out under <strong>Uses</strong>, so the two sides
+              net to the fee — this column is where cash moved, not new company money. Click a
+              line to see the rows behind it.
+            </p>
           </div>
           <table className="w-full mt-2">
             <tbody className="divide-y divide-gray-100">
@@ -188,7 +193,12 @@ export function CashStatementPanel({ statement, branchId }: { statement: CashSta
         <div className="card overflow-hidden">
           <div className="px-4 pt-4 pb-1">
             <h4 className="font-medium">Uses</h4>
-            <p className="text-xs text-gray-500">Click a line to see the rows behind it.</p>
+            <p className="text-xs text-gray-500">
+              Counted in full, not netted. A cash movement booked in physical cash pays the
+              drawer out here against the account&apos;s credit under <strong>Sources</strong>,
+              and the pair nets to the fee — which is why both columns grow together while the
+              books move by the fee alone. Click a line to see the rows behind it.
+            </p>
           </div>
           <table className="w-full mt-2">
             <tbody className="divide-y divide-gray-100">
