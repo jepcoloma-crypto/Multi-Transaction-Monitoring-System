@@ -313,6 +313,7 @@ const raw = (over: Partial<CashRecordRaw>): CashRecordRaw => ({
   branch_code: 'MAIN',
   branch_name: 'Main Branch',
   transaction_number: 253,
+  transaction_id: 'c9d1f0a2-0000-4000-8000-000000000253',
   transaction_date: '2026-10-07T15:21:25.562Z',
   payee: null,
   txn_code: 'operating_expense',
@@ -401,6 +402,24 @@ test('the CSV leads with the business day and keeps the posting instant beside i
   assert.ok(lines[0].includes('"Business Day"') && lines[0].includes('"Posted At"') && lines[0].includes('"Balance After"'));
   assert.ok(lines[1].includes('"2026-09-25 23:21"'), `expected the Sep 25 business day, got ${lines[1]}`);
   assert.ok(lines[1].includes('"2026-10-07 23:21"'), `expected the Oct 7 posting instant, got ${lines[1]}`);
+});
+
+test('a register row carries the transaction id the reversal action needs', () => {
+  // The number identifies a row to a reader; the id is what the reverse
+  // endpoint takes. Serving only the number would leave the register unable
+  // to act on its own rows.
+  const row = toCashRecordRow(raw({}));
+  assert.equal(row.transactionNumber, 253);
+  assert.equal(row.transactionId, 'c9d1f0a2-0000-4000-8000-000000000253');
+});
+
+test('a ledger row with no transaction carries no id, so it cannot be offered a reversal', () => {
+  // Transfers, adjustments and gap fixes write ledger rows with no transaction
+  // behind them. Passing an id through would offer an action that can only
+  // fail, so the number governs: no number, no id.
+  const row = toCashRecordRow(raw({ transaction_number: null, transaction_id: 'should-not-appear' }));
+  assert.equal(row.transactionNumber, null);
+  assert.equal(row.transactionId, null);
 });
 
 test('the CSV reads every date in Manila, not UTC', () => {

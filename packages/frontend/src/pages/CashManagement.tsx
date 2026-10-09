@@ -14,7 +14,7 @@ import { NO_OPEN_SHIFT_HINT } from '../hooks/useShiftGate';
 import {
   Wallet, Landmark, Plus, Check, X, RefreshCw, ShieldAlert, AlertTriangle, Inbox, Receipt,
   TrendingUp, TrendingDown, Coins, ArrowRight, Calendar, Clock, List, Printer,
-  Search, Download, ChevronLeft, ChevronRight,
+  Search, Download, ChevronLeft, ChevronRight, Eye, RotateCcw,
 } from 'lucide-react';
 
 // NUMERIC columns arrive as strings and a shift's close fields are still null
@@ -398,6 +398,11 @@ export default function CashManagement() {
   const [recordSearch, setRecordSearch] = useState('');
   const [recordPageNum, setRecordPageNum] = useState(1);
   const [exportingRecords, setExportingRecords] = useState(false);
+  // The row whose detail panel is open, and whether a reversal is in flight —
+  // the latter so a second click cannot file the same request twice while the
+  // first is still waiting on the server.
+  const [recordDetail, setRecordDetail] = useState<CashRecord | null>(null);
+  const [reversingRecord, setReversingRecord] = useState(false);
 
   // Elapsed time only means something if it moves. Without this the card would
   // print "0m" for as long as the page sat untouched, which is worse than
@@ -798,6 +803,33 @@ export default function CashManagement() {
       setRecordError(err instanceof Error ? err.message : 'Export failed');
     } finally {
       setExportingRecords(false);
+    }
+  };
+
+  // The reason is asked the way the Transactions screen asks it, and the
+  // outcome is reported the way it reports one: an administrator's reversal
+  // executes immediately, anyone else's files a request that waits for
+  // approval. Both answers are the server's — this screen does not decide
+  // which it is, because the endpoint does.
+  const reverseRecord = async (row: CashRecord) => {
+    if (!row.transactionId || reversingRecord) return;
+    const reason = window.prompt('Reason for reversal:');
+    if (!reason) return;
+    setReversingRecord(true);
+    try {
+      await api.post(`/transactions/${row.transactionId}/reverse`, { reason });
+      window.alert(isAdmin
+        ? 'Transaction reversed successfully.'
+        : 'Reversal request submitted. Waiting for admin approval.');
+      setRecordDetail(null);
+      // Both, because an executed reversal moves money the position is totalling
+      // while a request only adds a row to the register. Refreshing the wrong
+      // one leaves a stale figure on screen with no way to tell it is stale.
+      await Promise.all([loadRecords(), loadStatement()]);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : 'Reversal failed');
+    } finally {
+      setReversingRecord(false);
     }
   };
 
@@ -1742,7 +1774,7 @@ export default function CashManagement() {
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1100px]">
+              <table className="w-full min-w-[1200px]">
                 <thead className="bg-gray-50">
                   <tr>
                     <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Date</th>
@@ -1755,6 +1787,7 @@ export default function CashManagement() {
                     <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Amount</th>
                     <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Balance after</th>
                     <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Recorded by</th>
+                    <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase whitespace-nowrap">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
@@ -1785,6 +1818,36 @@ export default function CashManagement() {
                         {formatCurrency(Number(row.balanceAfter))}
                       </td>
                       <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-500">{row.recordedBy || <span className="text-gray-400">—</span>}</td>
+                      <td className="px-4 py-3 text-sm whitespace-nowrap text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setRecordDetail(row)}
+                            className="p-1 text-gray-400 hover:text-primary-600"
+                            title="View record details"
+                            aria-label={row.transactionNumber ? `View details of TXN #${row.transactionNumber}` : 'View record details'}
+                          >
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          {/* Disabled, not hidden, when no transaction stands
+                              behind the row — a transfer or adjustment writes a
+                              ledger entry with nothing to reverse, and hiding the
+                              button would leave the reader wondering whether it
+                              was removed or merely not offered. */}
+                          <button
+                            type="button"
+                            onClick={() => reverseRecord(row)}
+                            disabled={!row.transactionId || reversingRecord}
+                            className="p-1 text-gray-400 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title={row.transactionId
+                              ? 'Request a reversal'
+                              : 'Nothing to reverse — this row has no transaction behind it'}
+                            aria-label={row.transactionId ? 'Request a reversal' : 'Reversal unavailable for this row'}
+                          >
+                            <RotateCcw className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1811,7 +1874,7 @@ export default function CashManagement() {
                     <td className="px-4 py-3 text-sm text-right font-mono font-semibold whitespace-nowrap text-red-700">
                       {recordTotals ? formatCurrency(Number(recordTotals.cashExpenses)) : '—'}
                     </td>
-                    <td colSpan={2} className="px-4 py-3" />
+                    <td colSpan={3} className="px-4 py-3" />
                   </tr>
                 </tfoot>
               </table>
@@ -2423,6 +2486,116 @@ export default function CashManagement() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* A row's full record. The register only fits a column of each field,
+          so this is where the reference, payee and posting instant a reader
+          would otherwise have to export the CSV to see are readable in place.
+          Read-only: a ledger row is append-only, so there is nothing here to
+          edit, and the reversal action is offered only where a transaction
+          stands behind the row. */}
+      {recordDetail && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
+          <div className="mx-auto my-10 max-w-2xl bg-white rounded-xl shadow-2xl border border-gray-200">
+            <div className="flex items-start gap-3 px-6 pt-6 pb-5 border-b border-gray-200">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary-50 text-primary-600">
+                <Receipt className="w-5 h-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {recordDetail.transactionNumber ? `TXN #${recordDetail.transactionNumber}` : 'Ledger entry'}
+                </h3>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  {recordDetail.category} · {recordDetail.accountName}
+                  {recordDetail.branchCode ? ` · ${recordDetail.branchCode}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRecordDetail(null)}
+                aria-label="Close"
+                className="-mr-1 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <dl className="px-6 py-5 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4">
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Business day</dt>
+                <dd className="mt-1 text-sm text-gray-900">{manilaDayLabel(recordDetail.businessDate)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Posted to the drawer</dt>
+                <dd className="mt-1 text-sm text-gray-900">{manilaDateTimeLabel(recordDetail.entryDate)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                  {recordDetail.direction === 'in' ? 'Amount received' : 'Amount paid out'}
+                </dt>
+                <dd className={`mt-1 text-sm font-semibold tabular-nums ${recordDetail.direction === 'in' ? 'text-emerald-600' : 'text-red-600'}`}>
+                  {recordDetail.direction === 'in' ? '+' : '−'}{formatCurrency(Number(recordDetail.amount))}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Balance after</dt>
+                <dd className="mt-1 text-sm font-medium tabular-nums text-gray-900">{formatCurrency(Number(recordDetail.balanceAfter))}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Type</dt>
+                <dd className="mt-1 text-sm text-gray-900">{recordDetail.category}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Method</dt>
+                <dd className="mt-1 text-sm text-gray-900">{paymentMethodCell(recordDetail.paymentMethod)}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Reference</dt>
+                <dd className="mt-1 text-sm text-gray-900">{recordDetail.referenceNumber || <span className="text-gray-400">—</span>}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Payee</dt>
+                <dd className="mt-1 text-sm text-gray-900">{recordDetail.payee || <span className="text-gray-400">—</span>}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Recorded by</dt>
+                <dd className="mt-1 text-sm text-gray-900">{recordDetail.recordedBy || <span className="text-gray-400">—</span>}</dd>
+              </div>
+              <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Branch</dt>
+                <dd className="mt-1 text-sm text-gray-900">{recordDetail.branchName || <span className="text-gray-400">—</span>}</dd>
+              </div>
+              <div className="sm:col-span-2">
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Description</dt>
+                <dd className="mt-1 text-sm text-gray-900">{recordDetail.description || <span className="text-gray-400">—</span>}</dd>
+              </div>
+            </dl>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4 rounded-b-xl">
+              <p className="text-xs text-gray-500">
+                {recordDetail.transactionId
+                  ? 'Completed entries are locked — a reversal is the way to undo one.'
+                  : 'This row has no transaction behind it, so there is nothing to reverse.'}
+              </p>
+              <div className="flex gap-3 ml-auto">
+                <button type="button" className="btn-secondary" onClick={() => setRecordDetail(null)}>
+                  Close
+                </button>
+                {recordDetail.transactionId && (
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    onClick={() => reverseRecord(recordDetail)}
+                    disabled={reversingRecord}
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    {reversingRecord ? 'Sending…' : 'Request a reversal'}
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -16,6 +16,10 @@ export interface CashRecord {
   branchCode: string | null;
   branchName: string | null;
   transactionNumber: number | null;
+  // The transaction's id, or null for a ledger row with no transaction behind
+  // it. The reversal action needs the id, not the number, so a null here means
+  // the row cannot be reversed and the button offering it stays disabled.
+  transactionId: string | null;
   paymentMethod: string | null;
   payee: string | null;
   referenceNumber: string | null;

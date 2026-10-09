@@ -505,6 +505,10 @@ export interface CashRecordRaw {
   branch_code: string | null;
   branch_name: string | null;
   transaction_number: number | string | null;
+  // The transaction's id, kept separate from its number because reversing a row
+  // needs the id and the register carries the number. Null for a ledger row
+  // with no transaction behind it — a transfer, adjustment or gap fix.
+  transaction_id: string | null;
   transaction_date: string | Date | null;
   payee: string | null;
   txn_code: string | null;
@@ -531,6 +535,10 @@ export interface CashRecordRow {
   branchCode: string | null;
   branchName: string | null;
   transactionNumber: number | null;
+  // Null wherever `transactionNumber` is, and for the same reason: there is no
+  // transaction to act on. The register's reversal action keys off this rather
+  // than off the number, so a ledger-only row can never be offered one.
+  transactionId: string | null;
   paymentMethod: string | null;
   payee: string | null;
   referenceNumber: string | null;
@@ -564,6 +572,10 @@ export function toCashRecordRow(raw: CashRecordRaw): CashRecordRow {
     branchCode: raw.branch_code,
     branchName: raw.branch_name,
     transactionNumber: Number.isFinite(number as number) ? number : null,
+    // Tied to the number rather than passed through: the two come from one
+    // LEFT JOIN, so they are either both there or both absent, and keying off
+    // the number keeps them from ever disagreeing in what the UI offers.
+    transactionId: Number.isFinite(number as number) ? raw.transaction_id : null,
     paymentMethod: raw.payment_method,
     payee: raw.payee,
     referenceNumber: raw.reference_number,

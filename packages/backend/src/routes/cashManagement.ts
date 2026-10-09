@@ -734,7 +734,7 @@ router.get('/records', authorize('reports.read'), async (req: Request, res: Resp
       `SELECT l.id, l.entry_date, l.entry_type, l.amount, l.balance_after,
               l.source_type, l.reference_number, l.description,
               a.name AS account_name, b.code AS branch_code, b.name AS branch_name,
-              t.transaction_number, t.payee, t.payment_method, t.transaction_date,
+              t.id AS transaction_id, t.transaction_number, t.payee, t.payment_method, t.transaction_date,
               tt.code AS txn_code, u.username AS created_by_username
        FROM ledger_entries l
        JOIN accounts a ON a.id = l.account_id
