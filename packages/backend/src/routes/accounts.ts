@@ -111,6 +111,20 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
       scope.params
     );
 
+    // How much of that total is physical cash. The drawer is a cash-type
+    // account and this page sums every balance into one figure, so without the
+    // split the drawer reads as though it were another wallet. Keyed on the
+    // type and scoped with the same predicate as `total_balance`, so the cash
+    // figure can never be subtracted from the total and leave a remainder that
+    // is off by a row the other query counted.
+    const cashRow = await queryOne<{ cash_balance: string }>(
+      `SELECT COALESCE(SUM(a.current_balance), 0) as cash_balance
+       FROM accounts a
+       JOIN account_types at ON at.id = a.account_type_id
+       WHERE at.code = 'cash'${and}`,
+      joinScope.params
+    );
+
     const byProvider = await query(
       `SELECT p.name as provider_name, p.code as provider_code,
               COUNT(a.id) as account_count,
@@ -141,6 +155,7 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
         summary: {
           totalAccounts: parseInt(summary?.total_accounts || '0'),
           totalBalance: parseFloat(summary?.total_balance || '0'),
+          cashBalance: parseFloat(cashRow?.cash_balance || '0'),
           activeAccounts: parseInt(summary?.active_accounts || '0'),
           lowBalanceCount: parseInt(summary?.low_balance_count || '0'),
         },

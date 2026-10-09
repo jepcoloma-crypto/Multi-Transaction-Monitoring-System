@@ -36,7 +36,7 @@ interface Branch { id: string; code: string; name: string; status: string; }
 interface AccountType { id: string; name: string; code: string; }
 interface TransactionType { id: string; name: string; code: string; direction: string; }
 interface AccountSummary {
-  summary: { totalAccounts: number; totalBalance: number; activeAccounts: number; lowBalanceCount: number };
+  summary: { totalAccounts: number; totalBalance: number; cashBalance: number; activeAccounts: number; lowBalanceCount: number };
 }
 
 export default function Accounts() {
@@ -305,6 +305,15 @@ export default function Accounts() {
           <div className="card py-3">
             <p className="text-xs text-gray-500">Total Balance</p>
             <p className="text-xl font-bold text-primary-600">{formatCurrency(summary.totalBalance)}</p>
+            {/* The drawer is cash in hand, not a wallet, so it is named here
+                rather than left to look like one more e-money balance. Derived
+                as the remainder so the two always sum back to the total; left
+                blank on a backend that does not serve cashBalance. */}
+            {summary.cashBalance !== undefined && (
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Cash on hand {formatCurrency(summary.cashBalance)} &middot; Non-cash {formatCurrency(summary.totalBalance - summary.cashBalance)}
+              </p>
+            )}
           </div>
           <div className="card py-3">
             <p className="text-xs text-gray-500">Active</p>
