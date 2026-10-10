@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expectedClosing, netMovement, classifyVariance, drawerDifference, openingReasonError, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
+import { expectedClosing, netMovement, classifyVariance, drawerDifference, openingReasonError, openShiftDateProblem, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
 import type { ShiftMovement, VarianceStatus } from '../services/shifts';
 
 const inCash = (amount: string | number): ShiftMovement => ({ entry_type: 'credit', amount });
@@ -206,4 +206,35 @@ test('the opening difference rejects a reason nobody could have chosen', () => {
 test('the catch-all still has to say what happened, here as much as at close', () => {
   assert.match(openingReasonError(180, 'other', '   ') ?? '', /needs the notes/);
   assert.equal(openingReasonError(180, 'other', 'Drawer held an unbelted twenty from yesterday'), null);
+});
+
+test('a shift cannot claim a day that has not happened yet', () => {
+  const problem = openShiftDateProblem('2026-10-11', '2026-10-10', false, true);
+  assert.equal(problem?.status, 400);
+  assert.match(problem?.message ?? '', /in the future/);
+});
+
+test('the future is refused to everybody, taken or not', () => {
+  assert.equal(openShiftDateProblem('2026-10-11', '2026-10-10', true, false)?.status, 400);
+});
+
+test('a day already recorded is refused to everybody, administrator included', () => {
+  const problem = openShiftDateProblem('2026-10-09', '2026-10-10', true, true);
+  assert.equal(problem?.status, 409);
+  assert.match(problem?.message ?? '', /already has a shift for 2026-10-09/);
+});
+
+test('an already-taken day is reported as taken, not as somebody else lacking permission', () => {
+  assert.equal(openShiftDateProblem('2026-10-09', '2026-10-10', true, false)?.status, 409);
+});
+
+test('a past day is a call only an administrator may make', () => {
+  const refused = openShiftDateProblem('2026-10-09', '2026-10-10', false, false);
+  assert.equal(refused?.status, 403);
+  assert.match(refused?.message ?? '', /Only an administrator/);
+  assert.equal(openShiftDateProblem('2026-10-09', '2026-10-10', false, true), null);
+});
+
+test("today needs nobody's leave, so a shift opened on the day is unaffected", () => {
+  assert.equal(openShiftDateProblem('2026-10-10', '2026-10-10', false, false), null);
 });

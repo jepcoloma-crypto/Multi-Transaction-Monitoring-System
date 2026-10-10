@@ -5,7 +5,7 @@ import { createError } from '../middleware/error';
 import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
 import { drawerMovements, drawerBalance, drawerMovementRows } from '../services/drawerQuery';
-import { classifyVariance, expectedClosing, netMovement, drawerDifference, openingReasonError, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
+import { classifyVariance, expectedClosing, netMovement, drawerDifference, openingReasonError, openShiftDateProblem, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
 import type { BranchBalance, CashBucket, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
@@ -472,18 +472,30 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
     if (openingFloat < 0) throw createError(400, 'Opening float cannot be negative');
 
     // The day the shift covers is the operator's to state, so every movement
-    // recorded under it has a date to be held to (D17). Refused if it is not a
-    // real calendar day, and refused if it is ahead of Manila's today: a shift
-    // for tomorrow would accept tomorrow's transactions today, which is the
-    // drawer counting money before it exists.
+    // recorded under it has a date to be held to (D17). Checked as a calendar
+    // day first: everything below reads `shift_date`, and the cast the lookup
+    // below performs is only safe on a date Postgres can accept.
     const shiftDate = String(body.shiftDate ?? '').trim();
     if (!parseDateKey(shiftDate)) {
       throw createError(400, 'Shift date is required, as a valid date (YYYY-MM-DD)');
     }
-    const today = manilaDateKey();
-    if (shiftDate > today) {
-      throw createError(400, `Shift date cannot be in the future — today is ${today}`);
-    }
+
+    // Whether this branch already has a shift for that day. Read here rather
+    // than left to the unique index so the refusal reaches her before she has
+    // counted a thing — but only the index makes it hold, since this read and
+    // another terminal's insert can pass each other. `shifts` is capped at 200
+    // rows for the list endpoint, so this is the courtesy and the index is the
+    // rule.
+    const dayTaken = Boolean(
+      await queryOne(`SELECT id FROM shifts WHERE branch_id = $1 AND shift_date = $2::date`, [branchId, shiftDate]),
+    );
+    const dateProblem = openShiftDateProblem(
+      shiftDate,
+      manilaDateKey(),
+      dayTaken,
+      (req.user!.roles || []).includes('administrator'),
+    );
+    if (dateProblem) throw createError(dateProblem.status, dateProblem.message);
 
     // The second reading, taken now rather than at close (043). The drawer's
     // balance on the books is read at the instant the float is being recorded,
@@ -514,10 +526,17 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
         ],
       );
     } catch (err: any) {
-      // The partial unique index is the real guard. Checked here as well so the
-      // refusal is a sentence instead of a foreign-key style error, but the
-      // index is what makes it hold when two terminals open at once.
-      if (err?.code === '23505') throw createError(409, 'This branch already has an open shift');
+      // Two guards live in this table and they refuse for different reasons,
+      // so the sentence is chosen from the constraint that actually fired.
+      // Named rather than guessed: `one_shift_per_branch_per_day` is a day
+      // already recorded, `one_open_shift_per_branch` is a drawer already
+      // being counted right now.
+      if (err?.code === '23505') {
+        if (err?.constraint === 'one_shift_per_branch_per_day') {
+          throw createError(409, `This branch already has a shift for ${shiftDate}`);
+        }
+        throw createError(409, 'This branch already has an open shift');
+      }
       throw err;
     }
 

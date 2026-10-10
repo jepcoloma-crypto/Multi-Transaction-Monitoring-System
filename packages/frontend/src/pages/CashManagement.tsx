@@ -472,6 +472,19 @@ export default function CashManagement() {
   } | null>(null);
   const [lastClose, setLastClose] = useState<ShiftResult | null>(null);
 
+  // Two facts about the chosen date, worked out once and used by the form and
+  // by submit alike. Both are mirrors of checks the server makes anyway, and
+  // deliberately so: this only spares her counting a drawer she was never
+  // going to be allowed to open against, it is never the guard. `shifts` is
+  // capped at 200 rows server-side, so a very old duplicate can slip past
+  // this and still be refused there.
+  const shiftDatePassed = shiftOpen
+    ? Boolean(shiftOpen.shiftDate) && shiftOpen.shiftDate < manilaDateValue()
+    : false;
+  const shiftDateTaken = shiftOpen
+    ? shifts.some((s) => s.branch_id === shiftOpen.branchId && s.shift_date === shiftOpen.shiftDate)
+    : false;
+
   // Served by GET /cash-management/shifts rather than copied into this file: a
   // reason list the server would refuse is worse than no list at all, and one
   // kept in two places is one kept badly. Both arrive before the shift cards
@@ -702,6 +715,18 @@ export default function CashManagement() {
     }
     if (shiftOpen.shiftDate > today) {
       setShiftError(`A shift cannot be dated ahead of today — today is ${today}`);
+      return;
+    }
+    // The same two refusals the server makes, in the same order, so what she
+    // is told here matches what she would be told there — and the second is
+    // only worth saying because `min` cannot be set for her and an
+    // administrator alike at once.
+    if (shiftDateTaken) {
+      setShiftError('This branch already has a shift for that date — a day is recorded once');
+      return;
+    }
+    if (shiftDatePassed && !isAdmin) {
+      setShiftError('Only an administrator can open a shift for a day that has already passed');
       return;
     }
     // A float that missed the drawer owes an answer, and this is the moment to
@@ -2544,10 +2569,14 @@ export default function CashManagement() {
 
               <div>
                 <label className="form-label">Shift date</label>
+                {/* A datepicker that cannot offer the refusal is kinder than one
+                    that does and then explains. An administrator keeps the whole
+                    range, because recording a missed day is hers to allow. */}
                 <input
                   type="date"
                   className="form-input"
                   required
+                  min={isAdmin ? undefined : manilaDateValue()}
                   max={manilaDateValue()}
                   value={shiftOpen.shiftDate}
                   onChange={(e) => setShiftOpen((s) => s && { ...s, shiftDate: e.target.value })}
@@ -2555,9 +2584,25 @@ export default function CashManagement() {
                 <p className="text-xs text-gray-500 mt-1">
                   The day this drawer covers, in Manila time. Every transaction recorded under this
                   shift has to carry the same date — one dated otherwise is refused. Today is{' '}
-                  {manilaDateValue()}; an earlier date is allowed so a missed day can still be
-                  recorded, a later one is not.
+                  {manilaDateValue()}. A branch records each day once, and a day that has already
+                  passed can only be opened by an administrator.
                 </p>
+                {/* Said before the float is typed. The server refuses both of these
+                    too — this only saves a count she was never going to be allowed
+                    to keep. */}
+                {shiftDateTaken ? (
+                  <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 mt-1">
+                    {branches.find((b) => b.id === shiftOpen.branchId)?.name ?? 'This branch'} already has
+                    a shift for {dateKeyLabel(shiftOpen.shiftDate)}. Recording it twice would count the
+                    same drawer twice, so pick another day.
+                  </p>
+                ) : shiftDatePassed ? (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1">
+                    {dateKeyLabel(shiftOpen.shiftDate)} has already passed. A missed day can still be
+                    recorded, but only by an administrator — and opened_at will always show when the
+                    count really happened.
+                  </p>
+                ) : null}
               </div>
 
               <div>

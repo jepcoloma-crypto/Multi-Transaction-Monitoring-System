@@ -223,6 +223,53 @@ export function openingReasonError(difference: number, reason: unknown, notes: u
   );
 }
 
+/**
+ * Which day a shift is allowed to claim.
+ *
+ * Three rules, one function, because they are one question asked about one
+ * date and three copies of it would drift. Nothing here queries: `dayTaken` is
+ * read by the caller first, so a day already recorded refuses her before a
+ * float is typed rather than as a 409 after she has counted the drawer. What
+ * makes it hold when two terminals reach for the same day at once is the
+ * unique index on (branch_id, shift_date), not this — this is only the
+ * sentence.
+ *
+ * One shift per branch per business day: a branch has one physical drawer, so
+ * a second shift for the same day is a second count of the same money, and
+ * the day's opening float would be summed twice by every report that ranges
+ * over it.
+ *
+ * A past day is not refused, only made an administrator's call. Missing a day
+ * is a real thing that happens and the record should still be made; what
+ * should not happen is anybody quietly writing yesterday's date. Note that
+ * only `opened_at` records when the count really took place, which is what
+ * keeps an honest back-date traceable and an unhonest one visible.
+ *
+ * Order matters: a day already taken is the more useful thing to say, and an
+ * administrator gets the same 409, so the message is never hiding a
+ * permission behind a date.
+ */
+export function openShiftDateProblem(
+  shiftDate: string,
+  today: string,
+  dayTaken: boolean,
+  isAdmin: boolean,
+): { status: 400 | 403 | 409; message: string } | null {
+  if (shiftDate > today) {
+    return { status: 400, message: `Shift date cannot be in the future — today is ${today}` };
+  }
+  if (dayTaken) {
+    return { status: 409, message: `This branch already has a shift for ${shiftDate}` };
+  }
+  if (shiftDate < today && !isAdmin) {
+    return {
+      status: 403,
+      message: `Only an administrator can open a shift for ${shiftDate} — that day has already passed`,
+    };
+  }
+  return null;
+}
+
 /** What the denomination grid adds up to, in centavos. */
 export function countDetailCents(detail: unknown): number {
   if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return 0;
