@@ -94,6 +94,33 @@ export function classifyVariance(
   };
 }
 
+/**
+ * The second reading at close: what the drawer holds on the books against the
+ * figure the count predicts.
+ *
+ * D16 requires the two readings to cross-check, and they can only do that if
+ * both outlive the moment they were taken. `variance` has always been stored;
+ * this one was computed and returned to the screen, then dropped, so after the
+ * shift locked it could only be re-derived from a fund that has kept moving
+ * since - a cross-check that exists while a response is on screen and nowhere
+ * afterwards is not one anyone can audit.
+ *
+ * Because every movement posts its leg to the drawer as well as into the
+ * expected figure, the movement cancels and the result reduces to the opening
+ * float less the drawer's balance when the shift opened. It is therefore fixed
+ * the moment the shift opens: no count at close can change it, and a non-zero
+ * one means the float and the books disagreed from the start rather than that
+ * the closing count was wrong.
+ *
+ * Both inputs are centavo-rounded before subtracting, as every other figure in
+ * this file is. A balance read from a NUMERIC column and an arithmetic expected
+ * figure can differ by a binary fraction, and a difference that must be exactly
+ * zero to read as agreement cannot afford one.
+ */
+export function drawerDifference(expected: number, balance: number): number {
+  return money(toCents(expected) - toCents(balance));
+}
+
 // The denominations a counter here actually handles, largest first so the tally
 // reads the way cash comes out of a till. Values are held in centavos: a peso
 // of 0.25 has no exact binary float, and subtotals that drift cannot be

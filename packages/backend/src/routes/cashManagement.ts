@@ -5,7 +5,7 @@ import { createError } from '../middleware/error';
 import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
 import { drawerMovements, drawerBalance, drawerMovementRows } from '../services/drawerQuery';
-import { classifyVariance, expectedClosing, netMovement, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
+import { classifyVariance, expectedClosing, netMovement, drawerDifference, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
 import type { BranchBalance, CashBucket, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
@@ -540,16 +540,22 @@ router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Re
     const reason = report.status === 'balanced' ? null : String(body.varianceReason ?? '').trim();
 
     // Guarded on status so two people closing at once cannot both write: the
-    // second finds no open row and is refused.
+    // second finds no open row and is refused. The drawer reading is written in
+    // the same row as the count, not folded into the response: `variance` has
+    // always been stored and this is its pair, so a cross-check that only ever
+    // existed in a response body cannot be re-read after the shift locks (D16).
+    const readingDifference = drawerDifference(report.expected, balance);
     const updated = await queryOne<any>(
       `UPDATE shifts
        SET status = 'closed', counted_closing = $1, expected_closing = $2, variance = $3,
-           closed_at = NOW(), closed_by = $4, notes = COALESCE($5, notes),
-           count_detail = $6, variance_reason = $7, updated_at = NOW()
-       WHERE id = $8 AND status = 'open'
+           drawer_balance = $4, drawer_difference = $5,
+           closed_at = NOW(), closed_by = $6, notes = COALESCE($7, notes),
+           count_detail = $8, variance_reason = $9, updated_at = NOW()
+       WHERE id = $10 AND status = 'open'
        RETURNING *, shift_date::text AS shift_date`,
       [
         report.counted, report.expected, report.variance,
+        balance, readingDifference,
         req.user!.userId, notes,
         countDetail === null ? null : JSON.stringify(countDetail),
         reason, shift.id,
@@ -562,13 +568,14 @@ router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Re
       data: {
         ...updated,
         varianceLabel: VARIANCE_LABELS[report.status],
-        // The second reading. Expected comes from the counted float plus
-        // movements; this is what the books say the drawer holds. They are
-        // derived from different things precisely so they can disagree, and a
-        // non-zero difference is the signal that the float or the movements are
-        // wrong (design D16).
-        drawerBalance: balance,
-        drawerDifference: round2(report.expected - balance),
+        // The second reading, echoed from the row rather than recomputed, so
+        // what is reported and what is stored are the same figure. Expected
+        // comes from the counted float plus movements; this is what the books
+        // say the drawer holds. They are derived from different things
+        // precisely so they can disagree, and a non-zero difference is the
+        // signal that the float or the movements are wrong (design D16).
+        drawerBalance: num(updated.drawer_balance),
+        drawerDifference: num(updated.drawer_difference),
       },
     });
   } catch (error) {

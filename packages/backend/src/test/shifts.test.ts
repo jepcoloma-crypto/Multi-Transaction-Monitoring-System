@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expectedClosing, netMovement, classifyVariance, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
+import { expectedClosing, netMovement, classifyVariance, drawerDifference, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
 import type { ShiftMovement, VarianceStatus } from '../services/shifts';
 
 const inCash = (amount: string | number): ShiftMovement => ({ entry_type: 'credit', amount });
@@ -149,4 +149,36 @@ test('every reason the screen offers is one the server would accept', () => {
   for (const key of Object.keys(VARIANCE_REASONS)) {
     assert.equal(varianceReasonError(-1, key, key === 'other' ? 'stated' : ''), null, key);
   }
+});
+
+test('the second reading agrees when the expected figure and the drawer match', () => {
+  assert.equal(drawerDifference(78980, 78980), 0);
+});
+
+test('the second reading names the gap, and which side is higher', () => {
+  // The float counted at open was 74860 against a drawer of 74680: the shift
+  // opened 180 out of step and must still say so after it locks.
+  assert.equal(drawerDifference(79160, 78980), 180);
+  assert.equal(drawerDifference(78980, 79160), -180);
+});
+
+// The whole point of keeping this figure is that it reduces to the opening
+// float less the drawer at open, because the movement posts into both sides.
+// If a balance of movements ever failed to cancel, the reading would drift with
+// the shift's traffic and stop meaning what it says it means.
+test('the movement cancels, so the reading is fixed when the shift opens', () => {
+  const float = 74680;
+  const drawerAtOpen = 74680;
+  for (const net of [0, 4300, -2500, 0.35, 999999.99]) {
+    assert.equal(drawerDifference(float + net, drawerAtOpen + net), 0, `net ${net}`);
+  }
+  // The mismatch case: float above the books by 180, whatever the traffic.
+  for (const net of [0, 4300, -2500]) {
+    assert.equal(drawerDifference(74860 + net, 74680 + net), 180, `net ${net}`);
+  }
+});
+
+test('a fraction of a centavo reads as agreement, not as a gap', () => {
+  assert.equal(drawerDifference(74680.001, 74680), 0);
+  assert.equal(drawerDifference(74680, 74680.001), 0);
 });

@@ -63,6 +63,11 @@ interface Shift {
   counted_closing: number | string | null;
   expected_closing: number | string | null;
   variance: number | string | null;
+  // The second reading at close, stored alongside the first (042). Both stay
+  // null while the shift is open, for the same reason expected_closing does:
+  // the balance at close does not exist until the close happens.
+  drawer_balance: number | string | null;
+  drawer_difference: number | string | null;
   opened_at: string;
   closed_at: string | null;
   opened_by_username: string | null;
@@ -1438,7 +1443,12 @@ export default function CashManagement() {
                     <dd className="font-medium">{formatCurrency(money(lastClose.drawerBalance))}</dd>
                   </div>
                 </dl>
-                <p className="text-xs text-gray-600 mt-2">
+                <p className={`text-xs mt-2 font-medium ${Math.abs(lastClose.drawerDifference || 0) < 0.005 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                  {Math.abs(lastClose.drawerDifference || 0) < 0.005
+                    ? 'The two readings agree — the opening count and the drawer on the books matched.'
+                    : `The two readings differ by ${formatCurrency(money(lastClose.drawerDifference || 0))}. That gap was set when the shift opened, not by this count, so it survives a balanced close.`}
+                </p>
+                <p className="text-xs text-gray-600 mt-1">
                   Expected comes from your opening count plus the drawer's movements; the books figure comes
                   from the account balance. They are derived from different things precisely so they can
                   disagree — a gap between them means the float or the movements are wrong.
@@ -2749,6 +2759,20 @@ export default function CashManagement() {
                         <span className="text-gray-500">Drawer on the books</span>
                         <span className="font-medium">{formatCurrency(live?.drawerBalance || 0)}</span>
                       </div>
+                    </div>
+
+                    {/* Stated, never enforced: the gap between the two rows
+                        above is fixed when the shift opens - the movement posts
+                        to both sides and cancels - so it is a discrepancy of its
+                        own, separate from the count being taken here. It was
+                        only ever shown in the response after closing, when it
+                        could no longer be acted on. */}
+                    <div
+                      className={`rounded-lg border px-3 py-2 text-xs ${Math.abs(live?.drawerDifference || 0) < 0.005 ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-amber-300 bg-amber-50 text-amber-800'}`}
+                    >
+                      {Math.abs(live?.drawerDifference || 0) < 0.005
+                        ? 'The two readings agree: your opening count matched the drawer on the books, so any difference below is a difference in the count alone.'
+                        : `The two readings differ by ${formatCurrency(live?.drawerDifference || 0)}. That gap was set when this shift opened and no closing count clears it — it means the float and the books disagreed from the start, and it needs an answer of its own.`}
                     </div>
 
                     <div className="flex items-center justify-between rounded-lg border border-gray-300 bg-gray-50 px-3 py-2 text-sm">
