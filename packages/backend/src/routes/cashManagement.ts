@@ -5,7 +5,7 @@ import { createError } from '../middleware/error';
 import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
 import { drawerMovements, drawerBalance, drawerMovementRows } from '../services/drawerQuery';
-import { classifyVariance, expectedClosing, netMovement, drawerDifference, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
+import { classifyVariance, expectedClosing, netMovement, drawerDifference, openingReasonError, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
 import type { BranchBalance, CashBucket, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
@@ -485,14 +485,31 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
       throw createError(400, `Shift date cannot be in the future — today is ${today}`);
     }
 
+    // The second reading, taken now rather than at close (043). The drawer's
+    // balance on the books is read at the instant the float is being recorded,
+    // because that is the only moment the two can be compared: the drawer moves
+    // from the first transaction the shift takes, so a balance read later is a
+    // balance of a different drawer and the gap it reports would be about
+    // neither figure.
+    const drawerAtOpen = await drawerBalance(branchId);
+    const openingGap = drawerDifference(round2(openingFloat), drawerAtOpen);
+    const openingNotes = body.openingDifferenceNotes ? String(body.openingDifferenceNotes).trim() || null : null;
+    const openingProblem = openingReasonError(openingGap, body.openingDifferenceReason, openingNotes);
+    if (openingProblem) throw createError(400, openingProblem);
+    // A float that agrees owes no explanation and stores none: a reason beside a
+    // zero gap would read as an incident nobody had.
+    const openingReason = openingGap === 0 ? null : String(body.openingDifferenceReason ?? '').trim() || null;
+
     let shift;
     try {
       shift = await queryOne(
-        `INSERT INTO shifts (branch_id, shift_date, opening_float, opened_by, notes)
-         VALUES ($1, $2::date, $3, $4, $5)
+        `INSERT INTO shifts (branch_id, shift_date, opening_float, opening_drawer_balance,
+                             opening_difference_reason, opening_difference_notes, opened_by, notes)
+         VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8)
          RETURNING *, shift_date::text AS shift_date`,
         [
-          branchId, shiftDate, round2(openingFloat), req.user!.userId,
+          branchId, shiftDate, round2(openingFloat), drawerAtOpen,
+          openingReason, openingNotes, req.user!.userId,
           body.notes ? String(body.notes).trim() || null : null,
         ],
       );
@@ -504,7 +521,15 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
       throw err;
     }
 
-    res.status(201).json({ success: true, data: shift });
+    res.status(201).json({
+      success: true,
+      data: {
+        ...shift,
+        // Echoed so the screen can state the gap from the row rather than from
+        // a figure it worked out itself, which could differ by a centavo.
+        drawerDifference: openingGap,
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -583,33 +608,68 @@ router.post('/shifts/:id/close', authorize('transactions.write'), async (req: Re
   }
 });
 
-// Shifts that closed short or over and nobody has answered for yet. D14 calls
-// a discrepancy an event needing investigation; this is the list of the ones
-// still waiting for it, so a shortage cannot quietly disappear into history
-// simply because a later shift balanced.
+// The two discrepancies, in one list, because they are the same event asked of
+// the same person: a count that missed the expected figure, and a float that
+// missed the drawer when the shift opened. Both are a difference somebody has
+// to answer for, and keeping them in separate lists would mean the number of
+// things outstanding could never be read off one screen.
+//
+// The float rows reuse the count columns on purpose. On a count row `expected`
+// is the figure the count was taken against and `counted` is the count; on a
+// float row `expected` is what the books held and `counted` is the float. Those
+// are the same two things in the same two places, so nobody has to learn a
+// second layout to see that a shift opened ₱180 above its drawer.
+//
+// An opening gap is outstanding from the moment the shift opens and stays so
+// after it closes. Closing the shift does not answer why the float was wrong,
+// and a later shift balancing certainly does not.
 router.get('/variances', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const conds: string[] = [`s.status = 'closed'`, `s.variance IS NOT NULL`, `s.variance <> 0`, `s.variance_resolved_at IS NULL`];
-    const params: any[] = [];
-    const scope = branchClause(req, 's', 'branches.read_all', 1, 'self');
-    if (scope.clause) {
-      conds.push(scope.clause);
-      params.push(...scope.params);
+    const countConds: string[] = [`s.status = 'closed'`, `s.variance IS NOT NULL`, `s.variance <> 0`, `s.variance_resolved_at IS NULL`];
+    const countParams: any[] = [];
+    const countScope = branchClause(req, 's', 'branches.read_all', 1, 'self');
+    if (countScope.clause) {
+      countConds.push(countScope.clause);
+      countParams.push(...countScope.params);
     }
 
-    const rows = await query<any>(
-      `SELECT s.id, s.branch_id, s.shift_date::text AS shift_date, s.variance,
-              s.counted_closing, s.expected_closing, s.variance_reason, s.notes,
-              s.closed_at, b.code AS branch_code, b.name AS branch_name,
-              cu.username AS closed_by_username
+    const countRows = await query<any>(
+      `SELECT 'count' AS type, s.id, s.branch_id, b.code AS branch_code, b.name AS branch_name,
+              s.shift_date::text AS shift_date, s.variance, s.counted_closing, s.expected_closing,
+              s.variance_reason, s.notes,
+              s.closed_at AS at, cu.username AS by_username
        FROM shifts s
        JOIN branches b ON b.id = s.branch_id
        LEFT JOIN users cu ON cu.id = s.closed_by
-       WHERE ${conds.join(' AND ')}
-       ORDER BY s.closed_at DESC
-       LIMIT 100`,
-      params,
+       WHERE ${countConds.join(' AND ')}`,
+      countParams,
     );
+
+    const gapConds: string[] = [`round(s.opening_float - s.opening_drawer_balance, 2) <> 0`, `s.opening_difference_resolved_at IS NULL`];
+    const gapParams: any[] = [];
+    const gapScope = branchClause(req, 's', 'branches.read_all', 1, 'self');
+    if (gapScope.clause) {
+      gapConds.push(gapScope.clause);
+      gapParams.push(...gapScope.params);
+    }
+
+    const gapRows = await query<any>(
+      `SELECT 'float' AS type, s.id, s.branch_id, b.code AS branch_code, b.name AS branch_name,
+              s.shift_date::text AS shift_date,
+              round(s.opening_float - s.opening_drawer_balance, 2) AS variance,
+              s.opening_float AS counted_closing, s.opening_drawer_balance AS expected_closing,
+              s.opening_difference_reason AS variance_reason, s.opening_difference_notes AS notes,
+              s.opened_at AS at, ou.username AS by_username
+       FROM shifts s
+       JOIN branches b ON b.id = s.branch_id
+       LEFT JOIN users ou ON ou.id = s.opened_by
+       WHERE ${gapConds.join(' AND ')}`,
+      gapParams,
+    );
+
+    const rows = [...countRows, ...gapRows]
+      .sort((a, b) => new Date(b.at ?? 0).getTime() - new Date(a.at ?? 0).getTime())
+      .slice(0, 200);
 
     res.json({ success: true, data: rows });
   } catch (error) {
@@ -652,6 +712,57 @@ router.post('/shifts/:id/variance/resolve', authorize('transactions.write'), asy
       [req.user!.userId, shift.id],
     );
     if (!updated) throw createError(409, 'This variance was already closed by someone else');
+
+    res.json({ success: true, data: { ...updated, resolved_by_username: req.user!.username } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Recording that an opening gap has been looked into. The same shape as the
+// variance resolution and for the same reason: it writes only a stamp, never a
+// balance and never a count. It is a stamp of its own rather than a shared one
+// because the two investigations are separate - answering why the float was
+// wrong does not answer whether the closing count was, and one must not quietly
+// settle the other.
+//
+// Administrator-only for the same reason the variance resolution is: the float
+// was taken under whoever opened the shift, and they are not the one who gets
+// to say it has been dealt with.
+router.post('/shifts/:id/opening-difference/resolve', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!(req.user!.roles || []).includes('administrator')) {
+      return next(createError(403, 'Only administrators can close an opening difference'));
+    }
+
+    const shift = await queryOne<any>(
+      `SELECT s.*, s.shift_date::text AS shift_date FROM shifts s WHERE s.id = $1`,
+      [req.params.id],
+    );
+    if (!shift) throw createError(404, 'Shift not found');
+    await assertShiftBranch(req, shift.branch_id, 'Shift not found');
+
+    if (shift.status !== 'closed') {
+      throw createError(400, 'This shift is still open, so its opening difference has no outcome to record');
+    }
+    if (drawerDifference(num(shift.opening_float), num(shift.opening_drawer_balance)) === 0) {
+      throw createError(400, 'This shift opened matching its drawer, so there is no opening difference to close');
+    }
+    if (shift.opening_difference_resolved_at) {
+      throw createError(409, 'This opening difference has already been closed');
+    }
+
+    // Guarded on the stamp rather than on a status field: the row is otherwise
+    // immutable, and the second administrator to click finds no open difference
+    // rather than a second resolution to write.
+    const updated = await queryOne<any>(
+      `UPDATE shifts
+       SET opening_difference_resolved_at = NOW(), opening_difference_resolved_by = $1, updated_at = NOW()
+       WHERE id = $2 AND opening_difference_resolved_at IS NULL
+       RETURNING *`,
+      [req.user!.userId, shift.id],
+    );
+    if (!updated) throw createError(409, 'This opening difference was already closed by someone else');
 
     res.json({ success: true, data: { ...updated, resolved_by_username: req.user!.username } });
   } catch (error) {

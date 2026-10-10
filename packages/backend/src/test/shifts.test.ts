@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expectedClosing, netMovement, classifyVariance, drawerDifference, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
+import { expectedClosing, netMovement, classifyVariance, drawerDifference, openingReasonError, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
 import type { ShiftMovement, VarianceStatus } from '../services/shifts';
 
 const inCash = (amount: string | number): ShiftMovement => ({ entry_type: 'credit', amount });
@@ -181,4 +181,29 @@ test('the movement cancels, so the reading is fixed when the shift opens', () =>
 test('a fraction of a centavo reads as agreement, not as a gap', () => {
   assert.equal(drawerDifference(74680.001, 74680), 0);
   assert.equal(drawerDifference(74680, 74680.001), 0);
+});
+
+test('a float that matches its drawer owes no explanation', () => {
+  assert.equal(openingReasonError(0, '', ''), null);
+  assert.equal(openingReasonError(0, null, null), null);
+});
+
+test('a float that missed the drawer cannot open without saying why', () => {
+  assert.match(openingReasonError(180, '', '') ?? '', /must say why it differs/);
+  assert.match(openingReasonError(-180, undefined, undefined) ?? '', /must say why it differs/);
+});
+
+test('the explanation is drawn from the list a variance uses', () => {
+  for (const key of Object.keys(VARIANCE_REASONS)) {
+    assert.equal(openingReasonError(180, key, key === 'other' ? 'stated' : ''), null, key);
+  }
+});
+
+test('the opening difference rejects a reason nobody could have chosen', () => {
+  assert.match(openingReasonError(180, 'made_up', '') ?? '', /is not a recognised reason/);
+});
+
+test('the catch-all still has to say what happened, here as much as at close', () => {
+  assert.match(openingReasonError(180, 'other', '   ') ?? '', /needs the notes/);
+  assert.equal(openingReasonError(180, 'other', 'Drawer held an unbelted twenty from yesterday'), null);
 });

@@ -163,19 +163,64 @@ export const VARIANCE_REASONS: Record<string, string> = {
  * design rests on: a discrepancy that closes without a word is
  * indistinguishable from a discrepancy nobody investigated (D14). A balanced
  * shift owes no explanation and is never asked for one.
+ *
+ * Both checks below run through this one shape, because they are the same
+ * question asked of the same person: a count that missed the expected figure
+ * and a float that missed the drawer at open are two discrepancies, not two
+ * vocabularies. A second list of reasons would mean the two could never be
+ * counted together, and the answer worth having is the one that aggregates.
  */
-export function varianceReasonError(variance: number, reason: unknown, notes: unknown): string | null {
-  if (toCents(variance) === 0) return null;
+function reasonError(
+  difference: number,
+  reason: unknown,
+  notes: unknown,
+  missing: string,
+  notRecognised: string,
+): string | null {
+  if (toCents(difference) === 0) return null;
 
   const key = typeof reason === 'string' ? reason.trim() : '';
-  if (!key) return 'A count that differs from the expected figure must say why it differs';
+  if (!key) return missing;
   if (!Object.prototype.hasOwnProperty.call(VARIANCE_REASONS, key)) {
-    return `"${key}" is not a recognised reason for a variance`;
+    return `"${key}" is not a recognised reason ${notRecognised}`;
   }
   if (key === 'other' && !String(notes ?? '').trim()) {
     return 'Choosing "something else" needs the notes to say what happened';
   }
   return null;
+}
+
+export function varianceReasonError(variance: number, reason: unknown, notes: unknown): string | null {
+  return reasonError(
+    variance,
+    reason,
+    notes,
+    'A count that differs from the expected figure must say why it differs',
+    'for a variance',
+  );
+}
+
+/**
+ * The same obligation at the other end of the shift.
+ *
+ * A float that differs from the drawer is fixed for the whole shift - the
+ * movement posts to both sides and cancels, so no closing count clears it - and
+ * a gap nobody explained when it was taken is a gap that cannot be explained
+ * afterwards, because the person who counted has gone home and the drawer has
+ * moved on. Asking at open is the only moment the answer is still available.
+ *
+ * Nothing here refuses the float. It is the count that was actually taken, and
+ * D14 makes a discrepancy an event to investigate rather than an action to
+ * block; what is required is that the event says why.
+ */
+export function openingReasonError(difference: number, reason: unknown, notes: unknown): string | null {
+  return reasonError(
+    difference,
+    reason,
+    notes,
+    'A float that differs from the drawer on the books must say why it differs',
+    'for an opening difference',
+  );
 }
 
 /** What the denomination grid adds up to, in centavos. */

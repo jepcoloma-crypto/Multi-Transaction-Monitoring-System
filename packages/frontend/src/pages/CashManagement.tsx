@@ -60,6 +60,15 @@ interface Shift {
   status: 'open' | 'closed';
   shift_date: string;
   opening_float: number | string;
+  // The second reading at open, taken the instant the float is recorded (043).
+  // Unlike drawer_balance below this one exists for the whole life of the
+  // shift, because the drawer on the books at open is knowable the moment the
+  // shift opens — so it is what the opening gap is read from, kept rather than
+  // recomputed later against a balance that has already moved on.
+  opening_drawer_balance: number | string;
+  opening_difference_reason: string | null;
+  opening_difference_notes: string | null;
+  opening_difference_resolved_at: string | null;
   counted_closing: number | string | null;
   expected_closing: number | string | null;
   variance: number | string | null;
@@ -93,10 +102,17 @@ interface ShiftResult extends Shift {
   drawerDifference?: number;
 }
 
-// A shift that closed short or over and nobody has answered for yet. Served by
+// A discrepancy nobody has answered for yet. Served by
 // `GET /cash-management/variances` — the list D14 implies when it calls a
 // discrepancy an event needing investigation.
+//
+// It now carries two kinds, told apart by `type`, in one row shape: `count` is
+// a closing count that missed the expected figure, `float` is an opening float
+// that missed the drawer. The columns mean the same thing on both — `expected`
+// is what the figure was measured against and `counted` is what was measured —
+// so the card that renders them draws one layout rather than two.
 interface VarianceRow {
+  type: 'count' | 'float';
   id: string;
   branch_id: string;
   branch_code: string;
@@ -107,8 +123,12 @@ interface VarianceRow {
   expected_closing: number | string;
   variance_reason: string | null;
   notes: string | null;
-  closed_at: string;
-  closed_by_username: string | null;
+  // The moment the discrepancy was taken: the close for a count, the open for
+  // a float, since a float is wrong the instant it is counted. Shown because an
+  // investigation is dated, and two findings from one shift need telling apart
+  // by more than their reason.
+  at: string;
+  by_username: string | null;
 }
 
 // One cash-account ledger row inside a shift's window — the rows that produced
@@ -424,7 +444,19 @@ export default function CashManagement() {
   // arrives is worse than one that arrives late.
   const [loadingShifts, setLoadingShifts] = useState(true);
   const [shiftError, setShiftError] = useState('');
-  const [shiftOpen, setShiftOpen] = useState<{ branchId: string; openingFloat: string; booksBalance: number; shiftDate: string } | null>(null);
+  // The explanation is carried alongside the float because it is required at
+  // the same moment: a float that differs from the drawer is accepted, but only
+  // with an answer to why (043), and that answer is no easier to get later than
+  // the count is. Held here rather than derived on submit so the reason a
+  // person chose survives them correcting the figure that asked for it.
+  const [shiftOpen, setShiftOpen] = useState<{
+    branchId: string;
+    openingFloat: string;
+    booksBalance: number;
+    shiftDate: string;
+    openingReason: string;
+    openingNotes: string;
+  } | null>(null);
   // `step` is the count's integrity: until it flips to 'review' the dialog
   // holds nothing the counter could anchor on. Expected, difference and the
   // drawer's books balance are all in `shift`, but none of them are rendered
@@ -672,6 +704,24 @@ export default function CashManagement() {
       setShiftError(`A shift cannot be dated ahead of today — today is ${today}`);
       return;
     }
+    // A float that missed the drawer owes an answer, and this is the moment to
+    // ask for it: the person who counted is here, the drawer is in front of
+    // them, and the books figure is the one on screen. Asking at close would be
+    // asking about a gap set hours ago by somebody who has gone home. The same
+    // message comes back from the server, which is the check that counts — this
+    // one only saves a round trip.
+    const disagrees = floatAgainstBooks(shiftOpen.openingFloat, shiftOpen.booksBalance);
+    if (disagrees) {
+      const reason = shiftOpen.openingReason.trim();
+      if (!reason) {
+        setShiftError('Your count does not match the drawer on the books. Say why before opening.');
+        return;
+      }
+      if (reason === 'other' && !shiftOpen.openingNotes.trim()) {
+        setShiftError('Choosing "something else" needs the notes to say what happened');
+        return;
+      }
+    }
     setSavingShift(true);
     setShiftError('');
     try {
@@ -679,6 +729,11 @@ export default function CashManagement() {
         branchId: shiftOpen.branchId,
         openingFloat,
         shiftDate: shiftOpen.shiftDate,
+        // Sent even when they agree, and dropped by the server rather than here:
+        // a reason beside a zero gap would read as an incident nobody had, and
+        // deciding that once, in one place, is how the two sides stay agreed.
+        openingDifferenceReason: shiftOpen.openingReason.trim() || null,
+        openingDifferenceNotes: shiftOpen.openingNotes.trim() || null,
       });
       setShiftOpen(null);
       // The daily figures are keyed on the open shift's own day, so opening one
@@ -751,20 +806,30 @@ export default function CashManagement() {
     }
   };
 
-  const resolveVariance = async (id: string) => {
+  // The two discrepancies resolve through their own endpoints and their own
+  // stamps, because they are two investigations: settling why the float was
+  // wrong is not an answer to whether the closing count was, so one must never
+  // quietly close the other.
+  const resolveVariance = async (id: string, type: 'count' | 'float') => {
+    const opening = type === 'float';
     const confirmed = window.confirm(
-      'Mark this variance as investigated?\n\n' +
+      `Mark this ${opening ? 'opening difference' : 'variance'} as investigated?\n\n` +
         'This records that somebody looked into it, and when. It does not change the count, ' +
         'the expected figure, or any balance.',
     );
     if (!confirmed) return;
-    setResolvingId(id);
+    // Composite key: one shift can be waiting on both investigations, and a
+    // bare shift id would spin both buttons and leave the other half of the
+    // work looking answered.
+    setResolvingId(`${type}:${id}`);
     setShiftError('');
     try {
-      await api.post(`/cash-management/shifts/${id}/variance/resolve`, {});
+      await api.post(`/cash-management/shifts/${id}/${opening ? 'opening-difference' : 'variance'}/resolve`, {});
       await loadShifts();
     } catch (err) {
-      setShiftError(err instanceof Error ? err.message : 'Could not close the variance');
+      setShiftError(
+        err instanceof Error ? err.message : `Could not close the ${opening ? 'opening difference' : 'variance'}`,
+      );
     } finally {
       setResolvingId(null);
     }
@@ -1459,31 +1524,41 @@ export default function CashManagement() {
             {variances.length > 0 && (
               <div className="mt-3 rounded-lg border border-red-300 bg-red-50 p-4 text-sm">
                 <p className="font-semibold text-red-800">
-                  {variances.length} {variances.length === 1 ? 'shift closed' : 'shifts closed'} short or
-                  over, and nobody has answered for it
+                  {variances.length} {variances.length === 1 ? 'discrepancy' : 'discrepancies'} nobody
+                  has answered for
                 </p>
                 <p className="mt-1 text-xs text-red-700">
                   A discrepancy is an event to investigate, not a balance to adjust. These stay listed
                   until somebody has looked into one — a later shift balancing does not settle it.
+                  A shift can contribute both kinds: it may have opened off its drawer and closed off
+                  its expected figure, and those are two questions, not one.
                 </p>
                 <ul className="mt-3 space-y-3">
                   {variances.map((v) => {
                     const cents = Math.round(money(v.variance) * 100);
                     const over = cents > 0;
+                    const opening = v.type === 'float';
                     return (
-                      <li key={v.id} className="rounded border border-red-200 bg-white p-3">
+                      // Keyed on the type as well: the same shift can be in the
+                      // queue twice for two different reasons, and without that
+                      // the two rows collide and one of them cannot be
+                      // resolved by clicking it.
+                      <li key={`${v.type}:${v.id}`} className="rounded border border-red-200 bg-white p-3">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="font-medium">
                             {v.branch_name} · {dateKeyLabel(v.shift_date)}
                           </span>
                           <span className={`badge-${over ? 'yellow' : 'red'}`}>
-                            {over ? 'OVER' : 'SHORT'} {formatCurrency(money(v.variance))}
+                            {opening ? 'FLOAT' : 'COUNT'} · {over ? 'OVER' : 'SHORT'}{' '}
+                            {formatCurrency(money(v.variance))}
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-gray-600">
-                          Expected {formatCurrency(money(v.expected_closing))} · counted{' '}
-                          {formatCurrency(money(v.counted_closing))}
-                          {v.closed_by_username ? ` · closed by ${v.closed_by_username}` : ''}
+                          {opening
+                            ? `Counted ${formatCurrency(money(v.counted_closing))} · the books held ${formatCurrency(money(v.expected_closing))}`
+                            : `Expected ${formatCurrency(money(v.expected_closing))} · counted ${formatCurrency(money(v.counted_closing))}`}
+                          {v.by_username ? ` · ${opening ? 'taken by' : 'closed by'} ${v.by_username}` : ''}
+                          {v.at ? ` · ${manilaDateTimeLabel(v.at)}` : ''}
                         </p>
                         <p className="mt-1 text-xs text-gray-700">
                           <span className="text-gray-500">Why: </span>
@@ -1496,10 +1571,10 @@ export default function CashManagement() {
                           <button
                             type="button"
                             className="btn-secondary mt-2"
-                            disabled={resolvingId === v.id}
-                            onClick={() => void resolveVariance(v.id)}
+                            disabled={resolvingId === `${v.type}:${v.id}`}
+                            onClick={() => void resolveVariance(v.id, v.type)}
                           >
-                            {resolvingId === v.id ? 'Recording…' : 'Mark as investigated'}
+                            {resolvingId === `${v.type}:${v.id}` ? 'Recording…' : 'Mark as investigated'}
                           </button>
                         ) : (
                           <p className="mt-2 text-xs text-gray-500">
@@ -1568,6 +1643,10 @@ export default function CashManagement() {
                               <dd className="font-medium">{formatCurrency(money(open.opening_float))}</dd>
                             </div>
                             <div className="flex justify-between gap-3">
+                              <dt className="text-gray-500">Drawer on the books then</dt>
+                              <dd className="font-medium">{formatCurrency(money(open.opening_drawer_balance))}</dd>
+                            </div>
+                            <div className="flex justify-between gap-3">
                               <dt className="text-gray-500">Cash in / out since</dt>
                               <dd className="font-medium">+{formatCurrency(live.cashIn)} / −{formatCurrency(live.cashOut)}</dd>
                             </div>
@@ -1583,8 +1662,16 @@ export default function CashManagement() {
                           <p className={`text-xs mt-2 ${Math.abs(live.drawerDifference) < 0.005 ? 'text-emerald-700' : 'text-amber-700'}`}>
                             {Math.abs(live.drawerDifference) < 0.005
                               ? 'The two readings agree.'
-                              : `The two readings differ by ${formatCurrency(live.drawerDifference)}.`}
+                              : `The two readings differ by ${formatCurrency(live.drawerDifference)} — the count above against a drawer of ${formatCurrency(money(open.opening_drawer_balance))}.`}
                           </p>
+                          {open.opening_difference_reason && (
+                            <p className="text-xs text-gray-600 mt-1">
+                              Why, as given when the shift opened:{' '}
+                              {varianceReasons[open.opening_difference_reason] ?? open.opening_difference_reason}
+                              {open.opening_difference_notes ? ` — ${open.opening_difference_notes}` : ''}
+                              {open.opening_difference_resolved_at ? ' · recorded as investigated' : ''}
+                            </p>
+                          )}
                           <button
                             type="button"
                             className="btn-secondary mt-3 w-full flex items-center justify-center gap-2"
@@ -1616,7 +1703,7 @@ export default function CashManagement() {
                           <button
                             type="button"
                             className="btn-primary mt-3 w-full"
-                            onClick={() => { setLastClose(null); setShiftClose(null); setShiftOpen({ branchId: b.id, openingFloat: '', booksBalance: books, shiftDate: manilaDateValue() }); }}
+                            onClick={() => { setLastClose(null); setShiftClose(null); setShiftOpen({ branchId: b.id, openingFloat: '', booksBalance: books, shiftDate: manilaDateValue(), openingReason: '', openingNotes: '' }); }}
                           >
                             Open shift
                           </button>
@@ -2487,15 +2574,51 @@ export default function CashManagement() {
                   The books say this drawer holds {formatCurrency(shiftOpen.booksBalance)}. That figure is
                   deliberately not filled in for you — if the two disagree at close, the difference is the finding.
                 </p>
-                {/* Stated, not enforced: a float that differs is accepted on
-                    purpose (D16), but the operator should hear about it now
-                    rather than at close. */}
+                {/* Asked only when the two actually disagree. A float that
+                    matches owes no explanation and is never asked for one, so
+                    the form stays as short as the answer has to be — and what
+                    decides the field appears is the same comparison the server
+                    runs, not a second opinion about it. */}
                 {floatAgainstBooks(shiftOpen.openingFloat, shiftOpen.booksBalance) && (
                   <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1">
                     {floatAgainstBooks(shiftOpen.openingFloat, shiftOpen.booksBalance)}
                   </p>
                 )}
               </div>
+
+              {floatAgainstBooks(shiftOpen.openingFloat, shiftOpen.booksBalance) && (
+                <div>
+                  <label className="form-label">
+                    Why does it differ? <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    className="form-input"
+                    value={shiftOpen.openingReason}
+                    onChange={(e) => setShiftOpen((s) => s && { ...s, openingReason: e.target.value })}
+                  >
+                    <option value="">Choose a reason</option>
+                    {Object.entries(varianceReasons).map(([key, label]) => (
+                      <option key={key} value={key}>{label}</option>
+                    ))}
+                  </select>
+
+                  <label className="form-label mt-3">
+                    Notes{shiftOpen.openingReason === 'other' ? ' ' : ' (optional)'}
+                    {shiftOpen.openingReason === 'other' && <span className="text-red-500">*</span>}
+                  </label>
+                  <textarea
+                    className="form-input"
+                    rows={2}
+                    value={shiftOpen.openingNotes}
+                    onChange={(e) => setShiftOpen((s) => s && { ...s, openingNotes: e.target.value })}
+                  />
+
+                  <p className="text-xs text-gray-500 mt-1">
+                    This records why the two readings differ. It does not change either of them — the drawer
+                    stays at {formatCurrency(shiftOpen.booksBalance)} on the books, whatever you counted.
+                  </p>
+                </div>
+              )}
 
               <div className="flex justify-end gap-3 pt-1">
                 <button type="button" className="btn-secondary" onClick={() => setShiftOpen(null)}>Cancel</button>
