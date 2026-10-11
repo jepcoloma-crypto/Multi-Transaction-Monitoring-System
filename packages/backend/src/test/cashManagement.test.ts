@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, EXPENSE_BUCKETS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
 import type { BranchBalance, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
@@ -33,6 +33,7 @@ test('every reachable bucket has a display label', () => {
     'load_purchase', 'operating_expense', 'expense', 'service_fee',
     'bill_payment', 'refund', 'other_income', 'refund_received',
     'adjustment_in', 'adjustment_out', 'loan_received', 'loan_repayment',
+    'cash_payment',
     'something_unrecognised',
   ];
   for (const code of codes) {
@@ -546,6 +547,71 @@ test('an operating expense still settles under the threshold and waits above it'
   assert.equal(controlledApproval('operating_expense', 3001, 3000, true).requiresApproval, true);
   // Below it an ordinary operator settles at once, as they always have.
   assert.equal(controlledApproval('operating_expense', 100, 3000, false).requiresApproval, false);
+});
+
+test('a cash payment is a bucket of its own, not an operating expense', () => {
+  // Folding it into operating_expenses would report every peso handed to a
+  // supplier as the cost of running the business, which is the exact lie the
+  // type exists to prevent.
+  assert.equal(bucketFor('transaction', 'cash_payment'), 'cash_payments');
+  assert.equal(BUCKET_LABELS.cash_payments, 'Cash Payments');
+  assert.notEqual(bucketFor('transaction', 'cash_payment'), 'operating_expenses');
+});
+
+test('a cash payment leaves the drawer and is never counted as an expense', () => {
+  // The whole point of the type. Cash on hand falls and the shift's expected
+  // figure falls with it, but the expense total must not move a peso.
+  const rows = [
+    toCashRecordRow(raw({ id: 'p1', amount: '5000.00', txn_code: 'cash_payment' })),
+    toCashRecordRow(raw({ id: 'e1', amount: '1045.00' })),                          // operating_expenses
+    toCashRecordRow(raw({ id: 'e2', amount: '50.00', txn_code: 'bill_payment' })),  // payments
+  ];
+  assert.equal(cashExpenseTotal(rows), '1095.00');
+  assert.equal(
+    cashExpenseTotal([toCashRecordRow(raw({ id: 'p1', amount: '5000.00', txn_code: 'cash_payment' }))]),
+    '0.00',
+  );
+});
+
+test('the cash payments bucket sits outside every expense bucket', () => {
+  // The single assertion the classification rests on: added here by mistake,
+  // supplier payments would start flowing into every expense figure at once.
+  assert.equal(EXPENSE_BUCKETS.includes('cash_payments'), false);
+});
+
+test('a cash payment is its own line in Sources and Uses, and the statement still balances', () => {
+  const branches: BranchBalance[] = [
+    { id: 'b1', code: 'MAIN', name: 'Main Branch', opening: 1000, current: 650 },
+  ];
+  const rows: LedgerFlowRow[] = [
+    { branch_id: 'b1', entry_type: 'debit', amount: '300.00', source_type: 'transaction', txn_code: 'operating_expense' },
+    { branch_id: 'b1', entry_type: 'debit', amount: '50.00', source_type: 'transaction', txn_code: 'cash_payment' },
+  ];
+
+  const statement = buildCashStatement(rows, branches);
+
+  // In Uses, because a peso that left and appears nowhere is a peso nobody can
+  // explain — but on a line of its own rather than folded into the expense one.
+  const line = statement.uses.find((l) => l.bucket === 'cash_payments');
+  assert.ok(line, 'a cash payment must still appear in Uses');
+  assert.equal(line.amount, 50);
+  assert.equal(line.label, 'Cash Payments');
+  assert.equal(statement.uses.find((l) => l.bucket === 'operating_expenses')?.amount, 300);
+  assert.equal(statement.totals.uses, 350);
+  assert.equal(statement.totals.closing, 650);
+  assert.equal(statement.totals.balanced, true);
+});
+
+test('a cash payment follows the expense threshold, above it even for an administrator', () => {
+  // One setting governs both ways cash walks out of the drawer. Letting a
+  // payment through more easily than the expense beside it would make the
+  // threshold decorative.
+  assert.equal(controlledApproval('cash_payment', 2999, 3000, false).requiresApproval, false);
+  assert.equal(controlledApproval('cash_payment', 3001, 3000, false).requiresApproval, true);
+  assert.equal(controlledApproval('cash_payment', 3001, 3000, true).requiresApproval, true);
+  assert.equal(controlledApproval('cash_payment', 100, 3000, false).requiresApproval, false);
+  // And it may be left for approval at all, or the queue could never hold one.
+  assert.equal(controlledApproval('cash_payment', 1, 3000, false).controlled, true);
 });
 
 test('a cash account can only have been paid by cash', () => {

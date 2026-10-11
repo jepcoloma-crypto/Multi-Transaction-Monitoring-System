@@ -14,7 +14,7 @@ import { NO_OPEN_SHIFT_HINT } from '../hooks/useShiftGate';
 import {
   Wallet, Landmark, Plus, Check, X, RefreshCw, ShieldAlert, AlertTriangle, Inbox, Receipt,
   TrendingUp, TrendingDown, Coins, ArrowRight, Calendar, Clock, List, Printer,
-  Search, Download, ChevronLeft, ChevronRight, Eye, RotateCcw,
+  Search, Download, ChevronLeft, ChevronRight, Eye, RotateCcw, HandCoins,
 } from 'lucide-react';
 
 // NUMERIC columns arrive as strings and a shift's close fields are still null
@@ -169,6 +169,10 @@ interface PendingExpense {
   created_at: string;
   rejection_reason: string | null;
   category_name: string | null;
+  // Which of the two queued codes this row is, so the screen can say whether an
+  // administrator is being asked to release a cost or hand cash out.
+  type_code: string;
+  type_name: string;
   account_name: string;
   current_balance: string;
   branch_code: string;
@@ -179,6 +183,7 @@ interface PendingExpense {
 interface Category {
   id: string;
   name: string;
+  code: string;
 }
 
 interface TypeRow {
@@ -243,6 +248,40 @@ const emptyEventForm = {
   referenceNumber: '',
   transactionDate: manilaDateValue(),
 };
+
+// Cash handed out that is not the business spending on itself: stock bought
+// from a supplier, a bill being settled, wages, cash given to someone
+// collecting. Its own form rather than a switch on the expense form because the
+// two are filed differently — an expense reaches the expense totals, this never
+// does, and a form that produced rows nobody can tell apart afterwards would
+// make that distinction read-only.
+const emptyPaymentForm = {
+  accountId: '',
+  transactionCategoryId: '',
+  amount: '',
+  payee: '',
+  description: '',
+  referenceNumber: '',
+  transactionDate: manilaDateValue(),
+  paymentMethod: 'cash',
+};
+
+// The purposes a payment may be filed under. Matched on `code` rather than
+// name because code is unique and stable while names get edited, and because
+// offering all twenty-nine categories would put "Loading Sale" and "Cash-In" in
+// a list of reasons to hand money out. A purpose not on the list stays
+// reachable as Uncategorised plus the description, so the picker narrows the
+// choice without closing it.
+const PAYMENT_PURPOSE_CODES = [
+  'supplier_payment',
+  'rent',
+  'salary',
+  'utilities',
+  'credit_card',
+  'other_bill',
+  'bank_fee',
+  'cash_out',
+] as const;
 
 // The count sheet is the one thing here that leaves the screen: it is filed
 // after the close as the record of what was counted. It is rendered outside
@@ -525,9 +564,19 @@ export default function CashManagement() {
   const [eventError, setEventError] = useState('');
   const [typeIds, setTypeIds] = useState<Record<string, string>>({});
 
+  // The third form: a payment out of the drawer that is not a running cost.
+  // Separate state rather than a code field on the event form, because this one
+  // carries a payment method and a purpose picker and posts a different type —
+  // sharing the object would mean every branch of submitCashEvent asking which
+  // of two shapes it was holding.
+  const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [paymentForm, setPaymentForm] = useState(emptyPaymentForm);
+  const [paymentError, setPaymentError] = useState('');
+
   // A cash account's balance is the drawer's physical cash, so the only method
   // it can carry is `cash` — and the server refuses anything else (D33).
   const formPaysFromDrawer = accounts.find((a) => a.id === form.accountId)?.type_code === 'cash';
+  const paymentPaysFromDrawer = accounts.find((a) => a.id === paymentForm.accountId)?.type_code === 'cash';
 
   const loadStatement = useCallback(async () => {
     setLoading(true);
@@ -1030,6 +1079,56 @@ export default function CashManagement() {
     }
   };
 
+  const openPaymentForm = () => {
+    setPaymentForm({ ...emptyPaymentForm, transactionDate: manilaDateValue() });
+    setPaymentError('');
+    // Preselected to the drawer for the same reason the other two forms
+    // preselect it: a payment that does not come out of the branch's physical
+    // cash is the exception here, and hunting for the right wallet is how the
+    // wrong one gets picked.
+    const ownBranches = (user?.branches || []).map((b) => b.name);
+    const float =
+      accounts.find((a) => a.type_code === 'cash' && !!a.branch_name && ownBranches.includes(a.branch_name))
+      || accounts.find((a) => a.type_code === 'cash');
+    if (float) setPaymentForm((f) => ({ ...f, accountId: float.id }));
+    setShowPaymentForm(true);
+  };
+
+  const submitPayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPaymentError('');
+    const typeId = typeIds.cash_payment;
+    if (!typeId) {
+      setPaymentError('The cash payment type is not available on this server.');
+      return;
+    }
+    if (!paymentForm.accountId) { setPaymentError('Choose the wallet the money comes out of.'); return; }
+    if (!paymentForm.amount || Number(paymentForm.amount) <= 0) { setPaymentError('Enter an amount greater than zero.'); return; }
+    if (!paymentForm.description.trim()) { setPaymentError('Describe what the money was paid for.'); return; }
+
+    setSaving(true);
+    try {
+      await api.post('/transactions', {
+        accountId: paymentForm.accountId,
+        transactionTypeId: typeId,
+        transactionCategoryId: paymentForm.transactionCategoryId || null,
+        amount: Number(paymentForm.amount),
+        description: paymentForm.description.trim(),
+        payee: paymentForm.payee.trim() || null,
+        referenceNumber: paymentForm.referenceNumber.trim() || null,
+        transactionDate: paymentForm.transactionDate,
+        paymentMethod: paymentForm.paymentMethod || null,
+      });
+      setShowPaymentForm(false);
+      await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity(), loadRecords()]);
+      window.dispatchEvent(new Event('approvals-changed'));
+    } catch (err) {
+      setPaymentError(err instanceof Error ? err.message : 'Could not record the payment');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const decide = async (expense: PendingExpense, action: 'approve' | 'reject') => {
     const verb = action === 'approve' ? 'Approve' : 'Reject';
     if (action === 'approve') {
@@ -1038,7 +1137,7 @@ export default function CashManagement() {
       );
       if (!ok) return;
     } else {
-      const reason = window.prompt('Reason for rejecting this expense:');
+      const reason = window.prompt('Reason for rejecting this expense or payment:');
       if (reason === null) return;
       if (!reason.trim()) { alert('A reason is required.'); return; }
       try {
@@ -1101,6 +1200,21 @@ export default function CashManagement() {
     eventForm.code === 'loan_received' ||
     eventForm.code === 'other_income' ||
     eventForm.code === 'refund_received';
+
+  // The payment banner answers the same question the expense banner does,
+  // off the same threshold — one setting governs both ways cash walks out of
+  // the drawer, so it would be wrong for the two screens to disagree about
+  // whether a figure needs a second signature.
+  const paymentAmount = Number(paymentForm.amount);
+  const paymentSettlesNow =
+    threshold !== undefined &&
+    Number.isFinite(paymentAmount) &&
+    paymentAmount > 0 &&
+    paymentAmount <= threshold;
+
+  const paymentPurposes = categories.filter((c) =>
+    (PAYMENT_PURPOSE_CODES as readonly string[]).includes(c.code)
+  );
 
   // The drawer's expectation, not a balance: opening count plus the movements
   // the shift has already taken. Summed across the open shifts the caller can
@@ -1198,6 +1312,21 @@ export default function CashManagement() {
                 >
                   <Coins className="w-4 h-4" />
                   Record cash event
+                </button>
+                {/* Third entry path, beside the other two because the three
+                    answer different questions: what did the business run on,
+                    what did the drawer take in or hand back, and what left
+                    without being a cost. Same shift gate — it moves the drawer
+                    exactly as an expense does. */}
+                <button
+                  type="button"
+                  onClick={openPaymentForm}
+                  className="btn-secondary"
+                  disabled={openShiftCount === 0}
+                  title={openShiftCount === 0 ? 'No shift is open in this scope' : undefined}
+                >
+                  <HandCoins className="w-4 h-4" />
+                  Record payment
                 </button>
               </>
             )}
@@ -2038,8 +2167,9 @@ export default function CashManagement() {
           <div className="px-4 pt-4 pb-1">
             <h4 className="font-medium">Awaiting approval</h4>
             <p className="text-xs text-gray-500">
-              These are the expenses above the {threshold !== undefined ? formatCurrency(threshold) : 'approval'} approval threshold. Nobody
-              approves their own request, and only an administrator may release or decline one.
+              Expenses and cash payments above the {threshold !== undefined ? formatCurrency(threshold) : 'approval'} approval threshold.
+              Nobody approves their own request, and only an administrator may release or decline one. A payment leaves the drawer without
+              entering any expense total; an expense does enter them.
             </p>
           </div>
           <div className="overflow-x-auto">
@@ -2077,7 +2207,20 @@ export default function CashManagement() {
                         {exp.account_name}
                         <span className="text-gray-400"> · {exp.branch_name}</span>
                       </td>
-                      <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{exp.category_name || '—'}</td>
+                      <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">
+                        {/* The two queued codes share a table and an approver
+                            but not a consequence: one is a cost, the other
+                            only ever leaves the drawer. Told apart here
+                            because an administrator approving them cannot be
+                            expected to remember which is which from the
+                            amount. */}
+                        {exp.type_code === 'cash_payment' && (
+                          <span className="mr-1.5 inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800">
+                            Payment
+                          </span>
+                        )}
+                        {exp.category_name || '—'}
+                      </td>
                       <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{exp.payee || '—'}</td>
                       <td className="px-4 py-3.5 text-sm text-gray-600 max-w-[260px] truncate" title={exp.description || ''}>
                         {exp.description || '—'}
@@ -2341,6 +2484,226 @@ export default function CashManagement() {
                   </button>
                   <button type="submit" className="btn-primary" disabled={saving}>
                     {saving ? 'Saving…' : settlesNow ? 'Record expense' : 'Send for approval'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {showPaymentForm && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
+          <div className="mx-auto my-10 max-w-2xl bg-white rounded-xl shadow-2xl border border-gray-200">
+            <div className="flex items-start gap-3 px-6 pt-6 pb-5 border-b border-gray-200">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
+                <HandCoins className="w-5 h-5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-lg font-semibold text-gray-900">Record cash payment</h3>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  Cash out of the drawer that is not a running cost of the business — a supplier, a bill being
+                  settled, wages, money handed to someone.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPaymentForm(false)}
+                aria-label="Close"
+                className="-mr-1 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={submitPayment}>
+              <div className="px-6 py-5 space-y-6">
+                <div className={`flex gap-3 rounded-lg border px-4 py-3 ${
+                  paymentSettlesNow
+                    ? 'border-emerald-200 bg-emerald-50'
+                    : 'border-blue-200 bg-blue-50'
+                }`}>
+                  <ShieldAlert className={`mt-0.5 h-4 w-4 shrink-0 ${paymentSettlesNow ? 'text-emerald-600' : 'text-blue-600'}`} />
+                  <p className={`text-xs leading-relaxed ${paymentSettlesNow ? 'text-emerald-800' : 'text-blue-800'}`}>
+                    {paymentSettlesNow
+                      ? <>Cash on hand drops <span className="font-semibold">now</span>. The amount is at
+                        or under the {formatCurrency(threshold)} approval threshold, so nothing reviews it first —
+                        check the figure before you save. It is filed under Payments, never as an expense.</>
+                      : <>Saved as a <span className="font-semibold">request</span>, not a withdrawal. Nothing
+                        leaves the drawer until a second person approves it, and nobody approves their
+                        own request. When approved it still stays out of every expense total.</>}
+                  </p>
+                </div>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Amount
+                  </h4>
+                  <div className="relative">
+                    <span className="pointer-events-none absolute inset-y-0 left-0 flex w-10 items-center justify-center border-r border-gray-200 text-gray-500">
+                      ₱
+                    </span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      required
+                      autoFocus
+                      className="form-input pl-12 text-2xl font-semibold tabular-nums"
+                      value={paymentForm.amount}
+                      onChange={(e) => setPaymentForm((f) => ({ ...f, amount: e.target.value }))}
+                      placeholder="0.00"
+                    />
+                  </div>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Paid from
+                  </h4>
+                  <AccountSelect
+                    accounts={accounts}
+                    value={paymentForm.accountId}
+                    onChange={(v) => setPaymentForm((f) => ({
+                      ...f,
+                      accountId: v,
+                      // Onto a drawer account the payment question answers
+                      // itself: that balance is physical cash, so nothing but
+                      // cash can have left it.
+                      paymentMethod: accounts.find((a) => a.id === v)?.type_code === 'cash' ? 'cash' : f.paymentMethod,
+                    }))}
+                    placeholder="Select the wallet the cash comes out of"
+                    className="form-input"
+                  />
+                  <p className="text-xs text-gray-500 mt-1.5">
+                    The revolving fund holds the branch&apos;s physical cash on hand — the usual source for a
+                    payment. Any visible wallet may be used.
+                  </p>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Payment details
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="sm:col-span-2">
+                      <label className="form-label" htmlFor="pay-description">
+                        What was it for <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        id="pay-description"
+                        type="text"
+                        className="form-input"
+                        value={paymentForm.description}
+                        onChange={(e) => setPaymentForm((f) => ({ ...f, description: e.target.value }))}
+                        placeholder="Stock from Aling Nena — 200 load cards"
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="form-label" htmlFor="pay-purpose">Purpose</label>
+                      <select
+                        id="pay-purpose"
+                        className="form-input"
+                        value={paymentForm.transactionCategoryId}
+                        onChange={(e) => setPaymentForm((f) => ({ ...f, transactionCategoryId: e.target.value }))}
+                      >
+                        <option value="">Uncategorised</option>
+                        {paymentPurposes.map((c) => (
+                          <option key={c.id} value={c.id}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="form-label" htmlFor="payee">Paid to</label>
+                      <input
+                        id="payee"
+                        type="text"
+                        className="form-input"
+                        value={paymentForm.payee}
+                        onChange={(e) => setPaymentForm((f) => ({ ...f, payee: e.target.value }))}
+                        placeholder="Who received the money"
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                <section>
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                    Settlement
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="form-label" htmlFor="pay-date">Date paid</label>
+                      <input
+                        id="pay-date"
+                        type="date"
+                        className="form-input"
+                        value={paymentForm.transactionDate}
+                        onChange={(e) => setPaymentForm((f) => ({ ...f, transactionDate: e.target.value }))}
+                        required
+                      />
+                    </div>
+
+                    <div>
+                      <label className="form-label" htmlFor="pay-method">How it was paid</label>
+                      <select
+                        id="pay-method"
+                        className="form-input"
+                        value={paymentPaysFromDrawer ? 'cash' : paymentForm.paymentMethod}
+                        onChange={(e) => setPaymentForm((f) => ({ ...f, paymentMethod: e.target.value }))}
+                        disabled={paymentPaysFromDrawer}
+                      >
+                        {movementPaymentMethodOptions.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      {paymentPaysFromDrawer && (
+                        <p className="text-xs text-gray-500 mt-1.5">
+                          This account holds physical cash, so the money can only have been handed over by
+                          hand. The server refuses anything else anyway.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="form-label" htmlFor="pay-reference">Voucher / reference</label>
+                      <input
+                        id="pay-reference"
+                        type="text"
+                        className="form-input"
+                        value={paymentForm.referenceNumber}
+                        onChange={(e) => setPaymentForm((f) => ({ ...f, referenceNumber: e.target.value }))}
+                        placeholder="Optional"
+                      />
+                    </div>
+                  </div>
+                </section>
+
+                {paymentError && (
+                  <div className="flex gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+                    <p className="text-sm text-red-700">{paymentError}</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4 rounded-b-xl">
+                <p className="text-xs text-gray-500 hidden sm:block">
+                  {paymentSettlesNow
+                    ? <>Leaves the drawer <span className="font-medium text-gray-600">immediately</span> —
+                      no second signature under {formatCurrency(threshold)}.</>
+                    : <>Goes to <span className="font-medium text-gray-600">Awaiting approval</span> for a
+                      second signature.</>}
+                </p>
+                <div className="flex gap-3 ml-auto">
+                  <button type="button" className="btn-secondary" onClick={() => setShowPaymentForm(false)} disabled={saving}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn-primary" disabled={saving}>
+                    {saving ? 'Saving…' : paymentSettlesNow ? 'Record payment' : 'Send for approval'}
                   </button>
                 </div>
               </div>

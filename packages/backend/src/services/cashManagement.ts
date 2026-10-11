@@ -28,6 +28,7 @@ export type CashBucket =
   | 'operating_expenses'
   | 'provider_charges'
   | 'payments'
+  | 'cash_payments'
   | 'other_income'
   | 'adjustments'
   | 'corrections'
@@ -43,6 +44,7 @@ export const BUCKET_LABELS: Record<CashBucket, string> = {
   operating_expenses: 'Operating Expenses',
   provider_charges: 'Provider Charges',
   payments: 'Payments & Bills',
+  cash_payments: 'Cash Payments',
   other_income: 'Other Income',
   adjustments: 'Adjustments',
   corrections: 'Corrections',
@@ -58,6 +60,13 @@ export const BUCKET_LABELS: Record<CashBucket, string> = {
 // their money are settlements, not spending — totalling every debit would have
 // booked a 200,000 owner return as an expense. These three are the rows where
 // the company was the party that paid.
+//
+// `cash_payments` is the closest call and still stays out. Paying a supplier or
+// settling what is owed is money leaving the company, which is more than
+// `owner_return` can claim — but it buys or clears a debt rather than being the
+// cost of running the business, and the report this total feeds is the one
+// somebody reads to learn what operating costs them. It gets its own line in
+// Sources and Uses instead, so the peso is never invisible, only not mislabelled.
 export const EXPENSE_BUCKETS: readonly CashBucket[] = [
   'operating_expenses',
   'provider_charges',
@@ -246,8 +255,10 @@ export function expenseFeeRefusal(typeCode: string | null | undefined, fee: numb
  *
  * - **Owner money** (funding and returns) waits unless an administrator records
  *   it. That path's established behaviour, deliberately unchanged.
- * - **Operating expenses** wait above the configured threshold and settle below
- *   it, so small purchases never sat in a queue nobody needed.
+ * - **Operating expenses and cash payments** wait above the configured
+ *   threshold and settle below it, so small payouts never sat in a queue nobody
+ *   needed. The two share one threshold because they are both cash leaving the
+ *   drawer on purpose.
  * - **Borrowings** follow the owner-money rule: a loan creates a debt the
  *   company has to repay, so anyone who is not an administrator leaves it for a
  *   second signature. An administrator takes it at once, because the cash has
@@ -265,14 +276,17 @@ export function controlledApproval(
   expenseThreshold: number,
   isAdminCreator: boolean,
 ): { controlled: boolean; requiresApproval: boolean } {
-  const isOperatingExpense = typeCode === 'operating_expense';
+  const isThresholdGated = typeCode === 'operating_expense' || typeCode === 'cash_payment';
   const controlled =
     typeCode === 'owner_funding' ||
     typeCode === 'owner_return' ||
-    isOperatingExpense ||
+    isThresholdGated ||
     typeCode === 'loan_received' ||
     typeCode === 'loan_repayment';
-  const requiresApproval = isOperatingExpense
+  // Both threshold-gated codes share one setting deliberately: they are the two
+  // ways cash walks out of the drawer as a outflow somebody chose to make, and
+  // a second threshold would only ever drift away from the first.
+  const requiresApproval = isThresholdGated
     ? amount > expenseThreshold
     : controlled && !isAdminCreator;
   return { controlled, requiresApproval };
@@ -304,6 +318,13 @@ export function bucketFor(sourceType: string | null | undefined, txnCode: string
         return 'load';
       case 'operating_expense':
         return 'operating_expenses';
+      // Cash that left the drawer without being the cost of running the
+      // business — a supplier, a bill being settled, cash handed to someone.
+      // Its own bucket, deliberately outside EXPENSE_BUCKETS, so Cash on hand
+      // and the shift's expected figure both fall while the expense reports do
+      // not move.
+      case 'cash_payment':
+        return 'cash_payments';
       case 'expense':
         return 'provider_charges';
       case 'service_fee':

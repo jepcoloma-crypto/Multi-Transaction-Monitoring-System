@@ -283,10 +283,13 @@ router.get('/statement/drill', authorize('reports.read'), async (req: Request, r
   }
 });
 
-// Operating expenses awaiting a second person. Mirrors /transactions/owner-funds/pending
-// so the approval queue reads the same way, but kept separate because owner
-// funds and expenses are different decisions with different approver rules and
-// one combined list would make the existing screen ambiguous.
+// Operating expenses and cash payments awaiting a second person. Mirrors
+// /transactions/owner-funds/pending so the approval queue reads the same way,
+// but kept separate because owner funds and outflows are different decisions
+// with different approver rules and one combined list would make the existing
+// screen ambiguous. The two codes share this queue because they share an
+// approver — an administrator — and a threshold; `type_code` is returned so the
+// screen can still tell a cost from a payment.
 router.get('/expenses/pending', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const status = req.query.status === 'rejected' ? 'rejected' : 'pending';
@@ -303,6 +306,7 @@ router.get('/expenses/pending', authorize('transactions.approve'), async (req: R
       `SELECT t.id, t.transaction_number, t.amount, t.net_amount, t.status, t.transaction_date,
               t.description, t.notes, t.reference_number, t.payee, t.created_at,
               t.rejection_reason, t.created_by, t.approved_by,
+              tt.code AS type_code, tt.name AS type_name,
               tc.code AS category_code, tc.name AS category_name,
               a.name AS account_name, a.current_balance, b.code AS branch_code, b.name AS branch_name,
               u.username AS requested_by_username,
@@ -316,7 +320,7 @@ router.get('/expenses/pending', authorize('transactions.approve'), async (req: R
        LEFT JOIN users u ON u.id = t.created_by
        LEFT JOIN users au ON au.id = t.approved_by
        LEFT JOIN users ru ON ru.id = t.rejected_by
-       WHERE tt.code = 'operating_expense' AND ${conds.join(' AND ')}
+       WHERE tt.code IN ('operating_expense', 'cash_payment') AND ${conds.join(' AND ')}
        ORDER BY t.created_at ASC`,
       params,
     );
