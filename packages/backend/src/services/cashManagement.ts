@@ -18,6 +18,7 @@
 // rows have been dropped or double-counted, which is what the check exposes.
 
 import { manilaDateTimeKey } from './manilaTime';
+import { createError } from '../middleware/error';
 
 export type CashBucket =
   | 'owner_capital'
@@ -164,6 +165,108 @@ export function drawerLeg(signedAmount: number, fee: number): DrawerLeg | null {
   return delta > 0
     ? { amount: delta, entryType: 'credit' }
     : { amount: -delta, entryType: 'debit' };
+}
+
+/** What the drawer does, in the shape the posting path takes a counterparty in. */
+export interface DrawerCounterparty {
+  accountId: string;
+  amount: number;
+  entryType: 'debit' | 'credit';
+}
+
+/** One ledger row as the database returns it, for the two functions below. */
+export interface RecordedLedgerRow {
+  account_id: string;
+  amount: string | number;
+  entry_type: 'debit' | 'credit';
+}
+
+/**
+ * The single account a movement's drawer side sits on.
+ *
+ * Read from the ledger, not from `payment_method`: the rows are the truth about
+ * what posted, and the method says nothing about the 108 historical movements
+ * stored NULL. `null` means this movement has no drawer side — a GCash row, or
+ * an expense booked straight out of the float, where the account *is* the
+ * drawer.
+ *
+ * More than one such account is refused rather than chosen between: a
+ * transaction has one drawer, and picking which of two the money moved through
+ * would move the wrong one. That state cannot be reached today (a transaction
+ * owns ledger rows on a single account, or corrections refuse it) — the refusal
+ * is here so it stays unreachable rather than silently writing half a pair.
+ */
+export function drawerAccountId(rows: RecordedLedgerRow[]): string | null {
+  if (rows.length === 0) return null;
+
+  const accountIds = [...new Set(rows.map((row) => row.account_id))];
+  if (accountIds.length > 1) {
+    throw createError(
+      409,
+      'This movement posted on more than one account besides its own — refusing to move the drawer',
+    );
+  }
+  return accountIds[0];
+}
+
+/**
+ * The drawer's side of an unwind: the exact opposite of what the original
+ * recorded, read from its rows rather than recomputed.
+ *
+ * Recomputing is not the same number. `drawerLeg` answers from a movement's own
+ * signed amount and fee, and a reversal books fee 0 — so reversing a ₱1,500
+ * cash-in that carried a ₱20 fee would credit the drawer ₱1,500 where the
+ * original debited ₱1,480, stranding the ₱20 on the books while the income
+ * report books it as refunded. Mirroring what was actually written also covers
+ * deducted mode, the charges folded into `totalAmount` at creation, and any
+ * charge adjustment made since — without restating the rules that decided them.
+ *
+ * Several rows on the same account are summed, in whole centavos: corrections
+ * append, so the drawer can legitimately own more than one row for the record
+ * being undone, and a float error between them would leave a residue the count
+ * cannot explain. A sum that cancels to zero writes no row at all.
+ */
+export function unwindDrawerLeg(rows: RecordedLedgerRow[]): DrawerCounterparty | null {
+  const accountId = drawerAccountId(rows);
+  if (!accountId) return null;
+
+  const cents = rows.reduce(
+    (sum, row) => sum + (row.entry_type === 'credit' ? 1 : -1) * toCents(row.amount),
+    0,
+  );
+  if (cents === 0) return null;
+
+  return cents > 0
+    ? { accountId, amount: money(cents), entryType: 'debit' }
+    : { accountId, amount: money(-cents), entryType: 'credit' };
+}
+
+/**
+ * The drawer's side of a charge that changed.
+ *
+ * Charges ride inside `totalAmount` at creation — the leg `resolveDrawerLeg`
+ * posts is `fee − (netAmount + charges)` — so moving them moves the drawer by
+ * the same amount, always against the account's own direction: the identity
+ * `signed + drawer_delta = fee` holds only if the two sides move oppositely,
+ * and a charge added to a cash-out is an amount the drawer hands out.
+ *
+ * `rows` decides whether there is a drawer side at all; this function only
+ * states what it does when there is one.
+ */
+export function chargeDrawerLeg(
+  rows: RecordedLedgerRow[],
+  delta: number,
+  accountEntryType: 'debit' | 'credit',
+): DrawerCounterparty | null {
+  const accountId = drawerAccountId(rows);
+  const cents = toCents(delta);
+  if (!accountId || cents === 0) return null;
+
+  return {
+    accountId,
+    amount: money(Math.abs(cents)),
+    entryType: accountEntryType === 'credit' ? 'debit' : 'credit',
+  };
 }
 
 // The drawer participates only when the money is physically handed over. A

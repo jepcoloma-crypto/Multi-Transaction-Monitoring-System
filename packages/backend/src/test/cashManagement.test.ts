@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, EXPENSE_BUCKETS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, EXPENSE_BUCKETS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, unwindDrawerLeg, chargeDrawerLeg, drawerAccountId, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
 import type { BranchBalance, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
 test('an operating expense lands in its own bucket, never the provider charge bucket', () => {
@@ -290,6 +290,105 @@ test('a movement that changes nothing physical writes no drawer row', () => {
 test('the drawer figure is rounded to centavos rather than left to float error', () => {
   assert.deepEqual(drawerLeg(0.1 + 0.2, 0), { amount: 0.3, entryType: 'debit' });
   assert.deepEqual(drawerLeg(-(0.1 + 0.2), 0.01), { amount: 0.31, entryType: 'credit' });
+});
+
+// The unwind pair: what a reversal posts to the drawer, and what a charge
+// adjustment posts to it. Both read the rows the original wrote rather than
+// recomputing a figure the reversal would state differently (fee 0).
+
+const drawerRow = (amount: number, entryType: 'debit' | 'credit') => ({
+  account_id: 'drawer-1',
+  amount: amount.toFixed(2),
+  entry_type: entryType,
+});
+
+test('an unwind is the exact opposite of what the movement recorded', () => {
+  // A ₱1,500 cash-in with a ₱20 fee posted a ₱1,480 debit on the drawer; its
+  // reversal hands that ₱1,480 back. Recomputing from the reversal's own
+  // figures would credit ₱1,500 — the fee left on the books.
+  assert.deepEqual(unwindDrawerLeg([drawerRow(1480, 'debit')]), {
+    accountId: 'drawer-1', amount: 1480, entryType: 'credit',
+  });
+  // A cash-out put ₱510 into the drawer; its unwind takes it out again.
+  assert.deepEqual(unwindDrawerLeg([drawerRow(510, 'credit')]), {
+    accountId: 'drawer-1', amount: 510, entryType: 'debit',
+  });
+});
+
+test('a movement that never touched the drawer unwinds nothing', () => {
+  assert.equal(unwindDrawerLeg([]), null);
+  assert.equal(drawerAccountId([]), null);
+});
+
+test('rows a correction appended to the drawer are summed, not counted twice', () => {
+  // Corrections append, so one record can own two rows on the drawer — the
+  // unwind has to cancel what they add up to.
+  assert.deepEqual(
+    unwindDrawerLeg([drawerRow(100, 'credit'), drawerRow(40, 'debit')]),
+    { accountId: 'drawer-1', amount: 60, entryType: 'debit' },
+  );
+  // A pair that cancels exactly writes no row at all: a 0.00 entry carries no
+  // information and would show up as a movement in the statement.
+  assert.equal(unwindDrawerLeg([drawerRow(75, 'credit'), drawerRow(75, 'debit')]), null);
+  // Centavo-exact, so a string read from a NUMERIC column cannot leave a
+  // residue the count would have to explain.
+  assert.equal(unwindDrawerLeg([drawerRow(0.1 + 0.2, 'credit'), drawerRow(0.3, 'debit')]), null);
+});
+
+test('a drawer side spanning two accounts is refused rather than guessed at', () => {
+  const rows = [drawerRow(10, 'credit'), { ...drawerRow(10, 'debit'), account_id: 'drawer-2' }];
+  assert.throws(() => unwindDrawerLeg(rows), (err: any) => err.statusCode === 409);
+  // The same rule decides a charge adjustment — one drawer, not a choice.
+  assert.throws(() => chargeDrawerLeg(rows, 5, 'credit'), (err: any) => err.statusCode === 409);
+});
+
+test('the reversal of a cash movement nets the books back to the fee it refunds', () => {
+  const signedOf = (leg: { amount: number; entryType: 'credit' | 'debit' }): number =>
+    leg.entryType === 'credit' ? leg.amount : -leg.amount;
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+
+  for (const [signedAmount, fee] of [[500, 10], [490, 10], [-500, 10], [-500, 0], [1500, 20]]) {
+    const originalDrawer = drawerLeg(signedAmount, fee);
+    const unwind = unwindDrawerLeg(originalDrawer ? [drawerRow(originalDrawer.amount, originalDrawer.entryType)] : []);
+    const context = `signedAmount=${signedAmount} fee=${fee}`;
+
+    // The identity the income report leans on: the original's two legs sum to
+    // the fee it books.
+    const originalBooks = signedAmount + (originalDrawer ? signedOf(originalDrawer) : 0);
+    assert.equal(round2(originalBooks), fee, context);
+
+    // And the reversal's two legs sum to the same figure negated — the fee
+    // included, because the income report books it as refunded rather than
+    // leaving it on the books. Stated as "plus the fee is zero" so a zero fee
+    // cannot come out as -0 and fail a strict comparison against 0.
+    const reversalAccount = -signedAmount;
+    const reversalDrawer = unwind ? signedOf(unwind) : 0;
+    const reversalBooks = reversalAccount + reversalDrawer;
+    assert.equal(round2(reversalBooks + fee), 0, context);
+    assert.equal(round2(originalBooks + reversalBooks), 0, context);
+  }
+});
+
+test('a charge adjustment takes the drawer the other way from the account', () => {
+  const rows = [drawerRow(1480, 'debit')];
+
+  // Added to a cash-in, the account is credited, so the drawer hands it out.
+  assert.deepEqual(chargeDrawerLeg(rows, 100, 'credit'), {
+    accountId: 'drawer-1', amount: 100, entryType: 'debit',
+  });
+  // Added to a cash-out, the account is debited, so the drawer receives it.
+  assert.deepEqual(chargeDrawerLeg(rows, 100, 'debit'), {
+    accountId: 'drawer-1', amount: 100, entryType: 'credit',
+  });
+  // A charge taken back off a cash-in: the account is debited the amount it
+  // had been credited, and the drawer takes it back — the route already flips
+  // the account's direction for a negative delta, so the drawer follows it.
+  assert.deepEqual(chargeDrawerLeg(rows, -100, 'debit'), {
+    accountId: 'drawer-1', amount: 100, entryType: 'credit',
+  });
+  // Nothing to move: no delta, or no drawer side to move.
+  assert.equal(chargeDrawerLeg(rows, 0, 'credit'), null);
+  assert.equal(chargeDrawerLeg([], 100, 'credit'), null);
 });
 
 test('a shift float is a class of its own, not lumped into Other', () => {

@@ -7,7 +7,8 @@ import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
 import type { CounterpartyLeg } from '../services/balance';
-import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
+import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
+import type { RecordedLedgerRow } from '../services/cashManagement';
 import { calculateTieredFee } from '../services/feeCalc';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -352,18 +353,53 @@ async function resolveDrawerLeg(
   const leg = drawerLeg(signedAmount, fee);
   if (!leg) return null;
 
-  if (leg.entryType === 'debit') {
-    const balance = await queryOne<{ current_balance: string }>(
-      'SELECT current_balance FROM accounts WHERE id = $1', [drawer.id]
-    );
-    const held = parseFloat(balance?.current_balance || '0');
-    if (held < leg.amount) {
-      throw createError(400,
-        `The branch's cash drawer holds ${held.toFixed(2)} but this movement hands out ${leg.amount.toFixed(2)}`);
-    }
-  }
-
+  await assertDrawerCanFund({ accountId: drawer.id, amount: leg.amount, entryType: leg.entryType });
   return { accountId: drawer.id, amount: leg.amount, entryType: leg.entryType };
+}
+
+// The ledger rows a completed movement wrote on accounts other than its own —
+// for a transaction that is the drawer's leg, and nothing else sits there.
+//
+// Read rather than re-derived from `payment_method`, because the ledger is what
+// the balances, the statement and a shift's expected closing are built from: a
+// leg inferred here could disagree with the leg that posted, and the method
+// says nothing about the charges folded into `totalAmount` at creation.
+//
+// `conn` is the caller's transaction so the rows read are the ones that are
+// committed — a read through the pool would not see a leg this same
+// transaction had just written.
+async function recordedLedgerRows(
+  conn: any,
+  transactionId: string,
+  primaryAccountId: string,
+): Promise<RecordedLedgerRow[]> {
+  const result = await conn.query(
+    `SELECT account_id, amount, entry_type
+       FROM ledger_entries
+      WHERE source_type = 'transaction' AND source_id = $1
+        AND account_id <> $2
+      ORDER BY created_at, id`,
+    [transactionId, primaryAccountId],
+  );
+  return result.rows;
+}
+
+// A drawer leg can be a debit — the movement hands cash out — and the till has
+// to hold it. Asked before anything is written, so the refusal names the drawer
+// rather than the account the operator is looking at. Advisory for the same
+// reason resolveDrawerLeg's read is: the authoritative check is the one
+// updateAccountBalance makes inside the transaction.
+async function assertDrawerCanFund(leg: CounterpartyLeg | null): Promise<void> {
+  if (!leg || leg.entryType !== 'debit') return;
+
+  const balance = await queryOne<{ current_balance: string }>(
+    'SELECT current_balance FROM accounts WHERE id = $1', [leg.accountId]
+  );
+  const held = parseFloat(balance?.current_balance || '0');
+  if (held < leg.amount) {
+    throw createError(400,
+      `The branch's cash drawer holds ${held.toFixed(2)} but this movement hands out ${leg.amount.toFixed(2)}`);
+  }
 }
 
 router.post('/', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
@@ -739,6 +775,18 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
         : (creditLike ? 'debit' : 'credit');
       const amount = Math.abs(delta);
 
+      // The drawer's side, when this movement ever had one. Charges ride inside
+      // totalAmount at creation, so the leg they asked for moves by the same
+      // amount, against the account (chargeDrawerLeg). Left out, a charge added
+      // to a cash movement leaves the till behind the books by that figure —
+      // and the shift that counts it would close on a variance nobody caused.
+      //
+      // Whether there is a side at all comes from the ledger rather than from
+      // payment_method: the rows are the truth about what posted.
+      const drawerRows = await recordedLedgerRows(client, original.id, original.account_id);
+      const drawerSide = chargeDrawerLeg(drawerRows, delta, entryType);
+      await assertDrawerCanFund(drawerSide);
+
       let newBalance: number;
       try {
         newBalance = await updateAccountBalance(original.account_id, amount, entryType, client);
@@ -746,6 +794,8 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
         if (err?.message === 'Insufficient balance') throw createError(400, 'Insufficient balance for charge adjustment');
         throw err;
       }
+
+      const note = `Additional charges updated: ${oldTotal.toFixed(2)} -> ${newTotal.toFixed(2)}`;
 
       await createLedgerEntry(
         original.account_id,
@@ -755,10 +805,28 @@ router.patch('/:id/charges', authorize('transactions.write'), async (req: Reques
         original.id,
         null,
         original.reference_number,
-        `Additional charges updated: ${oldTotal.toFixed(2)} -> ${newTotal.toFixed(2)}`,
+        note,
         new Date(),
         client
       );
+
+      if (drawerSide) {
+        const drawerBalance = await updateAccountBalance(
+          drawerSide.accountId, drawerSide.amount, drawerSide.entryType, client
+        );
+        await createLedgerEntry(
+          drawerSide.accountId,
+          drawerSide.entryType,
+          drawerSide.amount,
+          drawerBalance,
+          original.id,
+          null,
+          original.reference_number,
+          note,
+          new Date(),
+          client
+        );
+      }
     }
 
     const updated = await client.query(
@@ -979,6 +1047,19 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
         const originalCharges = original.additional_charges || [];
         const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
 
+        // The drawer's side of the original, unwound with it. Unwinding is a
+        // movement like any other — D17 gates it as one — so the cash the
+        // original moved between the account and the till has to move back.
+        // Read from the rows the original actually wrote rather than
+        // recomputed: this books fee 0, so recomputing would strand the fee on
+        // the books while the income report books it as refunded (details on
+        // unwindDrawerLeg). Resolved before anything is written, so a leg that
+        // cannot be posted leaves the original untouched.
+        const drawerSide = unwindDrawerLeg(
+          await recordedLedgerRows(client, original.id, original.account_id)
+        );
+        await assertDrawerCanFund(drawerSide);
+
         await client.query(
           `UPDATE transactions SET status = 'reversed', updated_at = NOW() WHERE id = $1`,
           [req.params.id]
@@ -992,13 +1073,17 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
 
         const created = (await client.query(
           `INSERT INTO transactions (account_id, transaction_type_id, amount, fee, net_amount,
-           reference_number, transaction_date, description, status, created_by)
-           VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6)
+           reference_number, transaction_date, description, status, created_by, payment_method)
+           VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6, $7)
            RETURNING *`,
           [
             original.account_id, reverseTypeId!.id, original.amount,
             `REV-${original.transaction_number}`, `Reversal: ${reason || original.description || 'Transaction reversal'}`,
             req.user!.userId,
+            // Carried over, so a row that owns a drawer leg declares the tender
+            // behind it. Left NULL when the original was, which is what keeps
+            // the 108 historical rows reversible (migration 036).
+            original.payment_method ?? null,
           ]
         )).rows[0];
 
@@ -1006,7 +1091,8 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
           original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
           reverseEntryType as 'debit' | 'credit', created.id,
           `REV-${original.transaction_number}`, `Reversal: ${reason || 'Transaction reversal'}`,
-          new Date(), client
+          new Date(), client,
+          true, drawerSide
         );
 
         return created;
@@ -1308,6 +1394,15 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     const originalCharges = original.additional_charges || [];
     const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
 
+    // The drawer's side of the original, unwound with it — the same leg the
+    // immediate path posts, read from the rows the original wrote so the pair
+    // cancels to the centavo (unwindDrawerLeg). Resolved before anything is
+    // written, so a leg that cannot be posted leaves both records alone.
+    const drawerSide = unwindDrawerLeg(
+      await recordedLedgerRows(client, original.id, original.account_id)
+    );
+    await assertDrawerCanFund(drawerSide);
+
     await client.query(
       `UPDATE transactions SET status = 'reversed', updated_at = NOW() WHERE id = $1`,
       [pending.entity_id]
@@ -1321,14 +1416,17 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
 
     const reverseTx = (await client.query(
       `INSERT INTO transactions (account_id, transaction_type_id, amount, fee, net_amount,
-       reference_number, transaction_date, description, status, created_by)
-       VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6)
+       reference_number, transaction_date, description, status, created_by, payment_method)
+       VALUES ($1, $2, $3, 0, $3, $4, NOW(), $5, 'completed', $6, $7)
        RETURNING *`,
       [
         original.account_id, reverseTypeId!.id, totalOriginalAmount,
         `REV-${original.transaction_number}`,
         `Reversal: ${pending.reason || original.description || 'Admin approved reversal'}`,
         req.user!.userId,
+        // The tender the original declared, so a row owning a drawer leg
+        // declares the same one (NULL for the historical rows, unchanged).
+        original.payment_method ?? null,
       ]
     )).rows[0];
 
@@ -1337,7 +1435,8 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
         original.account_id, reverseTypeId!.id, totalOriginalAmount, 0,
         reverseEntryType as 'debit' | 'credit', reverseTx!.id,
         `REV-${original.transaction_number}`, `Reversal: ${pending.reason || 'Admin approved reversal'}`,
-        new Date(), client
+        new Date(), client,
+        true, drawerSide
       );
     } catch (err: any) {
       if (err?.message !== 'Insufficient balance') throw err;
