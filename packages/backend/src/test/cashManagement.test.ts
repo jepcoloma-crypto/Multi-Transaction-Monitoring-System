@@ -373,12 +373,17 @@ test('a reversal leaves the fee where the fee mode says it belongs', () => {
     leg.entryType === 'credit' ? leg.amount : -leg.amount;
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
-  // [signed account leg, fee, separate?]. A separate fee stays earned, so the
-  // reversal's two legs net to nothing; a deducted fee is handed back, so they
-  // net to the fee negated. Either way the books end up holding exactly what
-  // the income report says about the same fee — earned when separate, gone
-  // when deducted. Two surfaces that disagree about where the money is cannot
-  // both be right, and the counter with the till is who finds out.
+  // [signed account leg, fee, separate?]. A separate fee stays in the drawer,
+  // so the reversal's two legs net to nothing; a deducted fee is handed back,
+  // so they net to the fee negated. Either way the books end up holding exactly
+  // what happened to the cash: a separate fee was taken at the counter and was
+  // never returned, a deducted fee came back inside the movement.
+  //
+  // The income report answers a different question about the same fee and says
+  // so deliberately: a reversed row is totalled wholly as refunded, whichever
+  // mode it carries, because a reversal hands the transaction back in full. The
+  // drawer figure is where the cash is; income is what the business earned, and
+  // a transaction that was undone earned nothing.
   const cases: [number, number, boolean][] = [
     [500, 10, true],    // cash-in, separate
     [490, 10, false],   // cash-in, deducted

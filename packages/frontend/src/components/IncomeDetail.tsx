@@ -22,9 +22,10 @@ interface CashRow {
   isReversed: boolean;
   amount: number;
   fee: number;
-  // Separate (true), deducted (false) or never stated (null). The mode is what
-  // decides whether a reversal hands the fee back, so a reversed row can still
-  // be sitting in the earned column and needs to say why.
+  // Separate (true), deducted (false) or never stated (null). The mode records
+  // how the fee was taken and no longer changes a total: a reversed row is
+  // totalled wholly as refunded, so the badge explains the row rather than
+  // excusing its place in income.
   feeAddedToBalance: boolean | null;
   charges: number;
   feeCharges: number;

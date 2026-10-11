@@ -297,8 +297,8 @@ export interface IncomeDetailSummary {
   cashCount: number;
   cashCompletedCount: number;
   cashReversedCount: number;
-  // Rows the earned column drew from: every completed row, plus a reversed row
-  // whose fee was separate and therefore never left the company.
+  // Rows the earned column drew from: every completed row, and nothing else. A
+  // reversed row is totalled wholly as refunded, whichever fee mode it carries.
   earnedCount: number;
   earnedFee: number;
   earnedCharges: number;
@@ -335,13 +335,17 @@ export function buildIncomeDetail(source: {
   let refundedFeeCents = 0;
   let refundedChargesCents = 0;
 
-  // What a reversal hands back, and what it leaves alone, decided by the fee
-  // mode rather than by the status alone. A separate fee was earned when the
-  // transaction was taken — the customer received the whole amount — so a
-  // reversal does not touch it and it stays in the earned column. A deducted
-  // fee did shrink what the customer received, so undoing the transaction hands
-  // it back and it is totalled as refunded. Charges are not a fee: they are
-  // folded into the amount the reversal unwinds, so they always come back.
+  // A reversal hands the whole transaction back, so nothing it carried is
+  // income. The fee comes back whichever mode it was taken in — a deducted fee
+  // was inside the amount the customer received, and a reversal of a separate
+  // fee credits the drawer the full amount as well — and charges are folded
+  // into that same amount, so they come back with it. A transaction that was
+  // undone earned the company nothing; a report that kept its fee would be
+  // claiming money the books have already given back.
+  //
+  // The fee mode is still carried on every row for the badge, but it no longer
+  // decides the totals.
+  //
   // Both halves are totalled rather than dropped, because the parent row prints
   // each figure and a tab that silently omitted one would make the two disagree.
   const cash: CashDetailRow[] = (source.cash ?? []).map((row) => {
@@ -351,9 +355,8 @@ export function buildIncomeDetail(source: {
     const feeAddedToBalance = row.fee_added_to_balance == null ? null : row.fee_added_to_balance !== false;
     if (status === 'reversed') {
       cashReversedCount += 1;
+      refundedFeeCents += feeCents;
       refundedChargesCents += chargesCents;
-      if (feeAddedToBalance === false) refundedFeeCents += feeCents;
-      else { earnedFeeCents += feeCents; earnedCount += 1; }
     } else if (status === 'completed') {
       cashCompletedCount += 1;
       earnedFeeCents += feeCents;

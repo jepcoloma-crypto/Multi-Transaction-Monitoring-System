@@ -122,11 +122,12 @@ test('a reversed exclusion is carried through beside income, never inside it', (
 
   assert.equal(rows[0].reversedExcluded, 250);
   assert.equal(summary.reversedExcluded, 250);
-  // Whatever the query decided a reversal handed back — a deducted fee, or
-  // charges — is carried through untouched. A separate fee never lands here: the
-  // query books it as income, so counting it in both would pay the company twice
-  // for one transaction. The 15.00 of charges beside it never entered feeIncome
-  // in the first place.
+  // Whatever the query decided a reversal handed back — a fee in either mode,
+  // or charges — is carried through untouched and beside income rather than
+  // inside it: a transaction that was undone earned the company nothing, and
+  // counting it in both figures would pay the company twice for one
+  // transaction. The 15.00 of charges beside it never entered feeIncome in the
+  // first place.
   assert.equal(rows[0].feeIncome, 1800);
   assert.equal(summary.feeIncome, 1800);
   assert.equal(rows[0].additionalCharges, 15);
@@ -225,40 +226,43 @@ test('a deducted fee on a reversed transaction is totalled as refunded', () => {
   assert.equal(cash[1].feeAddedToBalance, false);
 });
 
-test('a separate fee on a reversed transaction stays earned', () => {
+test('a separate fee on a reversed transaction is totalled as refunded', () => {
   const { cash, summary } = buildIncomeDetail({
     cash: [
       { id: 'c1', status: 'completed', fee: '10.00', charges: '5.00' },
-      // The mode every fee-bearing row in the database carries. The customer
-      // received the whole amount, so the fee was earned when the transaction
-      // was taken and a reversal hands back none of it.
+      // The mode every fee-bearing row in the database carries. A reversal
+      // credits the drawer the full amount as well as the movement, so the fee
+      // left with it and income cannot go on claiming it.
       { id: 'c2', status: 'reversed', fee: '25.00', charges: '15.00', fee_added_to_balance: true },
     ],
   });
 
-  assert.equal(summary.earnedFee, 35);
+  assert.equal(summary.earnedFee, 10);
   assert.equal(summary.earnedCharges, 5);
-  assert.equal(summary.earned, 40);
-  assert.equal(summary.earnedCount, 2);
-  assert.equal(summary.refundedFee, 0);
-  // Charges are folded into the amount the reversal unwinds, so they still come
-  // back — the fee mode governs the fee and nothing else.
+  assert.equal(summary.earned, 15);
+  assert.equal(summary.earnedCount, 1);
+  assert.equal(summary.refundedFee, 25);
   assert.equal(summary.refundedCharges, 15);
-  assert.equal(summary.refunded, 15);
+  assert.equal(summary.refunded, 40);
   assert.equal(cash[1].isReversed, true);
+  // The badge still tells the reader how the fee was taken, even though the
+  // mode no longer changes what either total says.
   assert.equal(cash[1].feeAddedToBalance, true);
 });
 
-test('a reversed row that never states its fee mode is read as separate', () => {
-  const { summary } = buildIncomeDetail({
+test('a reversed row that never states its fee mode still refunds its fee', () => {
+  const { cash, summary } = buildIncomeDetail({
     cash: [{ id: 'c1', status: 'reversed', fee: '20.00' }],
   });
 
   // Migration 012 defaults the column to true, so a NULL beside it has to mean
-  // the same thing or an older row would quietly change treatment.
-  assert.equal(summary.earnedFee, 20);
-  assert.equal(summary.refundedFee, 0);
+  // the same thing or an older row would quietly change treatment — and since
+  // the mode no longer decides the total, a row that states nothing loses its
+  // fee from income just as one that states it plainly does.
+  assert.equal(summary.earnedFee, 0);
+  assert.equal(summary.refundedFee, 20);
   assert.equal(summary.cashReversedCount, 1);
+  assert.equal(cash[0].feeAddedToBalance, null);
 });
 
 test('a row with no fee or charge still appears, contributing nothing', () => {

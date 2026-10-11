@@ -813,22 +813,21 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
      LEFT JOIN (
        SELECT t.account_id,
               COUNT(*) FILTER (WHERE t.status = 'completed') AS cnt,
-              -- A fee is either separate or deducted, and only a deducted one
-              -- comes back on a reversal. A separate fee was earned when the
-              -- transaction was taken — the customer received the whole amount —
-              -- so a reversed row keeps it in income and is reported nowhere as
-              -- refunded. A deducted fee did shrink what the customer received,
-              -- so undoing the transaction hands the fee back. NULL reads as
-              -- separate, which is the column default (migration 012).
+              -- A reversal hands the whole transaction back, so nothing a
+              -- reversed row carried is income. A deducted fee came out of the
+              -- amount the customer received, and a reversal of a separate fee
+              -- credits the drawer the full amount as well, so the fee is gone
+              -- in both modes and only completed rows are totalled here. The
+              -- mode still rides on the row for the badge in the drill-down;
+              -- it no longer decides what is counted.
               COALESCE(SUM(COALESCE(t.fee, 0))
-                FILTER (WHERE t.status = 'completed'
-                         OR (t.status = 'reversed' AND t.fee_added_to_balance IS NOT FALSE)), 0) AS fees,
+                FILTER (WHERE t.status = 'completed'), 0) AS fees,
               COALESCE(SUM(chg.total) FILTER (WHERE t.status = 'completed'), 0) AS charges,
-              -- Charges are not a fee: they are folded into the amount the
-              -- reversal unwinds, so the money comes back with them and income
-              -- has to drop by the same figure.
+              -- Everything a reversed row carried, reported beside income
+              -- rather than inside it. The drill-down totals the same figures
+              -- from the same rows, so the two agree by construction.
               COALESCE(SUM(COALESCE(t.fee, 0))
-                FILTER (WHERE t.status = 'reversed' AND t.fee_added_to_balance IS FALSE), 0)
+                FILTER (WHERE t.status = 'reversed'), 0)
               + COALESCE(SUM(chg.total) FILTER (WHERE t.status = 'reversed'), 0) AS excluded
        FROM transactions t
        JOIN transaction_types tt ON tt.id = t.transaction_type_id
