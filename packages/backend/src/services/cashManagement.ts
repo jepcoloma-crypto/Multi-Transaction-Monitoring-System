@@ -210,37 +210,56 @@ export function drawerAccountId(rows: RecordedLedgerRow[]): string | null {
 }
 
 /**
- * The drawer's side of an unwind: the exact opposite of what the original
- * recorded, read from its rows rather than recomputed.
+ * The drawer's side of an unwind: the movement the original made, run backwards
+ * — with the drawer keeping the fee it earned.
  *
- * Recomputing is not the same number. `drawerLeg` answers from a movement's own
- * signed amount and fee, and a reversal books fee 0 — so reversing a ₱1,500
- * cash-in that carried a ₱20 fee would credit the drawer ₱1,500 where the
- * original debited ₱1,480, handing the till ₱20 it never held. The drawer gets
- * back exactly what it gave; what that does to reported income is a separate
- * question the fee mode answers — a separate fee stays earned, a deducted one is
- * refunded. Mirroring what was actually written also covers
- * deducted mode, the charges folded into `totalAmount` at creation, and any
- * charge adjustment made since — without restating the rules that decided them.
+ * Mirroring the recorded rows is what keeps the pair exact. Recomputing is not
+ * the same number: `drawerLeg` answers from a movement's own signed amount and
+ * fee, and a reversal books fee 0, so recomputing would not agree with the
+ * ₱1,480 a ₱1,500 cash-in with a ₱20 fee actually posted. Mirroring also
+ * carries the charges folded into `totalAmount` at creation and any charge
+ * adjustment made since, without restating the rules that decided them.
+ *
+ * The fee mode then decides one thing — did the fee come back with the
+ * movement, or did it stay where it was earned?
+ *
+ *   - Separate: the customer received the whole amount, so the fee was never
+ *     inside the movement and the drawer keeps it. The unwind carries it on top
+ *     of the mirror: that ₱1,500 cash-in is unwound by a credit of ₱1,500, not
+ *     ₱1,480, so the ₱20 the branch earned ends up in the drawer where the
+ *     income report says it is.
+ *   - Deducted: the fee was handed back inside the movement, so the mirror
+ *     already returns it and the unwind adds nothing.
+ *
+ * That is the same split the income report makes — a separate fee stays earned,
+ * a deducted one is refunded — and making them agree is the point: two surfaces
+ * that disagree about where the money is cannot both be right, and an operator
+ * counting the till is the one who finds out.
  *
  * Several rows on the same account are summed, in whole centavos: corrections
  * append, so the drawer can legitimately own more than one row for the record
  * being undone, and a float error between them would leave a residue the count
  * cannot explain. A sum that cancels to zero writes no row at all.
  */
-export function unwindDrawerLeg(rows: RecordedLedgerRow[]): DrawerCounterparty | null {
+export function unwindDrawerLeg(
+  rows: RecordedLedgerRow[],
+  fee?: { cents: number; separate: boolean },
+): DrawerCounterparty | null {
   const accountId = drawerAccountId(rows);
   if (!accountId) return null;
 
-  const cents = rows.reduce(
+  const recorded = rows.reduce(
     (sum, row) => sum + (row.entry_type === 'credit' ? 1 : -1) * toCents(row.amount),
     0,
   );
-  if (cents === 0) return null;
+  if (recorded === 0) return null;
 
-  return cents > 0
-    ? { accountId, amount: money(cents), entryType: 'debit' }
-    : { accountId, amount: money(-cents), entryType: 'credit' };
+  const unwind = -recorded + (fee?.separate ? fee.cents : 0);
+  if (unwind === 0) return null;
+
+  return unwind > 0
+    ? { accountId, amount: money(unwind), entryType: 'credit' }
+    : { accountId, amount: money(-unwind), entryType: 'debit' };
 }
 
 /**

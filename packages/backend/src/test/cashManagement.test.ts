@@ -303,9 +303,10 @@ const drawerRow = (amount: number, entryType: 'debit' | 'credit') => ({
 });
 
 test('an unwind is the exact opposite of what the movement recorded', () => {
-  // A ₱1,500 cash-in with a ₱20 fee posted a ₱1,480 debit on the drawer; its
-  // reversal hands that ₱1,480 back. Recomputing from the reversal's own
-  // figures would credit ₱1,500 — the fee left on the books.
+  // With no fee to keep, the unwind is the mirror: that ₱1,500 cash-in posted
+  // a ₱1,480 debit on the drawer, and a credit of ₱1,480 takes it back.
+  // Recomputing from the reversal's own figures would not agree with the
+  // ₱1,480 that actually posted.
   assert.deepEqual(unwindDrawerLeg([drawerRow(1480, 'debit')]), {
     accountId: 'drawer-1', amount: 1480, entryType: 'credit',
   });
@@ -313,6 +314,31 @@ test('an unwind is the exact opposite of what the movement recorded', () => {
   assert.deepEqual(unwindDrawerLeg([drawerRow(510, 'credit')]), {
     accountId: 'drawer-1', amount: 510, entryType: 'debit',
   });
+});
+
+test('a separate fee stays in the drawer instead of coming back with the movement', () => {
+  // That cash-in booked ₱20 as income the branch keeps. Unwinding returns the
+  // movement and leaves the fee behind: the drawer is credited the full
+  // ₱1,500, so the ₱20 the income report still counts is sitting in the till
+  // where the next count will find it.
+  assert.deepEqual(unwindDrawerLeg([drawerRow(1480, 'debit')], { cents: 2000, separate: true }), {
+    accountId: 'drawer-1', amount: 1500, entryType: 'credit',
+  });
+  // The same rule from the other side: a cash-out that took ₱510 in gives back
+  // ₱500, keeping the ₱10 the branch earned.
+  assert.deepEqual(unwindDrawerLeg([drawerRow(510, 'credit')], { cents: 1000, separate: true }), {
+    accountId: 'drawer-1', amount: 500, entryType: 'debit',
+  });
+});
+
+test('a deducted fee comes back inside the movement, so the unwind adds nothing', () => {
+  // Deducted mode already reduced what the customer received, and the income
+  // report books that fee as refunded — so the mirror alone is the whole story.
+  assert.deepEqual(unwindDrawerLeg([drawerRow(1480, 'debit')], { cents: 2000, separate: false }), {
+    accountId: 'drawer-1', amount: 1480, entryType: 'credit',
+  });
+  // A fee that exactly cancels the movement leaves nothing worth posting.
+  assert.equal(unwindDrawerLeg([drawerRow(20, 'credit')], { cents: 2000, separate: true }), null);
 });
 
 test('a movement that never touched the drawer unwinds nothing', () => {
@@ -342,31 +368,44 @@ test('a drawer side spanning two accounts is refused rather than guessed at', ()
   assert.throws(() => chargeDrawerLeg(rows, 5, 'credit'), (err: any) => err.statusCode === 409);
 });
 
-test('the reversal of a cash movement nets the books back to the fee it refunds', () => {
+test('a reversal leaves the fee where the fee mode says it belongs', () => {
   const signedOf = (leg: { amount: number; entryType: 'credit' | 'debit' }): number =>
     leg.entryType === 'credit' ? leg.amount : -leg.amount;
   const round2 = (n: number) => Math.round(n * 100) / 100;
 
-  for (const [signedAmount, fee] of [[500, 10], [490, 10], [-500, 10], [-500, 0], [1500, 20]]) {
+  // [signed account leg, fee, separate?]. A separate fee stays earned, so the
+  // reversal's two legs net to nothing; a deducted fee is handed back, so they
+  // net to the fee negated. Either way the books end up holding exactly what
+  // the income report says about the same fee — earned when separate, gone
+  // when deducted. Two surfaces that disagree about where the money is cannot
+  // both be right, and the counter with the till is who finds out.
+  const cases: [number, number, boolean][] = [
+    [500, 10, true],    // cash-in, separate
+    [490, 10, false],   // cash-in, deducted
+    [-500, 10, true],   // cash-out, separate
+    [-500, 10, false],  // cash-out, deducted
+    [-500, 0, true],    // no fee: nothing to keep
+  ];
+
+  for (const [signedAmount, fee, separate] of cases) {
+    const context = `signedAmount=${signedAmount} fee=${fee} separate=${separate}`;
     const originalDrawer = drawerLeg(signedAmount, fee);
-    const unwind = unwindDrawerLeg(originalDrawer ? [drawerRow(originalDrawer.amount, originalDrawer.entryType)] : []);
-    const context = `signedAmount=${signedAmount} fee=${fee}`;
 
     // The identity the income report leans on: the original's two legs sum to
     // the fee it books.
     const originalBooks = signedAmount + (originalDrawer ? signedOf(originalDrawer) : 0);
     assert.equal(round2(originalBooks), fee, context);
 
-    // And the reversal's two legs sum to the same figure negated — the fee
-    // included, because the till gives back only what it took. Whether reported
-    // income also drops is a separate question, answered by the fee mode and not
-    // by these legs: a separate fee stays earned. Stated as "plus the fee is
-    // zero" so a zero fee cannot come out as -0 and fail a strict comparison.
+    const unwind = unwindDrawerLeg(
+      originalDrawer ? [drawerRow(originalDrawer.amount, originalDrawer.entryType)] : [],
+      { cents: Math.round(fee * 100), separate },
+    );
     const reversalAccount = -signedAmount;
     const reversalDrawer = unwind ? signedOf(unwind) : 0;
     const reversalBooks = reversalAccount + reversalDrawer;
-    assert.equal(round2(reversalBooks + fee), 0, context);
-    assert.equal(round2(originalBooks + reversalBooks), 0, context);
+    assert.equal(round2(reversalBooks), separate ? 0 : -fee, context);
+    // Stated without a -0 that could fail a strict comparison.
+    assert.equal(round2(originalBooks + reversalBooks), separate ? fee : 0, context);
   }
 });
 

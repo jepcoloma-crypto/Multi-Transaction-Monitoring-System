@@ -10,6 +10,7 @@ import type { CounterpartyLeg } from '../services/balance';
 import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
 import type { RecordedLedgerRow } from '../services/cashManagement';
 import { calculateTieredFee } from '../services/feeCalc';
+import { toCents } from '../services/ledgerAudit';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
 import { withTransaction } from '../services/withTransaction';
@@ -1051,11 +1052,13 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
         // movement like any other — D17 gates it as one — so the cash the
         // original moved between the account and the till has to move back.
         // Read from the rows the original actually wrote rather than
-        // recomputed: this books fee 0, so recomputing would give the till back
-        // more than it handed out (details on unwindDrawerLeg). Resolved before anything is written, so a leg that
-        // cannot be posted leaves the original untouched.
+        // recomputed, and carrying the original's fee only when that fee was
+        // separate: a fee the drawer earned does not come back with the
+        // movement (details on unwindDrawerLeg). Resolved before anything is
+        // written, so a leg that cannot be posted leaves the original untouched.
         const drawerSide = unwindDrawerLeg(
-          await recordedLedgerRows(client, original.id, original.account_id)
+          await recordedLedgerRows(client, original.id, original.account_id),
+          { cents: toCents(original.fee), separate: original.fee_added_to_balance !== false }
         );
         await assertDrawerCanFund(drawerSide);
 
@@ -1394,11 +1397,13 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
 
     // The drawer's side of the original, unwound with it — the same leg the
-    // immediate path posts, read from the rows the original wrote so the pair
-    // cancels to the centavo (unwindDrawerLeg). Resolved before anything is
+    // immediate path posts, read from the rows the original wrote so the
+    // movement comes back to the centavo, and carrying the original's fee only
+    // when that fee was separate (unwindDrawerLeg). Resolved before anything is
     // written, so a leg that cannot be posted leaves both records alone.
     const drawerSide = unwindDrawerLeg(
-      await recordedLedgerRows(client, original.id, original.account_id)
+      await recordedLedgerRows(client, original.id, original.account_id),
+      { cents: toCents(original.fee), separate: original.fee_added_to_balance !== false }
     );
     await assertDrawerCanFund(drawerSide);
 
