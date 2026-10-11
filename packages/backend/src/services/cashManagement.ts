@@ -633,6 +633,11 @@ export interface CashRecordRaw {
   // needs the id and the register carries the number. Null for a ledger row
   // with no transaction behind it — a transfer, adjustment or gap fix.
   transaction_id: string | null;
+  // The transaction's status, so a row the drawer has already given back can
+  // say so. A ledger register keeps every posting — including one later
+  // reversed — and a reader who cannot tell them apart reads a refunded expense
+  // as money that is still gone.
+  transaction_status: string | null;
   transaction_date: string | Date | null;
   payee: string | null;
   txn_code: string | null;
@@ -663,6 +668,12 @@ export interface CashRecordRow {
   // transaction to act on. The register's reversal action keys off this rather
   // than off the number, so a ledger-only row can never be offered one.
   transactionId: string | null;
+  // The transaction's status. In practice 'completed' or 'reversed' — a row
+  // with a ledger entry behind it is never pending — and null wherever
+  // `transactionId` is, for the same reason. Carried so the register can flag a
+  // movement that was undone: the entry itself is a fact and stays, but the
+  // money it moved has since been given back.
+  transactionStatus: string | null;
   paymentMethod: string | null;
   payee: string | null;
   referenceNumber: string | null;
@@ -677,6 +688,11 @@ export function toCashRecordRow(raw: CashRecordRaw): CashRecordRow {
   const number = raw.transaction_number === null || raw.transaction_number === undefined || raw.transaction_number === ''
     ? null
     : Number(raw.transaction_number);
+  // One test for the three fields that describe the transaction rather than the
+  // ledger row itself. They come from one LEFT JOIN, so they are either all
+  // there or all absent, and keying all three off the number keeps them from
+  // ever disagreeing about whether a transaction stands behind the row.
+  const hasTransaction = Number.isFinite(number as number);
   // The business date the operator named, falling back to the posting instant
   // for a row with no transaction (a transfer, adjustment or gap fix). Parse
   // rather than concatenate, so an invalid value falls back too instead of
@@ -695,11 +711,9 @@ export function toCashRecordRow(raw: CashRecordRaw): CashRecordRow {
     accountName: raw.account_name,
     branchCode: raw.branch_code,
     branchName: raw.branch_name,
-    transactionNumber: Number.isFinite(number as number) ? number : null,
-    // Tied to the number rather than passed through: the two come from one
-    // LEFT JOIN, so they are either both there or both absent, and keying off
-    // the number keeps them from ever disagreeing in what the UI offers.
-    transactionId: Number.isFinite(number as number) ? raw.transaction_id : null,
+    transactionNumber: hasTransaction ? number : null,
+    transactionId: hasTransaction ? raw.transaction_id : null,
+    transactionStatus: hasTransaction ? raw.transaction_status ?? null : null,
     paymentMethod: raw.payment_method,
     payee: raw.payee,
     referenceNumber: raw.reference_number,
@@ -741,6 +755,7 @@ const CASH_RECORD_COLUMNS: { header: string; key: keyof CashRecordRow }[] = [
   { header: 'Branch', key: 'branchCode' },
   { header: 'Account', key: 'accountName' },
   { header: 'Txn #', key: 'transactionNumber' },
+  { header: 'Status', key: 'transactionStatus' },
   { header: 'Type', key: 'category' },
   { header: 'Direction', key: 'direction' },
   { header: 'Amount', key: 'amount' },

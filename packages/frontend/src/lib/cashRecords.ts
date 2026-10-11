@@ -20,6 +20,12 @@ export interface CashRecord {
   // it. The reversal action needs the id, not the number, so a null here means
   // the row cannot be reversed and the button offering it stays disabled.
   transactionId: string | null;
+  // The transaction's status — 'completed' or 'reversed' where a transaction
+  // stands behind the row, null where it does not. A reversed row keeps its
+  // ledger entry, because the posting did happen, but the money it moved has
+  // since been given back; the register flags it so a reader cannot take it for
+  // a movement that still stands.
+  transactionStatus: string | null;
   paymentMethod: string | null;
   payee: string | null;
   referenceNumber: string | null;

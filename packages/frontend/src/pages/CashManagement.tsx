@@ -2051,7 +2051,25 @@ export default function CashManagement() {
                         {manilaDateTimeLabel(row.entryDate)}
                       </td>
                       <td className="px-4 py-3 text-sm font-mono text-xs whitespace-nowrap">
-                        {row.transactionNumber !== null ? `TXN #${row.transactionNumber}` : <span className="text-gray-400">—</span>}
+                        {row.transactionNumber !== null ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            {`TXN #${row.transactionNumber}`}
+                            {/* The entry is a fact and stays in the register —
+                                the badge is the one thing a column of figures
+                                cannot say for itself: the money it moved has
+                                since come back. */}
+                            {row.transactionStatus === 'reversed' && (
+                              <span
+                                className="badge-red"
+                                title="This transaction was reversed — the drawer was given this movement back"
+                              >
+                                Reversed
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-700">{row.category}</td>
                       <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-600">
@@ -2088,12 +2106,18 @@ export default function CashManagement() {
                           <button
                             type="button"
                             onClick={() => reverseRecord(row)}
-                            disabled={!row.transactionId || reversingRecord}
+                            disabled={!row.transactionId || row.transactionStatus === 'reversed' || reversingRecord}
                             className="p-1 text-gray-400 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
-                            title={row.transactionId
-                              ? 'Request a reversal'
-                              : 'Nothing to reverse — this row has no transaction behind it'}
-                            aria-label={row.transactionId ? 'Request a reversal' : 'Reversal unavailable for this row'}
+                            title={!row.transactionId
+                              ? 'Nothing to reverse — this row has no transaction behind it'
+                              : row.transactionStatus === 'reversed'
+                                ? 'Already reversed — its money has been given back'
+                                : 'Request a reversal'}
+                            aria-label={!row.transactionId
+                              ? 'Reversal unavailable for this row'
+                              : row.transactionStatus === 'reversed'
+                                ? 'Reversal unavailable — already reversed'
+                                : 'Request a reversal'}
                           >
                             <RotateCcw className="w-4 h-4" />
                           </button>
@@ -3097,6 +3121,14 @@ export default function CashManagement() {
                 <dd className="mt-1 text-sm text-gray-900">{recordDetail.category}</dd>
               </div>
               <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Status</dt>
+                <dd className="mt-1 text-sm text-gray-900">
+                  {recordDetail.transactionStatus
+                    ? <span className={recordDetail.transactionStatus === 'reversed' ? 'badge-red' : 'badge-green'}>{recordDetail.transactionStatus}</span>
+                    : <span className="text-gray-400">—</span>}
+                </dd>
+              </div>
+              <div>
                 <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Method</dt>
                 <dd className="mt-1 text-sm text-gray-900">{paymentMethodCell(recordDetail.paymentMethod)}</dd>
               </div>
@@ -3124,9 +3156,11 @@ export default function CashManagement() {
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-gray-50 px-6 py-4 rounded-b-xl">
               <p className="text-xs text-gray-500">
-                {recordDetail.transactionId
-                  ? 'Completed entries are locked — a reversal is the way to undo one.'
-                  : 'This row has no transaction behind it, so there is nothing to reverse.'}
+                {recordDetail.transactionStatus === 'reversed'
+                  ? 'This one has already been reversed — the drawer was given its money back, so there is nothing left to undo.'
+                  : recordDetail.transactionId
+                    ? 'Completed entries are locked — a reversal is the way to undo one.'
+                    : 'This row has no transaction behind it, so there is nothing to reverse.'}
               </p>
               <div className="flex gap-3 ml-auto">
                 <button type="button" className="btn-secondary" onClick={() => setRecordDetail(null)}>
@@ -3137,7 +3171,7 @@ export default function CashManagement() {
                     type="button"
                     className="btn-secondary"
                     onClick={() => reverseRecord(recordDetail)}
-                    disabled={reversingRecord}
+                    disabled={reversingRecord || recordDetail.transactionStatus === 'reversed'}
                   >
                     <RotateCcw className="w-4 h-4" />
                     {reversingRecord ? 'Sending…' : 'Request a reversal'}

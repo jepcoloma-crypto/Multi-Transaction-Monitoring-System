@@ -414,6 +414,7 @@ const raw = (over: Partial<CashRecordRaw>): CashRecordRaw => ({
   branch_name: 'Main Branch',
   transaction_number: 253,
   transaction_id: 'c9d1f0a2-0000-4000-8000-000000000253',
+  transaction_status: 'completed',
   transaction_date: '2026-10-07T15:21:25.562Z',
   payee: null,
   txn_code: 'operating_expense',
@@ -513,13 +514,31 @@ test('a register row carries the transaction id the reversal action needs', () =
   assert.equal(row.transactionId, 'c9d1f0a2-0000-4000-8000-000000000253');
 });
 
-test('a ledger row with no transaction carries no id, so it cannot be offered a reversal', () => {
+test('a ledger row with no transaction carries no id and no status, so it cannot be offered a reversal', () => {
   // Transfers, adjustments and gap fixes write ledger rows with no transaction
   // behind them. Passing an id through would offer an action that can only
-  // fail, so the number governs: no number, no id.
-  const row = toCashRecordRow(raw({ transaction_number: null, transaction_id: 'should-not-appear' }));
+  // fail, so the number governs: no number, no id. The status goes with them —
+  // a row with no transaction has no standing to report, and a register that
+  // printed one would be inventing a fact.
+  const row = toCashRecordRow(raw({ transaction_number: null, transaction_id: 'should-not-appear', transaction_status: 'reversed' }));
   assert.equal(row.transactionNumber, null);
   assert.equal(row.transactionId, null);
+  assert.equal(row.transactionStatus, null);
+});
+
+test('a reversed row keeps its entry and carries its status, so the register can say the money came back', () => {
+  // Reversing never deletes the entry — the posting happened, and a ledger that
+  // erased it could no longer be audited. But the money has since been given
+  // back, and a column of figures cannot tell a reader that: without the status
+  // a refunded expense reads as spending that still stands.
+  const row = toCashRecordRow(raw({ transaction_status: 'reversed' }));
+  assert.equal(row.transactionStatus, 'reversed');
+  assert.equal(row.amount, '1045.00');
+
+  // The export carries the same fact — a printed register is the one a reader
+  // cannot click on.
+  const csv = cashRecordsCsv([toCashRecordRow(raw({ transaction_status: 'reversed' }))]);
+  assert.ok(csv.includes('"reversed"'), `the export must carry the status too: ${csv}`);
 });
 
 test('the CSV reads every date in Manila, not UTC', () => {
