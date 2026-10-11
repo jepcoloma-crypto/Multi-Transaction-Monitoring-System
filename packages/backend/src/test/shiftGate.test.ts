@@ -86,10 +86,9 @@ test('an open shift lets a movement dated that day through', async () => {
 });
 
 test('a movement dated another day is refused even though the shift is open', async () => {
-  // The requirement: the transaction date and the shift date must be the same.
-  // A shift open for the 6th and a transaction typed for the 5th cannot both be
-  // right — the drawer being counted is the 6th's, and the 5th's cash would be
-  // counted into it.
+  // A shift open for the 6th and a movement filed for the 5th cannot both be
+  // right — the 5th has no shift of its own, so its cash would be counted into
+  // a drawer that never held it.
   await assert.rejects(
     () => assertOpenShift('acc-1', 'cash_out', { lookups: openBranch, eventDate: priorDay }),
     isStatus(409, /Dated 2026-10-05, but the open shift for branch MAIN is 2026-10-06/),
@@ -133,18 +132,34 @@ test('a movement with no date of its own belongs to the shift that is open now',
   );
 });
 
-test('a past-dated shift accepts a movement dated that day', async () => {
+test('a shift left open from an earlier day takes the days since', async () => {
   // Backfilling yesterday's shift is allowed precisely so yesterday's
-  // transactions can be recorded under it.
-  const yesterday: ShiftLookups = {
+  // transactions can be recorded under it — and the drawer it opened is still
+  // the drawer in front of the operator, so work done since counts into it too.
+  // One assertion needs the live clock, because the typed day is compared
+  // against today rather than against the shift.
+  const { manilaDateKey } = await import('../services/manilaTime');
+  const stale: ShiftLookups = {
     async account() { return { branch_id: 'br-main', code: 'MAIN' }; },
     async shift() { return { id: 'sh-4', shift_date: '2026-10-05' }; },
   };
 
-  await assertOpenShift('acc-1', 'cash_out', { lookups: yesterday, eventDate: priorDay });
+  await assertOpenShift('acc-1', 'cash_out', { lookups: stale, eventDate: priorDay });
+  await assertOpenShift('acc-1', 'cash_out', { lookups: stale, eventDate: onDay });
+  await assertOpenShift('acc-1', 'cash_out', { lookups: stale, eventDate: manilaDateKey() });
+});
+
+test('a day that has not come yet is refused, whatever shift is open', async () => {
+  // No shift can be open for it — the open-shift form refuses a future date for
+  // the same reason — so the movement would file under a drawer nobody can
+  // count yet. Compared against the live clock, because that is what the rule
+  // does.
+  const { manilaDateKey } = await import('../services/manilaTime');
+  const tomorrow = manilaDateKey(new Date(Date.now() + 24 * 60 * 60 * 1000));
+
   await assert.rejects(
-    () => assertOpenShift('acc-1', 'cash_out', { lookups: yesterday, eventDate: onDay }),
-    isStatus(409, /is 2026-10-05/),
+    () => assertOpenShift('acc-1', 'cash_out', { lookups: openBranch, eventDate: tomorrow }),
+    isStatus(409, /has not come yet/),
   );
 });
 

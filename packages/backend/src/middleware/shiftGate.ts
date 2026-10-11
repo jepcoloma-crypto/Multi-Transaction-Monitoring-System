@@ -1,6 +1,6 @@
 import { queryOne } from '../database/connection';
 import { createError } from './error';
-import { eventDateKey } from '../services/manilaTime';
+import { eventDateKey, manilaDateKey } from '../services/manilaTime';
 
 // D17 — a branch with no open shift may not move money.
 //
@@ -37,8 +37,8 @@ export type ShiftOptions = {
    * is open now rather than against a calendar day (see where the comparison is
    * made, and why that is the same drawer). Settling does pass one: the row it
    * settles is already dated. Creating, loading and transferring pass the date
-   * the operator entered, because a form field is a business day being
-   * asserted, and one with no shift is refused.
+   * the operator entered, and two days are refused: one the shift predates, and
+   * one that has not come yet.
    */
   eventDate?: Date | string | null;
   lookups?: ShiftLookups;
@@ -105,13 +105,6 @@ export async function assertOpenShift(
   // The second half of D17, and it answers two different questions depending on
   // whether a day was supplied.
   //
-  // A day *was* supplied — a form field, or the row a settlement settles — so
-  // an operator is asserting a business day, and a shift open for another day
-  // is a different drawer: that day's cash would be counted into a count it was
-  // never in. Both sides are Manila keys, so a shift opened at 01:00 and a
-  // transaction typed the previous evening compare as the days the operator
-  // sees rather than the days UTC or the server happens to name.
-  //
   // No day was supplied, so nothing is being asserted and the row is stamped
   // with the instant it is posted — and a shift's window *is* that same span,
   // from when it opened to when it closes (`drawerQuery`: "a shift is a
@@ -120,15 +113,38 @@ export async function assertOpenShift(
   // that shift's expected closing counts it. Requiring its label to read today
   // would only refuse a branch standing at its own open drawer because the
   // shift was opened yesterday and not yet closed — nothing would be reopened
-  // by letting it work, because an open shift has no count yet.
+  // by letting it work, because an open shift has no count until it closes.
+  //
+  // A day *was* supplied — a form field, or the row a settlement settles — so an
+  // operator is asserting a business day, and two of them are impossible: one
+  // before the shift opened, and one that has not come yet. A day before it
+  // files the movement under a day with no shift, which is what a missed day
+  // *is*: that is why one may be opened retroactively, by an administrator
+  // only, rather than folded into the next. A future day files it under a
+  // drawer nobody can count yet — the open-shift form refuses a future date for
+  // the same reason. Anything between the two is the shift's own span or later,
+  // and is counted by whichever shift is open, which is the whole point above.
+  //
+  // Both keys are Manila, so a shift opened at 01:00 and a transaction typed
+  // the previous evening compare as the days the operator sees rather than the
+  // days UTC or the server happens to name.
   if (eventDate === undefined || eventDate === null) return;
 
   const bookedOn = eventDateKey(eventDate);
-  if (bookedOn !== shift.shift_date) {
+
+  if (bookedOn < shift.shift_date) {
     throw createError(
       409,
       `Dated ${bookedOn}, but the open shift for branch ${account.code} is ${shift.shift_date} — ` +
         'record it under an open shift for that date, or change the date to match',
+    );
+  }
+
+  const today = manilaDateKey();
+  if (bookedOn > today) {
+    throw createError(
+      409,
+      `Dated ${bookedOn}, which has not come yet — record money movements on the day they happen`,
     );
   }
 }
