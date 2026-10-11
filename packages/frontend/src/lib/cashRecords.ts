@@ -26,6 +26,11 @@ export interface CashRecord {
   // since been given back; the register flags it so a reader cannot take it for
   // a movement that still stands.
   transactionStatus: string | null;
+  // The transaction that undid this one, and when it posted — null where
+  // nothing did. Shown beside the flag so the register names the entry that
+  // put the money back instead of only announcing that some entry did.
+  reversedByNumber: number | null;
+  reversedAt: string | null;
   paymentMethod: string | null;
   payee: string | null;
   referenceNumber: string | null;

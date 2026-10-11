@@ -148,6 +148,14 @@ interface DrawerMovement {
   transaction_number: number | null;
   payee: string | null;
   txn_code: string | null;
+  // The transaction's status and the row that undid it, where one was posted.
+  // A movement in a shift's window can have been given back — the posting is
+  // still counted, because the reversal is a second posting in the same window
+  // — and a reader checking the expected figure should be shown that rather
+  // than left to notice that two rows cancel.
+  transaction_status: string | null;
+  reversed_by_number: number | null;
+  reversed_by_at: string | null;
 }
 
 interface DrawerActivity {
@@ -1910,7 +1918,10 @@ export default function CashManagement() {
                                   No cash movements in this shift's window.
                                 </li>
                               ) : drawerActivity.rows.map((row) => (
-                                <li key={row.id} className="px-3 py-2 text-xs">
+                                <li
+                                  key={row.id}
+                                  className={`px-3 py-2 text-xs${row.transaction_status === 'reversed' ? ' bg-red-50' : ''}`}
+                                >
                                   <div className="flex justify-between gap-2">
                                     <span className="truncate text-gray-700">
                                       {row.description || (row.payee ? `Paid to ${row.payee}` : row.account_name)}
@@ -1929,6 +1940,15 @@ export default function CashManagement() {
                                     </span>
                                     <span className="shrink-0 font-mono">after {formatCurrency(money(row.balance_after))}</span>
                                   </div>
+                                  {/* Named, not just announced — the entry that
+                                      put the money back, so a figure that looks
+                                      wrong can be checked instead of doubted. */}
+                                  {row.reversed_by_number !== null && (
+                                    <p className="mt-0.5 text-[11px] leading-none text-red-700">
+                                      {`↩ reversed by TXN #${row.reversed_by_number}`}
+                                      {row.reversed_by_at ? ` · ${manilaTimeLabel(row.reversed_by_at)}` : ''}
+                                    </p>
+                                  )}
                                 </li>
                               ))}
                             </ul>
@@ -2043,7 +2063,12 @@ export default function CashManagement() {
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {records.map((row) => (
-                    <tr key={row.id} className="hover:bg-gray-50">
+                    // Washed, not struck out: the posting happened and its
+                    // balance is part of the running figure, so striking the
+                    // amount would be calling the books wrong. The wash is what
+                    // a reader catches while scanning the amount column, where
+                    // a badge parked in the Txn # column is easy to miss.
+                    <tr key={row.id} className={row.transactionStatus === 'reversed' ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50'}>
                       <td className="px-4 py-3 text-sm whitespace-nowrap text-gray-600" title={`Business day ${manilaDayLabel(row.businessDate)}`}>
                         {manilaDayLabel(row.businessDate)}
                       </td>
@@ -2052,18 +2077,26 @@ export default function CashManagement() {
                       </td>
                       <td className="px-4 py-3 text-sm font-mono text-xs whitespace-nowrap">
                         {row.transactionNumber !== null ? (
-                          <span className="inline-flex items-center gap-1.5">
-                            {`TXN #${row.transactionNumber}`}
-                            {/* The entry is a fact and stays in the register —
-                                the badge is the one thing a column of figures
-                                cannot say for itself: the money it moved has
-                                since come back. */}
-                            {row.transactionStatus === 'reversed' && (
-                              <span
-                                className="badge-red"
-                                title="This transaction was reversed — the drawer was given this movement back"
-                              >
-                                Reversed
+                          <span className="flex flex-col gap-1">
+                            <span className="inline-flex items-center gap-1.5">
+                              {`TXN #${row.transactionNumber}`}
+                              {row.transactionStatus === 'reversed' && (
+                                <span
+                                  className="badge-red"
+                                  title="This transaction was reversed — the drawer was given this movement back"
+                                >
+                                  Reversed
+                                </span>
+                              )}
+                            </span>
+                            {/* Named, not just announced. A flag says something
+                                is wrong; this says which entry put it right,
+                                and when — the part a reader cannot get from the
+                                figure beside it. */}
+                            {row.reversedByNumber !== null && (
+                              <span className="font-sans text-[11px] leading-none text-red-700">
+                                {`↩ reversed by TXN #${row.reversedByNumber}`}
+                                {row.reversedAt ? ` · ${manilaTimeLabel(row.reversedAt)}` : ''}
                               </span>
                             )}
                           </span>
@@ -3126,6 +3159,12 @@ export default function CashManagement() {
                   {recordDetail.transactionStatus
                     ? <span className={recordDetail.transactionStatus === 'reversed' ? 'badge-red' : 'badge-green'}>{recordDetail.transactionStatus}</span>
                     : <span className="text-gray-400">—</span>}
+                  {recordDetail.reversedByNumber !== null && (
+                    <span className="ml-2 text-xs text-red-700">
+                      {`↩ by TXN #${recordDetail.reversedByNumber}`}
+                      {recordDetail.reversedAt ? ` · ${manilaTimeLabel(recordDetail.reversedAt)}` : ''}
+                    </span>
+                  )}
                 </dd>
               </div>
               <div>

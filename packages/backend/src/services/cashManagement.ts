@@ -638,6 +638,11 @@ export interface CashRecordRaw {
   // reversed — and a reader who cannot tell them apart reads a refunded expense
   // as money that is still gone.
   transaction_status: string | null;
+  // The reversal's own transaction, where one was posted — its number and when
+  // it landed. Null unless the row is reversed, so the register can name what
+  // undid a movement instead of only announcing that something did.
+  reversed_by_number: number | string | null;
+  reversed_by_at: string | Date | null;
   transaction_date: string | Date | null;
   payee: string | null;
   txn_code: string | null;
@@ -674,6 +679,15 @@ export interface CashRecordRow {
   // movement that was undone: the entry itself is a fact and stays, but the
   // money it moved has since been given back.
   transactionStatus: string | null;
+  // The transaction that undid this one, where one exists. The register shows
+  // it beside the flag so a reader is told not merely that the money came back
+  // but which entry brought it back — the difference between a warning and an
+  // audit trail. Null when nothing reversed the row, and when its reversal
+  // carries no `REV-<number>` reference to be found by.
+  reversedByNumber: number | null;
+  // The instant the reversal posted, for the same reason the row carries both
+  // a business day and a posting instant.
+  reversedAt: string | null;
   paymentMethod: string | null;
   payee: string | null;
   referenceNumber: string | null;
@@ -693,6 +707,14 @@ export function toCashRecordRow(raw: CashRecordRaw): CashRecordRow {
   // there or all absent, and keying all three off the number keeps them from
   // ever disagreeing about whether a transaction stands behind the row.
   const hasTransaction = Number.isFinite(number as number);
+  // The row that undid this one, where one could be found. Absent, unparseable
+  // and a figure are three states and only the third is worth showing: a
+  // register that printed a half-parsed reversal reference would mislead more
+  // than one that printed nothing.
+  const reversedBy = raw.reversed_by_number === null || raw.reversed_by_number === undefined || raw.reversed_by_number === ''
+    ? null
+    : Number(raw.reversed_by_number);
+  const reversedWhen = raw.reversed_by_at ? new Date(raw.reversed_by_at) : null;
   // The business date the operator named, falling back to the posting instant
   // for a row with no transaction (a transfer, adjustment or gap fix). Parse
   // rather than concatenate, so an invalid value falls back too instead of
@@ -714,6 +736,11 @@ export function toCashRecordRow(raw: CashRecordRaw): CashRecordRow {
     transactionNumber: hasTransaction ? number : null,
     transactionId: hasTransaction ? raw.transaction_id : null,
     transactionStatus: hasTransaction ? raw.transaction_status ?? null : null,
+    // Untied to `hasTransaction` on purpose: the join that finds a reversal
+    // keys off the transaction number, so a row without one cannot have a
+    // match in the first place.
+    reversedByNumber: Number.isFinite(reversedBy as number) ? reversedBy : null,
+    reversedAt: reversedWhen && !Number.isNaN(reversedWhen.getTime()) ? reversedWhen.toISOString() : null,
     paymentMethod: raw.payment_method,
     payee: raw.payee,
     referenceNumber: raw.reference_number,
@@ -756,6 +783,7 @@ const CASH_RECORD_COLUMNS: { header: string; key: keyof CashRecordRow }[] = [
   { header: 'Account', key: 'accountName' },
   { header: 'Txn #', key: 'transactionNumber' },
   { header: 'Status', key: 'transactionStatus' },
+  { header: 'Reversed By', key: 'reversedByNumber' },
   { header: 'Type', key: 'category' },
   { header: 'Direction', key: 'direction' },
   { header: 'Amount', key: 'amount' },

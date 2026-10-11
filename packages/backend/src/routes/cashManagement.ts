@@ -877,12 +877,19 @@ router.get('/records', authorize('reports.read'), async (req: Request, res: Resp
               a.name AS account_name, b.code AS branch_code, b.name AS branch_name,
               t.id AS transaction_id, t.transaction_number, t.status AS transaction_status,
               t.payee, t.payment_method, t.transaction_date,
+              rev.transaction_number AS reversed_by_number, rev.created_at AS reversed_by_at,
               tt.code AS txn_code, u.username AS created_by_username
        FROM ledger_entries l
        JOIN accounts a ON a.id = l.account_id
        JOIN account_types ct ON ct.id = a.account_type_id
        LEFT JOIN branches b ON b.id = a.branch_id
        LEFT JOIN transactions t ON t.id = l.transaction_id
+       -- The row that undid this one, found by the reference every reversal
+       -- carries ("REV-" + its number). Gated on the status so a completed row
+       -- can never be linked to a namesake, and LEFT so a reversed row whose
+       -- reversal predates that convention still shows as reversed.
+       LEFT JOIN transactions rev
+              ON t.status = 'reversed' AND rev.reference_number = 'REV-' || t.transaction_number
        LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
        LEFT JOIN users u ON u.id = t.created_by
        WHERE ${conds.join(' AND ')}

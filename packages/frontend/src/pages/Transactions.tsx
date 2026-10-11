@@ -568,7 +568,11 @@ export default function Transactions() {
               <tr><td colSpan={12} className="text-center py-8 text-gray-500">No transactions found</td></tr>
             ) : (
               transactions.map((tx) => (
-                <tr key={tx.id} className="hover:bg-gray-50">
+                // Washed, not struck out: the posting happened and its balance
+                // is part of the running figure. The wash is what a reader
+                // catches while scanning the amount column, where a status
+                // badge parked further along is easy to miss.
+                <tr key={tx.id} className={tx.status === 'reversed' ? 'bg-red-50 hover:bg-red-100' : 'hover:bg-gray-50'}>
                   <td className="px-4 py-3 text-sm font-mono">#{tx.transaction_number}</td>
                   <td className="px-4 py-3 text-sm text-gray-600">{manilaDayLabel(tx.transaction_date)}</td>
                   <td className="px-4 py-3 text-sm">{tx.account_name}</td>

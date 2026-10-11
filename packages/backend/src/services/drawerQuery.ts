@@ -53,6 +53,14 @@ export interface DrawerRow extends ShiftMovement {
   transaction_number: number | null;
   payee: string | null;
   txn_code: string | null;
+  // The transaction's status, and the row that undid it where one was posted.
+  // A movement inside a shift's window can have been given back — the posting
+  // happened and still counts, because the reversal is a second posting in the
+  // same window — and a reader checking the expected figure should see that
+  // rather than be left to notice that two rows cancel.
+  transaction_status: string | null;
+  reversed_by_number: number | null;
+  reversed_by_at: string | null;
 }
 
 /**
@@ -73,12 +81,20 @@ export async function drawerMovementRows(
   return query<DrawerRow>(
     `SELECT l.id, l.entry_date, l.created_at, l.entry_type, l.amount, l.balance_after,
             l.source_type, l.reference_number, l.description, a.name AS account_name,
-            t.transaction_number, t.payee, tt.code AS txn_code
+            t.transaction_number, t.payee, tt.code AS txn_code,
+            t.status AS transaction_status,
+            rev.transaction_number AS reversed_by_number, rev.created_at AS reversed_by_at
      FROM ledger_entries l
      JOIN accounts a ON a.id = l.account_id
      JOIN account_types ct ON ct.id = a.account_type_id
      LEFT JOIN transactions t ON t.id = l.transaction_id
      LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+     -- The row that undid this one, found by the reference every reversal
+     -- carries ("REV-" + its number). Gated on the status so a completed row
+     -- can never be linked to a namesake, and LEFT so a reversed row whose
+     -- reversal predates that convention still shows as reversed.
+     LEFT JOIN transactions rev
+            ON t.status = 'reversed' AND rev.reference_number = 'REV-' || t.transaction_number
      WHERE ct.code = 'cash' AND a.branch_id = $1
        AND l.created_at >= $2 AND l.created_at < $3
      ORDER BY l.created_at, l.id`,

@@ -415,6 +415,8 @@ const raw = (over: Partial<CashRecordRaw>): CashRecordRaw => ({
   transaction_number: 253,
   transaction_id: 'c9d1f0a2-0000-4000-8000-000000000253',
   transaction_status: 'completed',
+  reversed_by_number: null,
+  reversed_by_at: null,
   transaction_date: '2026-10-07T15:21:25.562Z',
   payee: null,
   txn_code: 'operating_expense',
@@ -526,19 +528,45 @@ test('a ledger row with no transaction carries no id and no status, so it cannot
   assert.equal(row.transactionStatus, null);
 });
 
-test('a reversed row keeps its entry and carries its status, so the register can say the money came back', () => {
+test('a reversed row keeps its entry, carries its status, and names what undid it', () => {
   // Reversing never deletes the entry — the posting happened, and a ledger that
   // erased it could no longer be audited. But the money has since been given
   // back, and a column of figures cannot tell a reader that: without the status
-  // a refunded expense reads as spending that still stands.
-  const row = toCashRecordRow(raw({ transaction_status: 'reversed' }));
+  // a refunded expense reads as spending that still stands. Naming the row that
+  // undid it turns the flag into something checkable.
+  const row = toCashRecordRow(raw({
+    transaction_status: 'reversed',
+    reversed_by_number: 389,
+    reversed_by_at: '2026-10-11T14:27:42.000Z',
+  }));
   assert.equal(row.transactionStatus, 'reversed');
+  assert.equal(row.reversedByNumber, 389);
+  assert.equal(row.reversedAt, '2026-10-11T14:27:42.000Z');
   assert.equal(row.amount, '1045.00');
 
-  // The export carries the same fact — a printed register is the one a reader
+  // The export carries the same facts — a printed register is the one a reader
   // cannot click on.
-  const csv = cashRecordsCsv([toCashRecordRow(raw({ transaction_status: 'reversed' }))]);
+  const csv = cashRecordsCsv([row]);
   assert.ok(csv.includes('"reversed"'), `the export must carry the status too: ${csv}`);
+  assert.ok(csv.includes('"389"'), `the export must carry the reversal too: ${csv}`);
+});
+
+test('a row nothing undid carries no reversal link, and a half-parsed one is dropped rather than shown', () => {
+  // The link is offered as a fact, so it is either a transaction number the
+  // reader can go and look at, or it is absent. A row with no transaction
+  // behind it cannot have one at all, and a reference that will not parse is
+  // worth nothing printed — a reader would follow it and find nothing.
+  const standing = toCashRecordRow(raw({}));
+  assert.equal(standing.reversedByNumber, null);
+  assert.equal(standing.reversedAt, null);
+
+  const broken = toCashRecordRow(raw({
+    transaction_status: 'reversed',
+    reversed_by_number: 'not-a-number',
+    reversed_by_at: 'not-a-date',
+  }));
+  assert.equal(broken.reversedByNumber, null);
+  assert.equal(broken.reversedAt, null);
 });
 
 test('the CSV reads every date in Manila, not UTC', () => {
