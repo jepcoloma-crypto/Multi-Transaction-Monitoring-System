@@ -160,6 +160,19 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     // `entryDateBounds` the flow above uses, so the two cannot drift apart.
     const borrowBounds = entryDateBounds('l', 1, null, end);
     const borrowConds = [`tt.code IN ('loan_received', 'loan_repayment')`, ...borrowBounds.conds];
+    // A borrowing that has been reversed is not owed: the reversal handed the
+    // money straight back out of the drawer, so the debt went with it and
+    // telling the operator to repay it would be asking twice. Only the reversed
+    // original has to be named here — a reversal posts as an adjustment, never
+    // as a loan code, so counting loan rows alone already leaves the counter-row
+    // out, and dropping the original on top of that is what makes the pair worth
+    // nothing.
+    //
+    // This is the opposite of the statement above, where the unwound movement
+    // stays in its bucket because the cash really did move. A bucket is a
+    // record of movement and an unwind is one; this figure is a balance, and a
+    // balance has no room for a debt that no longer exists.
+    borrowConds.push(`(t.status IS NULL OR t.status <> 'reversed')`);
     const borrowParams: any[] = [...borrowBounds.params];
     const borrowScope = branchClause(req, 'l', 'accounts.read_all', borrowParams.length + 1, 'account');
     if (borrowScope.clause) {
