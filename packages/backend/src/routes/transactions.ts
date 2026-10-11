@@ -1051,9 +1051,8 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
         // movement like any other — D17 gates it as one — so the cash the
         // original moved between the account and the till has to move back.
         // Read from the rows the original actually wrote rather than
-        // recomputed: this books fee 0, so recomputing would strand the fee on
-        // the books while the income report books it as refunded (details on
-        // unwindDrawerLeg). Resolved before anything is written, so a leg that
+        // recomputed: this books fee 0, so recomputing would give the till back
+        // more than it handed out (details on unwindDrawerLeg). Resolved before anything is written, so a leg that
         // cannot be posted leaves the original untouched.
         const drawerSide = unwindDrawerLeg(
           await recordedLedgerRows(client, original.id, original.account_id)

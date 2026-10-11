@@ -22,6 +22,10 @@ interface CashRow {
   isReversed: boolean;
   amount: number;
   fee: number;
+  // Separate (true), deducted (false) or never stated (null). The mode is what
+  // decides whether a reversal hands the fee back, so a reversed row can still
+  // be sitting in the earned column and needs to say why.
+  feeAddedToBalance: boolean | null;
   charges: number;
   feeCharges: number;
 }
@@ -56,6 +60,9 @@ interface Detail {
     cashCount: number;
     cashCompletedCount: number;
     cashReversedCount: number;
+    // Rows the earned column drew from: completed rows plus a reversed row whose
+    // separate fee was never handed back.
+    earnedCount: number;
     earnedFee: number;
     earnedCharges: number;
     earned: number;
@@ -160,7 +167,14 @@ const CashTable = ({ rows, summary, parent }: { rows: CashRow[]; summary: Detail
               <td className={`${td} font-mono text-xs`}>{r.referenceNumber || '—'}</td>
               <td className={`${td} text-gray-600 max-w-[240px] truncate`} title={r.description || ''}>{r.description || '—'}</td>
               <td className={`${tdRight} ${r.direction === 'in' ? 'text-finance-green' : r.direction === 'out' ? 'text-finance-red' : 'text-gray-600'}`}>{formatCurrency(r.amount)}</td>
-              <td className={tdRight}>{formatCurrency(r.fee)}</td>
+              <td className={tdRight}>
+                {formatCurrency(r.fee)}
+                {r.fee > 0 && r.feeAddedToBalance !== null && (
+                  <span className={`ml-1.5 inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium ${r.feeAddedToBalance ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                    {r.feeAddedToBalance ? 'Separate' : 'Deducted'}
+                  </span>
+                )}
+              </td>
               <td className={tdRight}>{formatCurrency(r.charges)}</td>
               <td className={`${tdRight} ${r.feeCharges > 0 ? 'font-semibold' : 'text-gray-400'}`}>{formatCurrency(r.feeCharges)}</td>
             </tr>
@@ -168,7 +182,7 @@ const CashTable = ({ rows, summary, parent }: { rows: CashRow[]; summary: Detail
         </tbody>
         <tfoot className="bg-gray-100 border-t border-gray-200">
           <tr>
-            <td className={`${td} font-semibold`} colSpan={6}>Fees earned — completed ({summary.cashCompletedCount})</td>
+            <td className={`${td} font-semibold`} colSpan={6}>Fees earned ({summary.earnedCount})</td>
             <td className={`${tdRight} text-gray-400`}>—</td>
             <td className={tdRight}>{formatCurrency(summary.earnedFee)}</td>
             <td className={tdRight}>{formatCurrency(summary.earnedCharges)}</td>

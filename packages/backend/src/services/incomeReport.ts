@@ -225,6 +225,10 @@ export interface CashDetailSource {
   status?: string | null;
   amount?: number | string | null;
   fee?: number | string | null;
+  // Separate (true) or deducted (false) — the mode that decides whether a
+  // reversal hands the fee back. NULL is the column default and reads as
+  // separate, matching how the rest of the codebase treats the flag.
+  fee_added_to_balance?: boolean | null;
   charges?: number | string | null;
 }
 
@@ -240,6 +244,7 @@ export interface CashDetailRow {
   isReversed: boolean;
   amount: number;
   fee: number;
+  feeAddedToBalance: boolean | null;
   charges: number;
   feeCharges: number;
 }
@@ -292,6 +297,9 @@ export interface IncomeDetailSummary {
   cashCount: number;
   cashCompletedCount: number;
   cashReversedCount: number;
+  // Rows the earned column drew from: every completed row, plus a reversed row
+  // whose fee was separate and therefore never left the company.
+  earnedCount: number;
   earnedFee: number;
   earnedCharges: number;
   earned: number;
@@ -321,26 +329,36 @@ export function buildIncomeDetail(source: {
 }): IncomeDetail {
   let cashCompletedCount = 0;
   let cashReversedCount = 0;
+  let earnedCount = 0;
   let earnedFeeCents = 0;
   let earnedChargesCents = 0;
   let refundedFeeCents = 0;
   let refundedChargesCents = 0;
 
-  // A reversed transaction's fee was refunded, so it is totalled separately
-  // instead of being dropped: the parent row prints both figures, and a tab
-  // that silently omitted the refunded half would make the two disagree.
+  // What a reversal hands back, and what it leaves alone, decided by the fee
+  // mode rather than by the status alone. A separate fee was earned when the
+  // transaction was taken — the customer received the whole amount — so a
+  // reversal does not touch it and it stays in the earned column. A deducted
+  // fee did shrink what the customer received, so undoing the transaction hands
+  // it back and it is totalled as refunded. Charges are not a fee: they are
+  // folded into the amount the reversal unwinds, so they always come back.
+  // Both halves are totalled rather than dropped, because the parent row prints
+  // each figure and a tab that silently omitted one would make the two disagree.
   const cash: CashDetailRow[] = (source.cash ?? []).map((row) => {
     const feeCents = toCents(row.fee);
     const chargesCents = toCents(row.charges);
     const status = asText(row.status);
+    const feeAddedToBalance = row.fee_added_to_balance == null ? null : row.fee_added_to_balance !== false;
     if (status === 'reversed') {
       cashReversedCount += 1;
-      refundedFeeCents += feeCents;
       refundedChargesCents += chargesCents;
+      if (feeAddedToBalance === false) refundedFeeCents += feeCents;
+      else { earnedFeeCents += feeCents; earnedCount += 1; }
     } else if (status === 'completed') {
       cashCompletedCount += 1;
       earnedFeeCents += feeCents;
       earnedChargesCents += chargesCents;
+      earnedCount += 1;
     }
 
     return {
@@ -355,6 +373,7 @@ export function buildIncomeDetail(source: {
       isReversed: status === 'reversed',
       amount: money(toCents(row.amount)),
       fee: money(feeCents),
+      feeAddedToBalance,
       charges: money(chargesCents),
       feeCharges: money(feeCents + chargesCents),
     } satisfies CashDetailRow;
@@ -413,6 +432,7 @@ export function buildIncomeDetail(source: {
       cashCount: cash.length,
       cashCompletedCount,
       cashReversedCount,
+      earnedCount,
       earnedFee: money(earnedFeeCents),
       earnedCharges: money(earnedChargesCents),
       earned: money(earnedFeeCents + earnedChargesCents),

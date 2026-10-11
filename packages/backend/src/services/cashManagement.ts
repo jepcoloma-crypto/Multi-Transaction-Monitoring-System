@@ -216,8 +216,10 @@ export function drawerAccountId(rows: RecordedLedgerRow[]): string | null {
  * Recomputing is not the same number. `drawerLeg` answers from a movement's own
  * signed amount and fee, and a reversal books fee 0 — so reversing a ₱1,500
  * cash-in that carried a ₱20 fee would credit the drawer ₱1,500 where the
- * original debited ₱1,480, stranding the ₱20 on the books while the income
- * report books it as refunded. Mirroring what was actually written also covers
+ * original debited ₱1,480, handing the till ₱20 it never held. The drawer gets
+ * back exactly what it gave; what that does to reported income is a separate
+ * question the fee mode answers — a separate fee stays earned, a deducted one is
+ * refunded. Mirroring what was actually written also covers
  * deducted mode, the charges folded into `totalAmount` at creation, and any
  * charge adjustment made since — without restating the rules that decided them.
  *

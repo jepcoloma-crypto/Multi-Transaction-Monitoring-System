@@ -906,7 +906,7 @@ export default function Reports() {
                 <div className="card">
                   <p className="text-gray-500">Excluded as Reversed</p>
                   <p className="text-2xl font-bold mt-1 text-amber-600">{formatCurrency(reportData.summary?.reversedExcluded || 0)}</p>
-                  <p className="text-sm text-gray-500">Refunded when the transaction was reversed</p>
+                  <p className="text-sm text-gray-500">Handed back on reversal — a separate fee stays as income</p>
                 </div>
               </div>
 

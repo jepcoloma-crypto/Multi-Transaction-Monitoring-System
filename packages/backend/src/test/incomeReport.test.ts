@@ -115,16 +115,18 @@ test('rows are ordered largest earner first, then by name', () => {
   assert.deepEqual(rows.map((r) => r.accountName), ['Alpha', 'Beta', 'Gamma']);
 });
 
-test('a reversed fee is reported as excluded and never reaches income', () => {
+test('a reversed exclusion is carried through beside income, never inside it', () => {
   const { rows, summary } = buildIncomeReport([
     row({ txn_fees: '1800.00', additional_charges: '15.00', reversed_excluded: '250.00' }),
   ]);
 
   assert.equal(rows[0].reversedExcluded, 250);
   assert.equal(summary.reversedExcluded, 250);
-  // The reversal refunded the fee, so counting it here would pay the company
-  // twice for one transaction. The 15.00 of charges beside it never entered
-  // feeIncome in the first place.
+  // Whatever the query decided a reversal handed back — a deducted fee, or
+  // charges — is carried through untouched. A separate fee never lands here: the
+  // query books it as income, so counting it in both would pay the company twice
+  // for one transaction. The 15.00 of charges beside it never entered feeIncome
+  // in the first place.
   assert.equal(rows[0].feeIncome, 1800);
   assert.equal(summary.feeIncome, 1800);
   assert.equal(rows[0].additionalCharges, 15);
@@ -184,7 +186,7 @@ test('the cash tab totals exactly what the account row prints beside it', () => 
     cash: [
       { id: 'c1', status: 'completed', fee: '1800.00', charges: '30.00' },
       { id: 'c2', status: 'completed', fee: '0.00', charges: '0.00' },
-      { id: 'c3', status: 'reversed', fee: '175.00', charges: '15.00' },
+      { id: 'c3', status: 'reversed', fee: '175.00', charges: '15.00', fee_added_to_balance: false },
     ],
   });
   const parent = buildIncomeReport([
@@ -200,23 +202,63 @@ test('the cash tab totals exactly what the account row prints beside it', () => 
   assert.equal(detail.summary.cashReversedCount, 1);
 });
 
-test('a reversed fee is totalled as refunded and never reaches earned', () => {
+test('a deducted fee on a reversed transaction is totalled as refunded', () => {
   const { cash, summary } = buildIncomeDetail({
     cash: [
       { id: 'c1', status: 'completed', fee: '10.00', charges: '5.00' },
-      { id: 'c2', status: 'reversed', fee: '25.00', charges: '15.00' },
+      { id: 'c2', status: 'reversed', fee: '25.00', charges: '15.00', fee_added_to_balance: false },
     ],
   });
 
+  // A deducted fee shrank what the customer received, so undoing the
+  // transaction hands it back.
   assert.equal(summary.earnedFee, 10);
   assert.equal(summary.earnedCharges, 5);
   assert.equal(summary.earned, 15);
+  assert.equal(summary.earnedCount, 1);
   assert.equal(summary.refundedFee, 25);
   assert.equal(summary.refundedCharges, 15);
   assert.equal(summary.refunded, 40);
   assert.equal(cash[0].isReversed, false);
   assert.equal(cash[1].isReversed, true);
   assert.equal(cash[1].feeCharges, 40);
+  assert.equal(cash[1].feeAddedToBalance, false);
+});
+
+test('a separate fee on a reversed transaction stays earned', () => {
+  const { cash, summary } = buildIncomeDetail({
+    cash: [
+      { id: 'c1', status: 'completed', fee: '10.00', charges: '5.00' },
+      // The mode every fee-bearing row in the database carries. The customer
+      // received the whole amount, so the fee was earned when the transaction
+      // was taken and a reversal hands back none of it.
+      { id: 'c2', status: 'reversed', fee: '25.00', charges: '15.00', fee_added_to_balance: true },
+    ],
+  });
+
+  assert.equal(summary.earnedFee, 35);
+  assert.equal(summary.earnedCharges, 5);
+  assert.equal(summary.earned, 40);
+  assert.equal(summary.earnedCount, 2);
+  assert.equal(summary.refundedFee, 0);
+  // Charges are folded into the amount the reversal unwinds, so they still come
+  // back — the fee mode governs the fee and nothing else.
+  assert.equal(summary.refundedCharges, 15);
+  assert.equal(summary.refunded, 15);
+  assert.equal(cash[1].isReversed, true);
+  assert.equal(cash[1].feeAddedToBalance, true);
+});
+
+test('a reversed row that never states its fee mode is read as separate', () => {
+  const { summary } = buildIncomeDetail({
+    cash: [{ id: 'c1', status: 'reversed', fee: '20.00' }],
+  });
+
+  // Migration 012 defaults the column to true, so a NULL beside it has to mean
+  // the same thing or an older row would quietly change treatment.
+  assert.equal(summary.earnedFee, 20);
+  assert.equal(summary.refundedFee, 0);
+  assert.equal(summary.cashReversedCount, 1);
 });
 
 test('a row with no fee or charge still appears, contributing nothing', () => {

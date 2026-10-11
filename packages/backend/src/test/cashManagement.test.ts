@@ -358,9 +358,10 @@ test('the reversal of a cash movement nets the books back to the fee it refunds'
     assert.equal(round2(originalBooks), fee, context);
 
     // And the reversal's two legs sum to the same figure negated — the fee
-    // included, because the income report books it as refunded rather than
-    // leaving it on the books. Stated as "plus the fee is zero" so a zero fee
-    // cannot come out as -0 and fail a strict comparison against 0.
+    // included, because the till gives back only what it took. Whether reported
+    // income also drops is a separate question, answered by the fee mode and not
+    // by these legs: a separate fee stays earned. Stated as "plus the fee is
+    // zero" so a zero fee cannot come out as -0 and fail a strict comparison.
     const reversalAccount = -signedAmount;
     const reversalDrawer = unwind ? signedOf(unwind) : 0;
     const reversalBooks = reversalAccount + reversalDrawer;

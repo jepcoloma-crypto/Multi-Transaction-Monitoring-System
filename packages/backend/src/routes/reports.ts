@@ -813,9 +813,23 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
      LEFT JOIN (
        SELECT t.account_id,
               COUNT(*) FILTER (WHERE t.status = 'completed') AS cnt,
-              COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed'), 0) AS fees,
+              -- A fee is either separate or deducted, and only a deducted one
+              -- comes back on a reversal. A separate fee was earned when the
+              -- transaction was taken — the customer received the whole amount —
+              -- so a reversed row keeps it in income and is reported nowhere as
+              -- refunded. A deducted fee did shrink what the customer received,
+              -- so undoing the transaction hands the fee back. NULL reads as
+              -- separate, which is the column default (migration 012).
+              COALESCE(SUM(COALESCE(t.fee, 0))
+                FILTER (WHERE t.status = 'completed'
+                         OR (t.status = 'reversed' AND t.fee_added_to_balance IS NOT FALSE)), 0) AS fees,
               COALESCE(SUM(chg.total) FILTER (WHERE t.status = 'completed'), 0) AS charges,
-              COALESCE(SUM(COALESCE(t.fee, 0) + chg.total) FILTER (WHERE t.status = 'reversed'), 0) AS excluded
+              -- Charges are not a fee: they are folded into the amount the
+              -- reversal unwinds, so the money comes back with them and income
+              -- has to drop by the same figure.
+              COALESCE(SUM(COALESCE(t.fee, 0))
+                FILTER (WHERE t.status = 'reversed' AND t.fee_added_to_balance IS FALSE), 0)
+              + COALESCE(SUM(chg.total) FILTER (WHERE t.status = 'reversed'), 0) AS excluded
        FROM transactions t
        JOIN transaction_types tt ON tt.id = t.transaction_type_id
        LEFT JOIN LATERAL (
@@ -1199,7 +1213,7 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
     const cash = await query(
       `SELECT t.id, t.transaction_number, t.reference_number, t.transaction_date,
               tt.name AS type_name, tt.direction, t.description, t.status,
-              t.amount, t.fee, chg.total AS charges
+              t.amount, t.fee, t.fee_added_to_balance, chg.total AS charges
        FROM transactions t
        JOIN transaction_types tt ON tt.id = t.transaction_type_id
        LEFT JOIN LATERAL (
