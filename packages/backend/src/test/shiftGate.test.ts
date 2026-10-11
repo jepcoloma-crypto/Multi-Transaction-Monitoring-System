@@ -110,18 +110,27 @@ test('the date it is typed as is read as Manila, not as the server clock', async
   );
 });
 
-test('no date means the moment of the action, checked the same way', async () => {
-  // Settling, reversing and correcting carry no date of their own: they happen
-  // now, so they are held to the shift covering now. Fixed here by supplying a
-  // lookup whose shift is dated for the live clock, so the assertion does not
-  // depend on when the suite runs.
-  const { manilaDateKey } = await import('../services/manilaTime');
-  const liveDay: ShiftLookups = {
+test('a movement with no date of its own belongs to the shift that is open now', async () => {
+  // Nothing is being asserted, so there is nothing to compare: the row is
+  // stamped with the instant it is posted, and a shift's window is that same
+  // span — from when it opened to when it closes. A shift opened yesterday and
+  // not yet closed is therefore still the drawer this reversal moves, and its
+  // expected closing counts the row. Fixed days rather than the live clock, so
+  // the assertion does not depend on when the suite runs.
+  const stale: ShiftLookups = {
     async account() { return { branch_id: 'br-main', code: 'MAIN' }; },
-    async shift() { return { id: 'sh-3', shift_date: manilaDateKey() }; },
+    async shift() { return { id: 'sh-3', shift_date: '2026-10-05' }; },
   };
 
-  await assertOpenShift('acc-1', 'cash_out', { lookups: liveDay });
+  await assertOpenShift('acc-1', 'cash_out', { lookups: stale });
+  await assertOpenShift('acc-1', 'cash_out', { lookups: openBranch });
+
+  // Still refused when there is no shift at all: the drawer has to be open for
+  // anything to move out of or into it.
+  await assert.rejects(
+    () => assertOpenShift('acc-1', 'cash_out', { lookups: closedBranch }),
+    isStatus(409, /No open shift for branch MAIN/),
+  );
 });
 
 test('a past-dated shift accepts a movement dated that day', async () => {

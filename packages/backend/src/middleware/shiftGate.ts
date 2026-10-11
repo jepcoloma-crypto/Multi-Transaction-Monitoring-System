@@ -19,8 +19,8 @@ const UNGATED_TYPES = new Set(['owner_funding', 'owner_return']);
 /**
  * The two rows the decision rests on, as a pair so tests can supply their own.
  * They are separate because they are separate questions: which branch owns this
- * account, and is that branch's drawer open on the date being booked — and
- * because an exempt type has to be able to answer without asking either.
+ * account, and is that branch's drawer open — and because an exempt type has to
+ * be able to answer without asking either.
  */
 export type ShiftLookups = {
   account(accountId: string): Promise<{ branch_id: string; code: string } | null>;
@@ -30,10 +30,15 @@ export type ShiftLookups = {
 export type ShiftOptions = {
   /**
    * The Manila day the movement belongs to, as an instant or the string it was
-   * typed as. Omitted when the action carries no date of its own — settling,
-   * reversing and correcting all happen *now*, so now is what they are checked
-   * against. Creating, loading and transferring pass the date the operator
-   * entered, because that is the date the record will carry.
+   * typed as.
+   *
+   * Omitted when the action carries no date of its own — reversing, correcting
+   * and adjusting charges happen *now*, and are checked against the shift that
+   * is open now rather than against a calendar day (see where the comparison is
+   * made, and why that is the same drawer). Settling does pass one: the row it
+   * settles is already dated. Creating, loading and transferring pass the date
+   * the operator entered, because a form field is a business day being
+   * asserted, and one with no shift is refused.
    */
   eventDate?: Date | string | null;
   lookups?: ShiftLookups;
@@ -61,8 +66,8 @@ const liveLookups: ShiftLookups = {
 };
 
 /**
- * Refuses unless the account's branch currently has an open shift for the day
- * being booked.
+ * Refuses unless the account's branch currently has an open shift — and, when
+ * the caller supplies a day, one open for that day.
  *
  * `typeCode` is optional and only ever passed by transaction routes: supply it
  * and owner fund movements pass through, because those are the owner's money
@@ -97,11 +102,27 @@ export async function assertOpenShift(
     );
   }
 
-  // The second half of D17: a shift is one Philippine day, and a movement
-  // booked outside it would be counted against a drawer that was never open
-  // for it. Both sides are Manila keys, so a shift opened at 01:00 and a
+  // The second half of D17, and it answers two different questions depending on
+  // whether a day was supplied.
+  //
+  // A day *was* supplied — a form field, or the row a settlement settles — so
+  // an operator is asserting a business day, and a shift open for another day
+  // is a different drawer: that day's cash would be counted into a count it was
+  // never in. Both sides are Manila keys, so a shift opened at 01:00 and a
   // transaction typed the previous evening compare as the days the operator
   // sees rather than the days UTC or the server happens to name.
+  //
+  // No day was supplied, so nothing is being asserted and the row is stamped
+  // with the instant it is posted — and a shift's window *is* that same span,
+  // from when it opened to when it closes (`drawerQuery`: "a shift is a
+  // physical span", and the window reads `created_at`, not `entry_date`). The
+  // row therefore lands inside the shift that is open now by construction, and
+  // that shift's expected closing counts it. Requiring its label to read today
+  // would only refuse a branch standing at its own open drawer because the
+  // shift was opened yesterday and not yet closed — nothing would be reopened
+  // by letting it work, because an open shift has no count yet.
+  if (eventDate === undefined || eventDate === null) return;
+
   const bookedOn = eventDateKey(eventDate);
   if (bookedOn !== shift.shift_date) {
     throw createError(
