@@ -12,6 +12,7 @@ import { loadScopedLedger } from '../services/ledgerQuery';
 import { drawerMovements } from '../services/drawerQuery';
 import { netMovement } from '../services/shifts';
 import { buildShiftReport } from '../services/shiftReport';
+import { buildOwnerFundReport, type OwnerFundReport, type OwnerFundSourceRow } from '../services/ownerFundsReport';
 
 const router = Router();
 router.use(authenticate);
@@ -735,6 +736,85 @@ router.get('/shift-report', authorize('reports.read'), async (req: Request, res:
       branchId: await resolveBranchFilter(req, req.query.branchId),
       status: req.query.status,
       varianceOnly: req.query.varianceOnly === '1' || req.query.varianceOnly === 'true',
+    });
+    res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
+type OwnerFundFilters = { startDate?: unknown; endDate?: unknown; accountId?: unknown; kind?: unknown; branchId?: string | null };
+
+// Every owner fund movement that has settled, newest first.
+//
+// Settled only — `status = 'completed'` — because this report's totals describe
+// what the accounts hold. A pending request has moved nothing and belongs on
+// the approver's queue, and a rejected one moved nothing either; including
+// either would inflate a figure an owner reads as money they put in.
+//
+// The approval instant is read from the `transaction.owner_fund_approved`
+// audit row rather than from `transactions.updated_at`. They look
+// interchangeable and are not: a later notes edit stamps `updated_at` again, so
+// an owner who approved a movement in September and annotated it yesterday
+// would be reported as having approved it yesterday. The audit row is written
+// once, at the moment of approval, and is never rewritten.
+//
+// Both approver sources are joined for the same reason the reversal report
+// joins both: the column is written by the approval route and the audit row
+// alongside it, and a row corrected after the fact can leave one surviving
+// without the other.
+const loadOwnerFundsReport = async (req: Request, filters: OwnerFundFilters): Promise<OwnerFundReport> => {
+  const { startDate, endDate, accountId, branchId } = filters;
+  const conds: string[] = [`tt.code IN ('owner_funding', 'owner_return')`, `t.status = 'completed'`];
+  const params: any[] = [];
+  let pi = 1;
+  if (startDate) { conds.push(`t.transaction_date >= $${pi++}`); params.push(startDate); }
+  if (endDate) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(endDate); }
+  if (accountId) { conds.push(`t.account_id = $${pi++}`); params.push(accountId); }
+  if (filters.kind === 'funding' || filters.kind === 'return') {
+    conds.push(`tt.code = $${pi++}`);
+    params.push(filters.kind === 'return' ? 'owner_return' : 'owner_funding');
+  }
+  const scope = branchClause(req, 't', 'transactions.read_all', pi, 'account', branchId);
+  if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
+
+  const rows = await query<OwnerFundSourceRow>(
+    `SELECT t.id, t.transaction_number, tt.code AS kind, t.net_amount, t.additional_charges,
+            t.status, t.payment_method, t.reference_number, t.description, t.notes,
+            t.transaction_date, t.created_at,
+            a.id AS account_id, a.name AS account_name,
+            br.id AS branch_id, br.code AS branch_code, br.name AS branch_name,
+            ru.username AS requested_by, au.username AS approved_by,
+            ap.created_at AS approved_at, au2.username AS approval_audit_actor
+     FROM transactions t
+     JOIN transaction_types tt ON tt.id = t.transaction_type_id
+     JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN branches br ON br.id = a.branch_id
+     LEFT JOIN users ru ON ru.id = t.created_by
+     LEFT JOIN users au ON au.id = t.approved_by
+     LEFT JOIN LATERAL (
+       SELECT x.created_at, x.user_id
+       FROM audit_logs x
+       WHERE x.entity = 'transaction' AND x.entity_id = t.id::text
+         AND x.action = 'transaction.owner_fund_approved'
+       ORDER BY x.created_at DESC
+       LIMIT 1
+     ) ap ON true
+     LEFT JOIN users au2 ON au2.id = ap.user_id
+     WHERE ${conds.join(' AND ')}
+     ORDER BY t.transaction_date DESC, t.transaction_number DESC`,
+    params,
+  );
+
+  return buildOwnerFundReport(rows);
+};
+
+router.get('/owner-funds-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const report = await loadOwnerFundsReport(req, {
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      accountId: req.query.accountId,
+      kind: req.query.kind,
+      branchId: await resolveBranchFilter(req, req.query.branchId),
     });
     res.json({ success: true, data: report });
   } catch (error) { next(error); }
@@ -1605,8 +1685,58 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
           variance: report.summary.totalVariance.toFixed(2),
         };
       }
+    } else if (type === 'owner-funds' || type === 'ownerfunds') {
+      const report = await loadOwnerFundsReport(req, {
+        startDate,
+        endDate,
+        accountId,
+        branchId,
+        kind: req.query.kind,
+      });
+      data = report.movements.map((m) => ({
+        transaction_number: m.transactionNumber,
+        movement: m.kind === 'return' ? 'Return Funds' : 'Add Funds',
+        account_name: m.accountName ?? '',
+        branch_name: m.branchName ?? '',
+        amount: m.amount.toFixed(2),
+        payment_method: m.paymentMethod ?? '',
+        reference: m.referenceNumber ?? '',
+        description: m.description ?? '',
+        notes: m.notes ?? '',
+        requested_by: m.requestedBy ?? '',
+        requested_at: m.requestedAt ?? '',
+        approved_by: m.approvedBy ?? '',
+        approved_at: m.approvedAt ?? '',
+        settled: m.settledDirectly ? 'Recorded directly' : 'Approved',
+      }));
+      columns = [
+        { header: 'Number', key: 'transaction_number' },
+        { header: 'Movement', key: 'movement' },
+        { header: 'Account', key: 'account_name' },
+        { header: 'Branch', key: 'branch_name' },
+        { header: 'Amount', key: 'amount' },
+        { header: 'Method', key: 'payment_method' },
+        { header: 'Reference', key: 'reference' },
+        { header: 'Description', key: 'description' },
+        { header: 'Notes', key: 'notes' },
+        { header: 'Requested By', key: 'requested_by' },
+        { header: 'Requested At', key: 'requested_at' },
+        { header: 'Approved By', key: 'approved_by' },
+        { header: 'Approved At', key: 'approved_at' },
+        { header: 'Settled', key: 'settled' },
+      ];
+      if (data.length > 0) {
+        csvTotals = {
+          transaction_number: 'TOTAL',
+          movement: `${report.summary.fundedCount} added / ${report.summary.returnedCount} returned`,
+          // Net rather than a sum of the column: adds and returns are opposite
+          // movements, so a plain total would add ₱50,000 in and ₱50,000 back
+          // out into ₱100,000 that never existed.
+          amount: report.summary.netToAccounts.toFixed(2),
+        };
+      }
     } else {
-      return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger, reversals, shifts' } });
+      return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger, reversals, shifts, owner-funds' } });
     }
 
     if (fmt === 'csv') {
