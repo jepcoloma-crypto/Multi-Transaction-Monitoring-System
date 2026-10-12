@@ -7,9 +7,10 @@ import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
 import type { CounterpartyLeg } from '../services/balance';
-import { isCashMovement, isPaymentMethod, isMovementPaymentMethod, PAYMENT_METHODS, MOVEMENT_PAYMENT_METHODS, drawerLeg, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
+import { drawerLeg, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod } from '../services/cashManagement';
 import type { RecordedLedgerRow } from '../services/cashManagement';
-import { calculateTieredFee } from '../services/feeCalc';
+import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf } from '../services/movementPlan';
+import { resolveMovementFee } from '../services/movementFee';
 import { toCents } from '../services/ledgerAudit';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -447,41 +448,19 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     await assertBranch(req, accountId, 'transactions.write_all', 'Account not found');
 
     const amountNum = parseFloat(amount);
-    if (amountNum < 0) throw createError(400, 'Amount cannot be negative');
+    const enteredFee = parseFloat(fee || '0');
+    const inputProblem = validateMovementInputs(amountNum, enteredFee);
+    if (inputProblem) throw createError(400, inputProblem);
 
-    let feeNum = parseFloat(fee || '0');
-    if (feeNum < 0) throw createError(400, 'Fee cannot be negative');
-
-    const feeConfigs = await query<{ id: string; fee_type: string; fee_value: number; min_fee: number; max_fee: number | null; calculation_method: string }>(
-      `SELECT id, fee_type, fee_value, min_fee, max_fee, calculation_method FROM transaction_fees
-       WHERE transaction_type_id = $1 AND is_active = true
-       AND (transaction_category_id IS NULL OR transaction_category_id = $2)`,
-      [resolvedTypeId, resolvedCategoryId]
-    );
-    if (feeConfigs.length > 0 && !manualFee) {
-      const feeTiers = await query<any>(
-        'SELECT * FROM transaction_fee_tiers WHERE fee_id = ANY($1::uuid[]) ORDER BY min_amount',
-        [feeConfigs.map((f) => f.id)]
-      );
-      let totalFee = 0;
-      for (const fc of feeConfigs) {
-        const configTiers = feeTiers.filter((t: any) => t.fee_id === fc.id);
-        const tierResult = calculateTieredFee(fc, configTiers, amountNum);
-        let calcFee: number;
-        if (tierResult !== null) {
-          calcFee = tierResult;
-        } else if (fc.fee_type === 'percentage') {
-          calcFee = (amountNum * Number(fc.fee_value)) / 100;
-        } else {
-          calcFee = Number(fc.fee_value);
-        }
-        if (fc.min_fee && calcFee < Number(fc.min_fee)) calcFee = Number(fc.min_fee);
-        if (fc.max_fee && calcFee > Number(fc.max_fee)) calcFee = Number(fc.max_fee);
-        totalFee += calcFee;
-      }
-      feeNum = Math.round(totalFee * 100) / 100;
-    }
-    feeNum = Math.ceil(feeNum - 1e-9);
+    // Resolved by the shared fee walk, so the preview this form will read and
+    // the row this route commits can only ever quote the same charge.
+    const feeNum = await resolveMovementFee({
+      typeId: resolvedTypeId,
+      categoryId: resolvedCategoryId,
+      amount: amountNum,
+      enteredFee,
+      manualFee: Boolean(manualFee),
+    });
 
     const account = await queryOne<{ id: string; name: string; status: string; created_by: string; type_code: string }>(
       `SELECT a.id, a.name, a.status, a.created_by, t.code AS type_code
@@ -500,11 +479,10 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // Two things a hand-crafted request can do that the entry form cannot. The
     // form is driven by fee rules and has no free type picker, so both were
     // reachable only over the API — and one of them would have spent company
-    // money with no second signature behind it.
-    const typeRefusal = directTypeRefusal(txType.code);
-    if (typeRefusal) throw createError(400, typeRefusal);
-    const feeRefusal = expenseFeeRefusal(txType.code, feeNum);
-    if (feeRefusal) throw createError(400, feeRefusal);
+    // money with no second signature behind it. Returned by the shared list so
+    // the preview reports them in this same order.
+    const refusals = movementRefusals(txType.code, feeNum);
+    if (refusals.length > 0) throw createError(400, refusals[0]);
 
     // Before anything is written, and before the payment-method question: if the
     // branch is shut there is nothing an operator can fix by filling in a field
@@ -514,96 +492,41 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // the balance work below rather than after it.
     await assertOpenShift(accountId, txType.code, { eventDate: bookedAt });
 
-    // A cash movement is not recorded until the operator says how the money
-    // actually changed hands, because that is what decides whether the drawer
-    // takes part. Presence is enforced here rather than as a NOT NULL column
-    // constraint because reversal rewrites the original row (see :798 and :1095
-    // below) and all 108 historical cash movements are NULL — a constraint would
-    // have made every one of them un-reversible the moment it ran, and
-    // backfilling them would mean guessing which were physical cash. Migration
-    // 036 records that reasoning and carries the value check instead.
-    let paymentMethodValue =
-      paymentMethod === undefined || paymentMethod === null || String(paymentMethod).trim() === ''
-        ? null
-        : String(paymentMethod).trim();
-
-    if (paymentMethodValue !== null && !isPaymentMethod(paymentMethodValue)) {
-      throw createError(400, `Payment method must be one of: ${PAYMENT_METHODS.join(', ')}`);
-    }
-    if (isCashMovement(txType.code) && !isMovementPaymentMethod(paymentMethodValue)) {
-      throw createError(400,
-        `A ${txType.code.replace(/_/g, ' ')} needs a payment method: ${MOVEMENT_PAYMENT_METHODS.join(', ')}`);
-    }
-
-    // A cash account's balance *is* the drawer's cash, so it can only have been
-    // paid in or paid out physically. Left to the operator this is the field
-    // that records a wallet movement the drawer never saw, and the shift then
-    // closes short against money nobody counted. A blank is answered by the
-    // account; a method that disagrees is refused rather than quietly
-    // overwritten, because overwriting would record something nobody chose.
-    const cashMethod = resolveCashAccountMethod(account.type_code, paymentMethodValue);
-    if (cashMethod.action === 'refuse') throw createError(400, cashMethod.message);
-    if (cashMethod.action === 'force') paymentMethodValue = cashMethod.method;
-
-    // A provider charge on a cash movement is the company's own cost: the
-    // customer is never billed for it, so it cannot be folded into this row's
-    // amount or fee. It is recorded as a second, linked row typed `expense`
-    // (migration 032 explains why the two figures must stay separate).
-    //
-    // Keyed in by hand because it happens on only some movements — a rule
-    // that fired on every cash transaction would invent charges the provider
-    // never made. Restricted to money actually moving in or out, so it can
-    // never be bolted onto a reversal or an adjustment.
-    let providerChargeNum = 0;
-    if (providerCharge !== undefined && providerCharge !== null && providerCharge !== '') {
-      providerChargeNum = parseFloat(String(providerCharge));
-      if (!Number.isFinite(providerChargeNum)) throw createError(400, 'Provider charge must be a number');
-      if (providerChargeNum < 0) throw createError(400, 'Provider charge cannot be negative');
-      providerChargeNum = Math.round(providerChargeNum * 100) / 100;
-      if (providerChargeNum > 0 && txType.direction !== 'in' && txType.direction !== 'out') {
-        throw createError(400, 'A provider charge can only be recorded on a cash-in or cash-out');
-      }
-      if (providerChargeNum > 0 && txType.code === 'expense') {
-        throw createError(400, 'A provider charge cannot be added to an expense row');
-      }
-    }
-
-    const entryType = txType.direction === 'in' || txType.direction === 'adjustment' ? 'credit' : 'debit';
-    const deductFee = feeAddedToBalance === false && feeNum > 0;
-    if (deductFee && amountNum < feeNum) {
-      throw createError(400, 'Fee cannot exceed the transaction amount when deducted from transaction amount');
-    }
-    // A deducted fee shrinks what a credit lands on, never what a debit removes.
-    // Taking it from a debit as well collected it from nobody: the balance would
-    // drop by amount − fee and the customer would be handed amount − fee, so the
-    // fee was booked as income and physically never taken. On a debit the whole
-    // amount leaves and the drawer is what retains the fee (design D13).
-    const netAmount = deductFee && entryType === 'credit'
-      ? Math.round((amountNum - feeNum) * 100) / 100
-      : amountNum;
-    const totalCharges = (additionalCharges || []).reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
-    const totalAmount = netAmount + totalCharges;
-
-    // Who may settle at once and who must wait, decided in one place so the
-    // three rules cannot drift apart (see `controlledApproval`).
+    // Everything the entry preview must also know — the method the account
+    // forces, the figures the row will carry, whose approval it needs, and the
+    // drawer's side of it — decided in one shared sequence so the preview an
+    // operator reads before saving and this commit cannot disagree (see
+    // `paymentPlan`). The payment-method rules and their migration-036
+    // reasoning live there now; what happens below is what happened before,
+    // asked once instead of in pieces.
     const expenseThreshold = await expenseApprovalThreshold();
-    const { controlled: isControlled, requiresApproval } = controlledApproval(
-      txType.code,
-      amountNum,
+    const plan = paymentPlan({
+      direction: txType.direction,
+      code: txType.code,
+      accountTypeCode: account.type_code,
+      amount: amountNum,
+      fee: feeNum,
+      feeAddedToBalance: feeAddedToBalance !== false,
+      additionalCharges,
+      paymentMethod,
+      providerCharge,
+      requestedStatus: status,
       expenseThreshold,
-      (req.user!.roles || []).includes('administrator'),
-    );
-    const finalStatus = requiresApproval ? 'pending' : (status || 'completed');
+      isAdminCreator: (req.user!.roles || []).includes('administrator'),
+    });
+    if (plan.problems.length > 0) throw createError(400, plan.problems[0]);
 
-    if (finalStatus !== 'completed' && !isControlled) {
-      throw createError(400, 'Only owner fund movements, operating expenses, cash payments and borrowings can be created as pending');
-    }
+    const paymentMethodValue = plan.paymentMethod;
+    const entryType = plan.entryType;
+    const netAmount = plan.netAmount;
+    const totalAmount = plan.totalAmount;
+    const providerChargeNum = plan.providerCharge;
+    const finalStatus = plan.finalStatus;
 
-    // Rejected rather than silently dropped: a charge the operator typed in
-    // and the books then forgot would be worse than one refused up front.
-    if (providerChargeNum > 0 && finalStatus !== 'completed') {
-      throw createError(400, 'A provider charge can only be recorded on a transaction that completes now');
-    }
+    // The provider-charge rules, the D13 deducted-fee arithmetic and the
+    // approval decision all moved into `paymentPlan` above — the same sequence
+    // the preview runs — so the figures destructured there are what this row
+    // writes. What remains here is the writing itself.
 
     // Resolved before anything is written, so a branch with no drawer refuses
     // the whole submission rather than leaving a row whose drawer leg never
@@ -620,21 +543,20 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // transaction that writes the debit. Checking here would refuse a
     // proposal merely because owner funding has not arrived yet — and would
     // make the float impossible to open with, since a new revolving fund
-    // starts at zero.
+    // starts at zero. The verdict itself is shared, so the preview reports
+    // this same refusal before the operator types their password.
     if (entryType === 'debit' && finalStatus !== 'pending') {
       const balance = await queryOne<{ current_balance: string }>(
         'SELECT current_balance FROM accounts WHERE id = $1 FOR UPDATE', [accountId]
       );
-      // The charge is a second debit from the same balance, so the account has
-      // to carry both. Rounded before comparing: two 2-decimal figures added
-      // as floats can land a hair above the true total and reject a balance
-      // that is exactly enough.
-      const required = Math.round((totalAmount + providerChargeNum) * 100) / 100;
-      if (parseFloat(balance?.current_balance || '0') < required) {
-        throw createError(400, providerChargeNum > 0
-          ? 'Insufficient balance for the transaction plus the provider charge'
-          : 'Insufficient balance');
-      }
+      const problem = fundingProblem({
+        balance: parseFloat(balance?.current_balance || '0'),
+        entryType,
+        status: finalStatus,
+        totalAmount,
+        providerCharge: providerChargeNum,
+      });
+      if (problem) throw createError(400, problem);
     }
 
     const txNumber = await queryOne<{ nextval: string }>("SELECT nextval('transactions_transaction_number_seq') as nextval");
@@ -722,6 +644,172 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
   } finally {
     client.release();
   }
+});
+
+// The entry form's leg preview: what this submission would write, read from the
+// same fee walk (`resolveMovementFee`), the same pure rules (`paymentPlan`) and
+// the same drawer resolution (`resolveDrawerLeg`) the commit above runs — so
+// the figure an operator reads before saving cannot disagree with the rows the
+// save posts. Read-only: nothing is written, nothing is locked. Refusals the
+// commit would raise come back as `problems`, in the order it raises them, so
+// the form can show every reason a save would fail instead of the first one
+// that happened to trip.
+router.post('/preview', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const {
+      accountId, transactionTypeId, transactionCategoryId, feeRuleId, amount, fee, manualFee,
+      transactionDate, additionalCharges, paymentMethod, providerCharge, status, feeAddedToBalance,
+    } = req.body;
+
+    const problems: string[] = [];
+
+    const bookedAt = transactionDate ? parseManilaDateTime(String(transactionDate)) : null;
+    if (transactionDate && !bookedAt) problems.push('Invalid transaction date');
+
+    let resolvedTypeId = transactionTypeId;
+    let resolvedCategoryId = transactionCategoryId || null;
+    if (feeRuleId) {
+      const feeRule = await queryOne<{ transaction_type_id: string; transaction_category_id: string | null }>(
+        'SELECT transaction_type_id, transaction_category_id FROM transaction_fees WHERE id = $1',
+        [feeRuleId]
+      );
+      if (!feeRule) throw createError(404, 'Fee rule not found');
+      resolvedTypeId = feeRule.transaction_type_id;
+      resolvedCategoryId = feeRule.transaction_category_id;
+    }
+
+    if (!accountId || !resolvedTypeId || amount === undefined) {
+      throw createError(400, 'Account, transaction type (or fee rule), and amount are required');
+    }
+    await assertBranch(req, accountId, 'transactions.write_all', 'Account not found');
+
+    const amountNum = parseFloat(amount);
+    const enteredFee = parseFloat(fee || '0');
+    const inputProblem = validateMovementInputs(amountNum, enteredFee);
+    if (inputProblem) {
+      // Every figure below hangs off these two inputs, so there is nothing
+      // worth quoting yet — the same refusal the commit makes, first.
+      return res.json({ success: true, data: { legs: [], problems: [inputProblem] } });
+    }
+
+    const feeNum = await resolveMovementFee({
+      typeId: resolvedTypeId,
+      categoryId: resolvedCategoryId,
+      amount: amountNum,
+      enteredFee,
+      manualFee: Boolean(manualFee),
+    });
+
+    const account = await queryOne<{ id: string; name: string; status: string; type_code: string }>(
+      `SELECT a.id, a.name, a.status, t.code AS type_code
+       FROM accounts a JOIN account_types t ON t.id = a.account_type_id
+       WHERE a.id = $1`,
+      [accountId]
+    );
+    if (!account) throw createError(404, 'Account not found');
+    if (account.status === 'closed') problems.push('Cannot add transactions to a closed account');
+
+    const txType = await queryOne<{ id: string; direction: string; code: string }>(
+      'SELECT id, direction, code FROM transaction_types WHERE id = $1', [resolvedTypeId]
+    );
+    if (!txType) throw createError(404, 'Transaction type not found');
+
+    problems.push(...movementRefusals(txType.code, feeNum));
+
+    // The same gate the commit calls, run for the day this entry would carry.
+    // A closed branch is information worth having before half the form is
+    // filled in, so it joins the list rather than ending the request.
+    try {
+      await assertOpenShift(accountId, txType.code, { eventDate: bookedAt });
+    } catch (err: any) {
+      problems.push(err?.message || 'This branch has no open shift for the day selected');
+    }
+
+    const expenseThreshold = await expenseApprovalThreshold();
+    const plan = paymentPlan({
+      direction: txType.direction,
+      code: txType.code,
+      accountTypeCode: account.type_code,
+      amount: amountNum,
+      fee: feeNum,
+      feeAddedToBalance: feeAddedToBalance !== false,
+      additionalCharges,
+      paymentMethod,
+      providerCharge,
+      requestedStatus: status,
+      expenseThreshold,
+      isAdminCreator: (req.user!.roles || []).includes('administrator'),
+    });
+    problems.push(...plan.problems);
+
+    // The legs, resolved exactly as the commit resolves them. A pending row
+    // writes no ledger rows yet — what is listed is what approval will post,
+    // which is the movement the operator is really choosing between.
+    const legs: Array<{ role: string; accountId: string; accountName: string; entryType: string; amount: number }> = [
+      { role: 'account', accountId, accountName: account.name, entryType: plan.entryType, amount: plan.totalAmount },
+    ];
+
+    const balanceRow = await queryOne<{ current_balance: string }>(
+      'SELECT current_balance FROM accounts WHERE id = $1', [accountId]
+    );
+    const accountBalance = parseFloat(balanceRow?.current_balance || '0');
+
+    let drawerBalance: number | null = null;
+    if (plan.finalStatus === 'completed') {
+      try {
+        const counterparty = await resolveDrawerLeg(
+          accountId, plan.paymentMethod, plan.drawerSignedAmount, feeNum
+        );
+        if (counterparty) {
+          const drawerAcct = await queryOne<{ name: string; current_balance: string }>(
+            'SELECT name, current_balance FROM accounts WHERE id = $1', [counterparty.accountId]
+          );
+          legs.push({
+            role: 'drawer',
+            accountId: counterparty.accountId,
+            accountName: drawerAcct?.name || 'Cash on hand',
+            entryType: counterparty.entryType,
+            amount: counterparty.amount,
+          });
+          drawerBalance = parseFloat(drawerAcct?.current_balance || '0');
+        }
+      } catch (err: any) {
+        // A branch with no drawer, or one too short to hand the money out:
+        // exactly the refusals the commit makes, reported before the save.
+        problems.push(err?.message || 'The drawer side of this movement could not be resolved');
+      }
+      if (plan.providerCharge > 0) {
+        legs.push({ role: 'charge', accountId, accountName: account.name, entryType: 'debit', amount: plan.providerCharge });
+      }
+    }
+
+    const funding = fundingProblem({
+      balance: accountBalance,
+      entryType: plan.entryType,
+      status: plan.finalStatus,
+      totalAmount: plan.totalAmount,
+      providerCharge: plan.providerCharge,
+    });
+    if (funding) problems.push(funding);
+
+    res.json({
+      success: true,
+      data: {
+        legs,
+        problems,
+        fee: feeNum,
+        netAmount: plan.netAmount,
+        totalAmount: plan.totalAmount,
+        providerCharge: plan.providerCharge,
+        status: plan.finalStatus,
+        requiresApproval: plan.requiresApproval,
+        paymentMethod: plan.paymentMethod,
+        cashBehavior: plan.cashBehavior,
+        accountBalance,
+        drawerBalance,
+      },
+    });
+  } catch (error) { next(error); }
 });
 
 router.patch('/:id/charges', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
@@ -955,16 +1043,21 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
 
     const feeAddedToBalance = provided('feeAddedToBalance') ? body.feeAddedToBalance !== false : row.fee_added_to_balance !== false;
 
-    const deductFee = feeAddedToBalance === false && feeNum > 0;
-    if (deductFee && amountInput < feeNum) {
+    // The same rule as creation, read from the same planner: a deducted fee
+    // shrinks what a credit lands on, never what a debit removes (design D13).
+    // Editing must reproduce what the create path would have written, or
+    // correcting an amount would quietly re-price the movement — so both ask
+    // `netAmountOf`, and the preview quotes it too.
+    const net = netAmountOf({
+      direction: row.direction,
+      amount: amountInput,
+      fee: feeNum,
+      feeAddedToBalance,
+    });
+    if (net.exceeds) {
       throw createError(400, 'Fee cannot exceed the transaction amount when deducted from transaction amount');
     }
-    // The same rule as creation: a deducted fee shrinks what a credit lands on,
-    // never what a debit removes (design D13). Editing must reproduce what the
-    // create path would have written, or correcting an amount would quietly
-    // re-price the movement.
-    const isCredit = row.direction === 'in' || row.direction === 'adjustment';
-    const netAmount = deductFee && isCredit ? round2(amountInput - feeNum) : amountInput;
+    const netAmount = net.netAmount;
 
     set('amount', round2(amountInput));
     set('fee', feeNum);
