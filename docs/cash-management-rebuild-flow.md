@@ -123,14 +123,23 @@ excludes reversed rows.
 
 ## 9. Cutover runbook
 
-1. Choose the cutover moment (a shift open).
+1. Choose the cutover moment — a moment with **no shift open**, immediately
+   before the first shift of the day opens.
 2. Stop all postings to the legacy Revolving Fund.
 3. **Count the drawer** → post as the new Drawer's opening row.
-4. Post **one documented adjustment** closing the legacy fund against the count —
-   the unexplained difference becomes a single labeled line. The audit ends with a
-   paper trail, not a mystery.
+4. Post **one documented adjustment** moving the counted cash out of the legacy
+   fund into the new Drawer — the legacy fund freezes holding the remainder as
+   its single labeled report line (owner's choice: transfer the count, freeze
+   the remainder; the alternative, writing the difference off to zero, was
+   declined).
 5. Point "Cash on hand" at the Drawer; verify `balance == counted cash`, to the centavo.
 6. Loading posts its drawer leg from the first sale onward.
+
+The script: `npm run cutover -- --branch <code> --counted <pesos> --by <userId>` —
+dry run by default (prints the exact rows it would post, from the same plan the
+commit applies), `--commit` to apply. It refuses a branch with an open shift,
+a count above the fund, more than one open cash account, or a branch already
+cut over — every refusal is the script looking, not guessing.
 
 ## 10. Relabeling
 

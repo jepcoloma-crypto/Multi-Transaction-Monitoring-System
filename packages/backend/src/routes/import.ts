@@ -231,6 +231,14 @@ router.post('/loading', authorize('loading.write'), upload.single('file'), async
         const accountId = row.account_id || defaultAccountId;
         if (!accountId) { results.errors.push('Missing account_id'); results.failed++; continue; }
 
+        // A bulk row is still a posting: active accounts only, same line the
+        // entry route and the transactions import hold. The legacy fund must
+        // stop receiving money the moment the cutover freezes it, however many
+        // rows an import brings at once — closed is closed.
+        const acctStatus = await client.query('SELECT status FROM accounts WHERE id = $1', [accountId]);
+        if (!acctStatus.rows[0]) { results.errors.push(`Account not found: ${accountId}`); results.failed++; continue; }
+        if (acctStatus.rows[0].status !== 'active') { results.errors.push(`Account not active: ${accountId}`); results.failed++; continue; }
+
         const quantity = parseInt(row.quantity || '1');
         const customerNumber = row.customer_number || row.customer;
         if (!customerNumber) { results.errors.push('Missing customer_number'); results.failed++; continue; }
