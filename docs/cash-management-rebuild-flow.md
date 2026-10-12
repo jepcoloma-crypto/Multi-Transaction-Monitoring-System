@@ -77,7 +77,7 @@ opening count must match this close.
 | `expense` (cash) | leaves | − amount | — |
 | `operating_expense` (cash) | leaves | − amount | — |
 
-### Proposed — one-nod confirmation needed
+### Confirmed — owner nodded the whole table
 
 | Type | Cash | Drawer | Counter-leg |
 |---|---|---|---|
@@ -144,17 +144,19 @@ Plus the cash-behavior badge from §6.
 
 ## 11. Phases
 
-| Phase | Work |
-|---|---|
-| 0 | This document — approval |
-| 1 | Backend: drawer account, posting rules, shift wiring, leg preview |
-| 2 | Loading cash leg (the + selling price) |
-| 3 | Reports rewiring |
-| 4 | Migration script + cutover |
-| 5 | Frontend screens — after confirming how the SPA is served (today the backend serves only `/api` and `/uploads`) |
+| Phase | Work | State |
+|---|---|---|
+| 0 | This document — approval | done |
+| 1 | Backend: drawer account, posting rules, shift wiring, leg preview | done — `b69e6ba` |
+| 2 | Loading cash leg (the + selling price) | done — `7a75d76` |
+| 3 | Reports rewiring | next |
+| 4 | Migration script + cutover | queued — cutover at the next open shift after 3 |
+| 5 | Frontend screens — the backend serves the built SPA | queued |
 
-## 12. Open items
+## 12. Open items — resolved
 
-- Confirm the PROPOSED rows in §5 — one quick pass.
-- Confirm how the SPA is served for Phase 5.
-- Choose the cutover date/shift.
+- §5 PROPOSED rows: **confirmed as listed** — the table above is the agreed matrix.
+- SPA serving: **the backend serves the built SPA** (today it only serves `/api`
+  and `/uploads`; Phase 5 adds the static route).
+- Cutover: **the next open shift after Phase 4 is ready** — build the migration,
+  approve the runbook, then cut over at the first shift opened afterwards.
