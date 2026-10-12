@@ -158,14 +158,16 @@ Plus the cash-behavior badge from §6.
 | 0 | This document — approval | done |
 | 1 | Backend: drawer account, posting rules, shift wiring, leg preview | done — `b69e6ba` |
 | 2 | Loading cash leg (the + selling price) | done — `7a75d76` |
-| 3 | Reports rewiring | next |
-| 4 | Migration script + cutover | queued — cutover at the next open shift after 3 |
-| 5 | Frontend screens — the backend serves the built SPA | queued |
+| 3 | Reports rewiring | done — `e7ce736` |
+| 4 | Migration script + cutover | done — `25edf02`; the run itself awaits the first counted cutover (§9) |
+| 5 | Frontend screens — the backend serves the built SPA | done — `dd41086` (static route), `198a2c0` (screens) |
 
 ## 12. Open items — resolved
 
 - §5 PROPOSED rows: **confirmed as listed** — the table above is the agreed matrix.
-- SPA serving: **the backend serves the built SPA** (today it only serves `/api`
-  and `/uploads`; Phase 5 adds the static route).
+- SPA serving: **the backend serves the built SPA** (it served only `/api` and
+  `/uploads` until Phase 5 added the static route — page routes fall through to
+  `index.html`, file extensions stay 404s, and with no bundle on disk nothing
+  registers).
 - Cutover: **the next open shift after Phase 4 is ready** — build the migration,
   approve the runbook, then cut over at the first shift opened afterwards.
