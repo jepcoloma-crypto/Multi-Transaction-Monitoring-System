@@ -1,12 +1,147 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { Save, RotateCcw } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { Save, RotateCcw, DatabaseZap, AlertTriangle, CheckCircle2 } from 'lucide-react';
 
 interface Setting {
   value: any; description: string; updated_at?: string;
 }
 
+interface CleanPlan {
+  tables: { name: string; rows: number }[];
+  totalRows: number;
+  keptTableCount: number;
+  openShifts: number;
+  message?: string;
+}
+
+// Administrator-only. Empties the transactional history (transactions, ledger
+// entries, shifts, transfers, audit logs…) while keeping the configuration —
+// users, branches, providers, types, fees, charge types. A verified backup is
+// taken before anything is cleaned, and the confirmation is typed rather than
+// clicked because this is real money that a stray click would erase.
+function DatabaseMaintenance() {
+  const [plan, setPlan] = useState<CleanPlan | null>(null);
+  const [loadingPlan, setLoadingPlan] = useState(true);
+  const [cleaning, setCleaning] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmText, setConfirmText] = useState('');
+  const CONFIRM_WORD = 'CLEAN';
+
+  const loadPlan = async () => {
+    setLoadingPlan(true);
+    setError(null);
+    try {
+      setPlan(await api.get<CleanPlan>('/backup/clean'));
+    } catch (err: any) {
+      setError(err.message || 'Could not load the clean plan');
+    } finally {
+      setLoadingPlan(false);
+    }
+  };
+
+  useEffect(() => { loadPlan(); }, []);
+
+  const runClean = async () => {
+    setCleaning(true);
+    setError(null);
+    setResult(null);
+    try {
+      const data = await api.post<{ message: string }>('/backup/clean', { commit: true });
+      setResult(data.message || 'Database cleaned.');
+      setConfirmText('');
+      await loadPlan();
+    } catch (err: any) {
+      setError(err.message || 'Clean failed');
+    } finally {
+      setCleaning(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="flex items-start justify-between">
+        <div>
+          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+            <DatabaseZap className="w-4 h-4 text-red-600" /> Database Maintenance
+          </h3>
+          <p className="text-sm text-gray-600 mt-1">
+            Empty the transactional history and reset account balances to opening. Configuration is kept.
+          </p>
+        </div>
+      </div>
+
+      {loadingPlan ? (
+        <div className="text-sm text-gray-500 py-6">Loading plan…</div>
+      ) : plan ? (
+        <div className="mt-4 space-y-3">
+          <div className="grid grid-cols-3 gap-4 text-sm">
+            <div>
+              <p className="text-gray-500">Rows emptied</p>
+              <p className="font-medium">{plan.totalRows.toLocaleString()}</p>
+            </div>
+            <div>
+              <p className="text-gray-500">Tables emptied</p>
+              <p className="font-medium">{plan.tables.length}</p>
+            </div>
+            <div>
+              <p className="text-gray-500">Config tables kept</p>
+              <p className="font-medium">{plan.keptTableCount}</p>
+            </div>
+          </div>
+
+          {plan.openShifts > 0 && (
+            <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              {plan.openShifts} shift(s) are open — close them first, or the clean will refuse.
+            </p>
+          )}
+
+          {error && (
+            <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>
+          )}
+          {result && (
+            <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 shrink-0" /> {result}
+            </p>
+          )}
+
+          <div className="border-t border-gray-100 pt-3">
+            <label className="form-label">
+              Type {CONFIRM_WORD} to confirm — a verified backup is taken first
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder={CONFIRM_WORD}
+                className="form-input w-48"
+                autoComplete="off"
+              />
+              <button
+                onClick={runClean}
+                disabled={confirmText !== CONFIRM_WORD || cleaning || plan.openShifts > 0}
+                className="btn-primary flex items-center gap-2 disabled:opacity-50"
+                style={{ backgroundColor: '#dc2626' }}
+              >
+                <DatabaseZap className="w-4 h-4" />
+                {cleaning ? 'Cleaning…' : 'Clean Database'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-gray-500 py-6">{error || 'No plan available.'}</p>
+      )}
+    </div>
+  );
+}
+
 export default function Settings() {
+  const { user } = useAuth();
+  const isAdmin = user?.roles?.includes('administrator') ?? false;
   const [settings, setSettings] = useState<Record<string, Setting>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -129,6 +264,8 @@ export default function Settings() {
               <div><p className="text-gray-500">Currency</p><p className="font-medium">PHP (₱)</p></div>
             </div>
           </div>
+
+          {isAdmin && <DatabaseMaintenance />}
         </div>
       )}
     </div>

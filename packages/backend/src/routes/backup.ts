@@ -5,6 +5,8 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs';
+import { config } from '../config';
+import { describePlan, openShiftCount, takeBackup, cleanData } from '../services/dbClean';
 
 const execAsync = promisify(exec);
 const router = Router();
@@ -96,6 +98,94 @@ router.post('/restore', authorize('settings.write'), async (req: Request, res: R
 
     res.json({ success: true, data: { message: 'Database restored successfully' } });
   } catch (error: any) {
+    next(error);
+  }
+});
+
+// Clean the database — administrator only (settings.write), backup first.
+//
+// Read-only by default: with commit unset it returns the plan (what would be
+// emptied, what config is kept, whether a shift is open) and changes nothing.
+// With commit:true it backs up, verifies, then truncates the transactional
+// tables and resets account balances to opening — the `data` mode of the CLI,
+// sharing one implementation (services/dbClean) so the plan and the action
+// cannot disagree. The blunt `full` reset (drop schema + re-migrate) is CLI
+// only: it destroys config no migration can restore, which is not something to
+// hang behind a button.
+router.get('/clean', authorize('settings.write'), async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const plan = await describePlan();
+    res.json({
+      success: true,
+      data: {
+        ...plan,
+        keptTableCount: plan.keptTables.length,
+        commit: false,
+        message:
+          `Would empty ${plan.tables.length} transactional tables (${plan.totalRows} rows) and reset ` +
+          `account balances to opening. Configuration is kept. Nothing was changed.`,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/clean', authorize('settings.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (config.nodeEnv === 'production') {
+      return res.status(403).json({
+        success: false,
+        error: { message: 'Cleaning is disabled in production. Use the db:clean CLI with --allow-production.', code: 403 },
+      });
+    }
+
+    const { commit, force } = req.body || {};
+    const openShifts = await openShiftCount();
+
+    // Not committing: just report the plan so the UI can show it before any
+    // confirmation. No backup, no writes.
+    if (!commit) {
+      const plan = await describePlan();
+      return res.json({ success: true, data: { ...plan, commit: false } });
+    }
+
+    // Committing with someone mid-till would wipe the shift they are in. Refuse
+    // unless the caller explicitly forces past it.
+    if (openShifts > 0 && !force) {
+      return res.status(409).json({
+        success: false,
+        error: {
+          message: `${openShifts} shift(s) are open — someone may be mid-till. Close them, or pass force:true to clean anyway.`,
+          code: 409,
+        },
+      });
+    }
+
+    // Backup is not optional: if it fails or looks too small, nothing is cleaned.
+    const backup = await takeBackup();
+    const result = await cleanData();
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'database.cleaned',
+      entity: 'system',
+      entityId: backup.filename,
+      ipAddress: req.ip,
+      newData: { mode: 'data', backup: backup.filename, ...result, forced: Boolean(force) },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        ...result,
+        backup: { filename: backup.filename, size: backup.size },
+        message:
+          `Cleaned ${result.truncated.length} tables and reset ${result.accountsReset} account balance(s) ` +
+          `to opening. A verified backup was taken first (${backup.filename}).`,
+      },
+    });
+  } catch (error) {
     next(error);
   }
 });
