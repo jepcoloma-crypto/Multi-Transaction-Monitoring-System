@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import path from 'path';
+import fs from 'fs';
 import { config } from './config';
 import { pool } from './database/connection';
 import { requestLogger } from './middleware/logging';
@@ -53,6 +54,25 @@ app.use(requestLogger);
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 app.use('/api', routes);
+
+// The built SPA, served by the same process the API lives in — flow doc §11:
+// the site's hostname already tunnels to this port, so /api and /uploads
+// above claim their prefixes and everything else that looks like a page gets
+// index.html for the client router to draw. A path with a file extension stays
+// a 404 rather than being answered with HTML a browser cannot run, and API or
+// upload misses keep whatever 404 they had before this block existed. Without
+// a bundle on disk nothing registers, and the process serves exactly the
+// API-only surface it always has.
+const frontendDist = path.resolve(__dirname, '../../frontend/dist');
+const spaIndex = path.join(frontendDist, 'index.html');
+if (fs.existsSync(spaIndex)) {
+  app.use(express.static(frontendDist));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/uploads')) return next();
+    if (path.extname(req.path)) return next();
+    res.sendFile(spaIndex);
+  });
+}
 
 app.use(errorHandler);
 
