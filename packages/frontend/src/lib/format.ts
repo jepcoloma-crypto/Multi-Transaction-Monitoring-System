@@ -299,3 +299,41 @@ export const floatAgainstBooks = (openingFloat: string, booksBalance: number): s
     ? `This is ${formatCurrency(difference)} more than the ${formatCurrency(booksBalance)} the books show.`
     : `This is ${formatCurrency(-difference)} less than the ${formatCurrency(booksBalance)} the books show.`;
 };
+
+/**
+ * The words a type is shown under — §10 of the cash-management flow.
+ *
+ * The code stays the record it always was (history, filters and every report
+ * key off it); only the label moves, and only where the old one hid what the
+ * movement really is. "Cash-Out" reads as money appearing from nowhere when
+ * the row is one swap — cash received at the counter, e-money sent out of a
+ * channel — and "Cash-In" hides the cash that walked back out. Naming both
+ * legs is the whole change, so those two get names and every other type,
+ * which already says what it is, keeps its own.
+ */
+export const transactionTypeLabel = (
+  code: string | null | undefined,
+  fallback?: string | null
+): string => {
+  if (code === 'cash_out') return 'Cash received \u2192 E-money sent';
+  if (code === 'cash_in') return 'E-money received \u2192 Cash paid out';
+  return String(fallback ?? '') || String(code ?? '');
+};
+
+/**
+ * The entry form's cash-behavior badge (§6): which way the drawer moves.
+ *
+ * The words only ever get attached to an answer the server's preview gave —
+ * the preview resolves cash behavior from the same rules the save runs (the
+ * account's own side on a cash account, otherwise the drawer's leg, otherwise
+ * no cash at all), and this helper just says it out loud. Deriving the badge
+ * here from type and method would be a second copy of those rules with
+ * nothing forcing the two to agree, so a missing answer renders as a missing
+ * badge rather than a guess.
+ */
+export const cashBehaviorLabel = (behavior: 'in' | 'out' | 'none' | null | undefined): string => {
+  if (behavior === 'in') return 'Cash enters drawer';
+  if (behavior === 'out') return 'Cash leaves drawer';
+  if (behavior === 'none') return 'No cash';
+  return '';
+};

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
+import { formatCurrency, manilaDayLabel, manilaDateTimeLabel, transactionTypeLabel } from '../lib/format';
 import { Scale, Plus, Check, Eye, X, Filter, Upload, ArrowRight, RefreshCw, Trash2 } from 'lucide-react';
 import Pagination from '../components/Pagination';
 import GapFixes from './GapFixes';
@@ -19,7 +19,7 @@ interface StatementEntry {
 
 interface UnmatchedTxn {
   id: string; transaction_number: number; amount: number; transaction_date: string;
-  type_name: string; direction: string; description: string; reference_number: string;
+  type_name: string; type_code?: string | null; direction: string; description: string; reference_number: string;
 }
 
 interface MatchRecord {
@@ -27,7 +27,7 @@ interface MatchRecord {
   matched_at: string; statement_date: string; stmt_desc: string;
   stmt_debit: number; stmt_credit: number; stmt_ref: string;
   transaction_number: number; txn_amount: number; txn_date: string;
-  type_name: string; direction: string;
+  type_name: string; type_code?: string | null; direction: string;
 }
 
 interface Account { id: string; name: string; current_balance: number; }
@@ -349,7 +349,7 @@ export default function Reconciliation() {
                           className={`p-3 rounded-lg border cursor-pointer transition-colors ${selectedTxn === t.id ? 'border-primary-500 bg-primary-50' : 'border-gray-200 hover:bg-gray-50'}`}>
                           <div className="flex justify-between items-start">
                             <div>
-                              <p className="text-sm font-medium">#{t.transaction_number} — {t.type_name}</p>
+                              <p className="text-sm font-medium">#{t.transaction_number} — {transactionTypeLabel(t.type_code, t.type_name)}</p>
                               <p className="text-xs text-gray-500">{manilaDayLabel(t.transaction_date)} {t.description && `• ${t.description}`}</p>
                             </div>
                             <p className={`text-sm font-medium ${t.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>
@@ -403,7 +403,7 @@ export default function Reconciliation() {
                         <td className="px-6 py-3 text-sm whitespace-nowrap">{m.stmt_desc || '-'}</td>
                         <td className="px-6 py-3 text-sm text-right whitespace-nowrap">{parseFloat(String(m.stmt_credit)) > 0 ? formatCurrency(m.stmt_credit) : `-${formatCurrency(m.stmt_debit)}`}</td>
                         <td className="px-6 py-3 text-sm font-mono whitespace-nowrap">#{m.transaction_number}</td>
-                        <td className="px-6 py-3 text-sm whitespace-nowrap">{m.type_name}</td>
+                        <td className="px-6 py-3 text-sm whitespace-nowrap">{transactionTypeLabel(m.type_code, m.type_name)}</td>
                         <td className={`px-6 py-3 text-sm font-medium text-right whitespace-nowrap ${m.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>{m.direction === 'in' ? '+' : '-'}{formatCurrency(m.txn_amount)}</td>
                         <td className="px-6 py-3 text-right">
                           <button onClick={() => handleUnmatch(m.id)} className="p-1 text-gray-400 hover:text-red-500" title="Unmatch"><X className="w-4 h-4" /></button>

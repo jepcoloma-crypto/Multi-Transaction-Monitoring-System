@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
+import { formatCurrency, manilaDayLabel, manilaDateTimeLabel, transactionTypeLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import { Check, X, Clock, Inbox, ShieldAlert, AlertCircle } from 'lucide-react';
 
@@ -28,7 +28,7 @@ interface Reversal {
   id: string; transaction_number: number; original_amount: string; original_status: string;
   reversal_amount: string; reason: string | null; status: string; created_at: string;
   updated_at: string; requested_by_username: string; decided_by_username: string | null;
-  account_name: string; type_name: string; direction: string; description: string | null;
+  account_name: string; type_name: string; type_code?: string | null; direction: string; description: string | null;
 }
 
 const paymentLabel = (m: string) =>
@@ -115,7 +115,7 @@ export default function TransferApprovals() {
     const isReturn = f.type_code === 'owner_return';
     const verb = isReturn ? 'deducted from' : 'credited to';
     if (!window.confirm(
-      `Approve ${f.type_name} #${f.transaction_number} — ${formatCurrency(parseFloat(String(f.amount)))} will be ${verb} ${f.account_name} now?`
+      `Approve ${transactionTypeLabel(f.type_code, f.type_name)} #${f.transaction_number} — ${formatCurrency(parseFloat(String(f.amount)))} will be ${verb} ${f.account_name} now?`
     )) return;
     setBusy(true);
     try {
@@ -130,7 +130,7 @@ export default function TransferApprovals() {
 
   const approveReversal = async (r: Reversal) => {
     if (!window.confirm(
-      `Approve the reversal of transaction #${r.transaction_number} (${r.type_name} on ${r.account_name})? ` +
+      `Approve the reversal of transaction #${r.transaction_number} (${transactionTypeLabel(r.type_code, r.type_name)} on ${r.account_name})? ` +
       `${formatCurrency(parseFloat(String(r.reversal_amount)))} will be reversed and the original record becomes Reversed.`
     )) return;
     setBusy(true);
@@ -190,7 +190,7 @@ export default function TransferApprovals() {
       ? `Reject transfer ${(rejecting.record as Transfer).transfer_reference}`
       : rejecting.kind === 'reversals'
         ? `Reject reversal request #${(rejecting.record as Reversal).transaction_number}`
-        : `Reject ${(rejecting.record as OwnerFund).type_name} #${(rejecting.record as OwnerFund).transaction_number}`
+        : `Reject ${transactionTypeLabel((rejecting.record as OwnerFund).type_code, (rejecting.record as OwnerFund).type_name)} #${(rejecting.record as OwnerFund).transaction_number}`
     : '';
 
   return (
@@ -324,7 +324,7 @@ export default function TransferApprovals() {
                 ) : (
                   <>
                     {formatCurrency(parseFloat(String((rejecting.record as OwnerFund).amount)))} for{' '}
-                    <strong>{(rejecting.record as OwnerFund).type_name}</strong> on{' '}
+                    <strong>{transactionTypeLabel((rejecting.record as OwnerFund).type_code, (rejecting.record as OwnerFund).type_name)}</strong> on{' '}
                     <strong>{(rejecting.record as OwnerFund).account_name}</strong>. The balance will not change.
                   </>
                 )}
@@ -501,7 +501,7 @@ function FundPendingTable({ rows, busy, onApprove, onReject }: {
               <tr key={f.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 font-medium text-gray-900">#{f.transaction_number}</td>
                 <td className="px-4 py-3">
-                  <span className={`badge-${isReturn ? 'red' : 'green'}`}>{f.type_name}</span>
+                  <span className={`badge-${isReturn ? 'red' : 'green'}`}>{transactionTypeLabel(f.type_code, f.type_name)}</span>
                 </td>
                 <td className="px-4 py-3 text-gray-900">{f.account_name}</td>
                 <td className={`px-4 py-3 text-right font-semibold ${isReturn ? 'text-red-600' : 'text-green-600'}`}>
@@ -543,7 +543,7 @@ function FundRejectedTable({ rows }: { rows: OwnerFund[] }) {
             <tr key={f.id} className="hover:bg-gray-50">
               <td className="px-4 py-3 font-medium text-gray-900">#{f.transaction_number}</td>
               <td className="px-4 py-3">
-                <span className={`badge-${f.type_code === 'owner_return' ? 'red' : 'green'}`}>{f.type_name}</span>
+                <span className={`badge-${f.type_code === 'owner_return' ? 'red' : 'green'}`}>{transactionTypeLabel(f.type_code, f.type_name)}</span>
               </td>
               <td className="px-4 py-3 text-gray-900">{f.account_name}</td>
               <td className="px-4 py-3 text-right font-medium">{formatCurrency(parseFloat(String(f.amount)))}</td>
@@ -591,7 +591,7 @@ function ReversalPendingTable({ rows, busy, canDecide, onApprove, onReject }: {
               <tr key={r.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3 font-medium text-gray-900">#{r.transaction_number}</td>
                 <td className="px-4 py-3">
-                  <span className={`badge-${reversesIn ? 'red' : 'green'}`}>{r.type_name}</span>
+                  <span className={`badge-${reversesIn ? 'red' : 'green'}`}>{transactionTypeLabel(r.type_code, r.type_name)}</span>
                 </td>
                 <td className="px-4 py-3 text-gray-900">{r.account_name}</td>
                 <td className="px-4 py-3 text-right text-gray-700">{formatCurrency(parseFloat(String(r.original_amount)))}</td>
@@ -642,7 +642,7 @@ function ReversalRejectedTable({ rows }: { rows: Reversal[] }) {
           {rows.map((r) => (
             <tr key={r.id} className="hover:bg-gray-50">
               <td className="px-4 py-3 font-medium text-gray-900">#{r.transaction_number}</td>
-              <td className="px-4 py-3">{r.type_name}</td>
+              <td className="px-4 py-3">{transactionTypeLabel(r.type_code, r.type_name)}</td>
               <td className="px-4 py-3 text-gray-900">{r.account_name}</td>
               <td className="px-4 py-3 text-right text-gray-700">{formatCurrency(parseFloat(String(r.original_amount)))}</td>
               <td className="px-4 py-3 text-gray-700">{r.requested_by_username || '—'}</td>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel, floatAgainstBooks } from './format';
+import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel, floatAgainstBooks, transactionTypeLabel, cashBehaviorLabel } from './format';
 
 // Manila is UTC+8 all year — no DST — so these boundaries are stable.
 const justAfterManilaMidnight = '2026-10-04T16:30:00.000Z'; // 00:30 on 5 Oct in Manila
@@ -199,5 +199,46 @@ describe('floatAgainstBooks', () => {
 
   it('reads a float above a zero drawer as strictly more', () => {
     expect(floatAgainstBooks('5000', 0)).toBe('This is ₱5,000.00 more than the ₱0.00 the books show.');
+  });
+});
+
+describe('transactionTypeLabel', () => {
+  // §10: the codes are the record and never move — the labels are what
+  // changed, and only the two cash-swap codes needed naming both legs.
+  it('names both legs of the two cash-swap types', () => {
+    expect(transactionTypeLabel('cash_out', 'Cash-Out')).toBe('Cash received → E-money sent');
+    expect(transactionTypeLabel('cash_in', 'Cash-In')).toBe('E-money received → Cash paid out');
+  });
+
+  it('leaves every other type under its own name', () => {
+    expect(transactionTypeLabel('refund', 'Refund')).toBe('Refund');
+    expect(transactionTypeLabel('owner_funding', 'Owner Funding')).toBe('Owner Funding');
+    expect(transactionTypeLabel('bill_payment', 'Bill Payment')).toBe('Bill Payment');
+  });
+
+  // A relabelled row must not go blank where the server forgot a name, and a
+  // row with neither must not print "undefined".
+  it('falls back to the code rather than to emptiness', () => {
+    expect(transactionTypeLabel('expense', null)).toBe('expense');
+    expect(transactionTypeLabel('expense', undefined)).toBe('expense');
+    expect(transactionTypeLabel(null, 'Refund')).toBe('Refund');
+    expect(transactionTypeLabel(null, null)).toBe('');
+  });
+});
+
+describe('cashBehaviorLabel', () => {
+  // The badge words of §6, said from the preview's answer only.
+  it('says which way the drawer moves', () => {
+    expect(cashBehaviorLabel('in')).toBe('Cash enters drawer');
+    expect(cashBehaviorLabel('out')).toBe('Cash leaves drawer');
+    expect(cashBehaviorLabel('none')).toBe('No cash');
+  });
+
+  // No answer is not an answer: an unknown value must not be printed as if
+  // the server had said "No cash".
+  it('says nothing when there is no answer to say', () => {
+    expect(cashBehaviorLabel(null)).toBe('');
+    expect(cashBehaviorLabel(undefined)).toBe('');
+    expect(cashBehaviorLabel('sideways' as any)).toBe('');
   });
 });

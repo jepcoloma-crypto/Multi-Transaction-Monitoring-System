@@ -36,7 +36,7 @@ interface Branch { id: string; code: string; name: string; status: string; }
 interface AccountType { id: string; name: string; code: string; }
 interface TransactionType { id: string; name: string; code: string; direction: string; }
 interface AccountSummary {
-  summary: { totalAccounts: number; totalBalance: number; cashBalance: number; activeAccounts: number; lowBalanceCount: number };
+  summary: { totalAccounts: number; totalBalance: number; cashBalance: number; frozenCashBalance?: number; frozenCashAccounts?: string; activeAccounts: number; lowBalanceCount: number };
 }
 
 export default function Accounts() {
@@ -312,6 +312,14 @@ export default function Accounts() {
             {summary.cashBalance !== undefined && (
               <p className="text-[11px] text-gray-500 mt-0.5">
                 Cash on hand {formatCurrency(summary.cashBalance)} &middot; Non-cash {formatCurrency(summary.totalBalance - summary.cashBalance)}
+              </p>
+            )}
+            {/* §7: the frozen legacy fund is reported beside the drawer,
+                never folded into it — hidden at zero so an untouched branch
+                carries no permanent ₱0.00 line. */}
+            {summary.frozenCashBalance !== undefined && summary.frozenCashBalance !== 0 && (
+              <p className="text-[11px] text-gray-500 mt-0.5">
+                Frozen {formatCurrency(summary.frozenCashBalance)}{summary.frozenCashAccounts ? ` (${summary.frozenCashAccounts})` : ''} &middot; on the books, outside the drawer
               </p>
             )}
           </div>

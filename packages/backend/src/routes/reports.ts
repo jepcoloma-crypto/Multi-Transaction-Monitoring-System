@@ -106,7 +106,8 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
               rev.reference_number AS reversal_reference,
               reverses_of.id AS reverses_id,
               reverses_of.transaction_number AS reverses_number,
-              reverses_type.name AS reverses_type_name
+              reverses_type.name AS reverses_type_name,
+              reverses_type.code AS reverses_type_code
        FROM ledger_entries le
        LEFT JOIN transactions t ON le.transaction_id = t.id
        LEFT JOIN transaction_types tt ON t.transaction_type_id = tt.id
@@ -132,7 +133,7 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
     const statement = entries.map((e: any) => {
       const {
         reversal_request_reason, reversal_audit_reason, reversal_entry_description,
-        reverses_id, reverses_number, reverses_type_name, ...entry
+        reverses_id, reverses_number, reverses_type_name, reverses_type_code, ...entry
       } = e;
       running = parseFloat(e.balance_after);
       const charges = Array.isArray(e.additional_charges)
@@ -170,6 +171,14 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
       const isCorrection = /^Correction:/.test(e.description || '');
       return {
         ...entry,
+        // The reversal's own referents were destructured out above for the
+        // trail builder, and the statement used to drop them on the floor —
+        // the compensating row's "Reversal of X #n" then had no X and no n to
+        // print. Handing them back here is what that cell reads.
+        reverses_id,
+        reverses_number,
+        reverses_type_name,
+        reverses_type_code,
         is_correction: isCorrection,
         reversal_reason: rev.reason,
         is_compensating: rev.isCompensating,
@@ -245,7 +254,7 @@ router.get('/transaction-report', authorize('reports.read'), async (req: Request
     const wc = `WHERE ${conds.join(' AND ')}`;
 
     const transactions = await query(
-      `SELECT t.*, tt.name as type_name, tt.direction, tc.name as category_name, a.name as account_name,
+      `SELECT t.*, tt.name as type_name, tt.code as type_code, tt.direction, tc.name as category_name, a.name as account_name,
               a.branch_id, b.name as branch_name
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id

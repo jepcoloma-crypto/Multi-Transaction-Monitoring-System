@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, paymentMethodCell } from '../lib/format';
+import { formatCurrency, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, paymentMethodCell, transactionTypeLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
 import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale, HandCoins } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
@@ -660,15 +660,15 @@ export default function Reports() {
                           <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">{e.reference_display || '—'}</td>
                           <td className="px-4 py-3.5 whitespace-nowrap">
                             <span
-                              title={isCompensating ? `${e.type_name || 'Adjustment'} #${e.transaction_number}` : undefined}
+                              title={isCompensating ? `${transactionTypeLabel(e.type_code, e.type_name) || 'Adjustment'} #${e.transaction_number}` : undefined}
                               className={`text-xs font-medium ${e.entry_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}
                             >
-                              {e.type_display || e.type_name || e.entry_type}
+                              {transactionTypeLabel(e.type_code, e.type_name) || e.type_display || e.entry_type}
                             </span>
                           </td>
                           <td className="px-4 py-3.5 text-sm">
                             {isCompensating
-                              ? <>Reversal of <span className="font-medium">{e.reverses_type_name || 'Transaction'} #{e.reverses_number}</span></>
+                              ? <>Reversal of <span className="font-medium">{transactionTypeLabel(e.reverses_type_code, e.reverses_type_name) || 'Transaction'} #{e.reverses_number}</span></>
                               : (e.description || e.transaction_description || e.display_name || '—')}
                             {isReversed && !isCompensating && e.reversal_reference && (
                               <div className="text-xs text-amber-600 mt-0.5">Reversed by {e.reversal_reference}</div>
@@ -735,7 +735,7 @@ export default function Reports() {
                       {reportData.transactions.slice(0, 50).map((t: any) => (
                         <tr key={t.id} className="hover:bg-gray-50">
                           <td className="px-6 py-3.5 font-mono text-sm whitespace-nowrap">{t.transaction_number}</td>
-                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{t.type_name}</td>
+                          <td className="px-6 py-3.5 text-sm whitespace-nowrap">{transactionTypeLabel(t.type_code, t.type_name)}</td>
                           <td className="px-6 py-3.5 text-sm whitespace-nowrap">{t.account_name}</td>
                           <td className="px-6 py-3.5 text-sm text-gray-600 whitespace-nowrap">{t.branch_name || '—'}</td>
                           <td className={`px-6 py-3.5 text-sm font-medium text-right whitespace-nowrap ${t.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>{t.direction === 'in' ? '+' : '-'}{formatCurrency(t.amount)}</td>

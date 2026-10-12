@@ -32,7 +32,7 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       ),
       query(
         `SELECT t.id, t.transaction_number, t.amount, t.status, t.description, t.reference_number,
-                a.name as account_name, tt.name as type_name, tt.direction
+                a.name as account_name, tt.name as type_name, tt.code as type_code, tt.direction
          FROM transactions t
          JOIN accounts a ON t.account_id = a.id
          JOIN transaction_types tt ON t.transaction_type_id = tt.id

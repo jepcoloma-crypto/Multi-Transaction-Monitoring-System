@@ -166,6 +166,11 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
           totalBalance: parseFloat(summary?.total_balance || '0'),
           cashBalance: cashSplit.drawer,
           frozenCashBalance: cashSplit.frozen,
+          // The names behind that figure, for the same reason `drawerAccounts`
+          // travels with `cashBalance`: "Frozen ₱97,249.00" says how much and
+          // not what, and a reader should not have to guess which line the
+          // books are holding it on.
+          frozenCashAccounts: cashSplit.frozenAccounts,
           activeAccounts: parseInt(summary?.active_accounts || '0'),
           lowBalanceCount: parseInt(summary?.low_balance_count || '0'),
         },

@@ -231,7 +231,7 @@ router.get('/by-customer-name', authorize('transactions.read'), async (req: Requ
     const transactions = await query(
       `SELECT t.id, t.transaction_number, t.amount, t.fee, t.transaction_date, t.status,
               t.reference_number, t.description, t.additional_charges, t.customer_name, t.customer_id,
-              tt.name as type_name, tt.direction, a.name as account_name
+              tt.name as type_name, tt.code as type_code, tt.direction, a.name as account_name
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        JOIN accounts a ON t.account_id = a.id
@@ -1434,7 +1434,7 @@ router.get('/reversals/pending', authorize('transactions.approve'), async (req: 
     const status = req.query.status === 'rejected' ? 'rejected' : 'pending';
     const rows = await query(
       `SELECT pr.*, t.transaction_number, t.amount AS original_amount, t.status AS original_status,
-              t.description, tt.name AS type_name, tt.direction, a.name AS account_name,
+              t.description, tt.name AS type_name, tt.code AS type_code, tt.direction, a.name AS account_name,
               u.username AS requested_by_username, ru.username AS decided_by_username
        FROM pending_reversals pr
        JOIN transactions t ON pr.entity_id = t.id

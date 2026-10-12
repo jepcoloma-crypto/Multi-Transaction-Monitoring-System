@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, manilaDateTimeValue, paymentMethodCell, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel } from '../lib/format';
+import { formatCurrency, manilaDateTimeValue, paymentMethodCell, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel, manilaInputToIso, transactionTypeLabel, cashBehaviorLabel } from '../lib/format';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
@@ -94,6 +94,32 @@ interface Account { id: string; name: string; provider_name: string; status: str
 interface CustomerOption { id: string; first_name: string; last_name: string; phone: string | null; }
 interface Summary { totalMoneyIn: number; totalMoneyOut: number; totalFees: number; transactionCount: number; netMovement: number; }
 
+// What POST /transactions/preview promises: the rows the save would write,
+// every reason it would refuse, and the figures the server itself resolved.
+// The form renders this answer verbatim — restating any of it here would be a
+// second opinion with nothing forcing the two to agree.
+interface PreviewLeg {
+  role: string;
+  accountId: string;
+  accountName: string;
+  entryType: 'debit' | 'credit';
+  amount: number;
+}
+interface PreviewResult {
+  legs: PreviewLeg[];
+  problems: string[];
+  fee: number;
+  netAmount: number;
+  totalAmount: number;
+  providerCharge: number;
+  status: string;
+  requiresApproval: boolean;
+  paymentMethod: string | null;
+  cashBehavior: 'in' | 'out' | 'none';
+  accountBalance: number;
+  drawerBalance: number | null;
+}
+
 export default function Transactions() {
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
@@ -120,6 +146,9 @@ export default function Transactions() {
     providerCharge: '', paymentMethod: 'cash',
   });
   const [error, setError] = useState('');
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
   const [customerHistory, setCustomerHistory] = useState<CustomerHistory | null>(null);
   const [showCustomerHistory, setShowCustomerHistory] = useState(false);
   const [editTx, setEditTx] = useState<Transaction | null>(null);
@@ -238,12 +267,12 @@ export default function Transactions() {
     if (rules.status === 'fulfilled') {
       setFeeRules(rules.value.filter(r => r.is_active));
       const seen = new Map<string, { id: string; name: string }>();
-      rules.value.filter(r => r.is_active).forEach(r => { if (!seen.has(r.type_code)) seen.set(r.type_code, { id: r.transaction_type_id, name: r.type_name }); });
-      if (allTypes.status === 'fulfilled') allTypes.value.forEach(t => { if (!seen.has(t.code)) seen.set(t.code, { id: t.id, name: t.name }); });
+      rules.value.filter(r => r.is_active).forEach(r => { if (!seen.has(r.type_code)) seen.set(r.type_code, { id: r.transaction_type_id, name: transactionTypeLabel(r.type_code, r.type_name) }); });
+      if (allTypes.status === 'fulfilled') allTypes.value.forEach(t => { if (!seen.has(t.code)) seen.set(t.code, { id: t.id, name: transactionTypeLabel(t.code, t.name) }); });
       setFilterTypes(Array.from(seen.values()));
     } else console.error('Transactions meta: fee rules failed:', rules.reason);
     if (allTypes.status === 'fulfilled' && rules.status !== 'fulfilled') {
-      setFilterTypes(allTypes.value.map(t => ({ id: t.id, name: t.name })));
+      setFilterTypes(allTypes.value.map(t => ({ id: t.id, name: transactionTypeLabel(t.code, t.name) })));
     }
     if (a.status === 'fulfilled') setAccounts(a.value.data);
     else console.error('Transactions meta: accounts failed:', a.reason);
@@ -372,33 +401,74 @@ export default function Transactions() {
     setError('');
   };
 
+  // One body for two callers: the preview that promises the rows and the save
+  // that writes them. Built here, in this one place, so the figure an operator
+  // reads before clicking Create is composed from the exact same field values
+  // as the POST that follows it — two builders would drift the moment either
+  // side gained a field, and the preview would be vouching for a submission
+  // nobody planned.
+  const buildCreateBody = () => {
+    const validCharges = createCharges.filter(c => c.description.trim() && parseFloat(c.amount) > 0)
+      .map(c => ({ description: c.description.trim(), amount: Math.round(parseFloat(c.amount) * 100) / 100 }));
+    return {
+      accountId: formData.accountId,
+      transactionTypeId: feeMode === 'manual' && selectedRule ? selectedRule.transaction_type_id : undefined,
+      feeRuleId: feeMode === 'auto' ? (formData.feeRuleId || undefined) : undefined,
+      manualFee: feeMode === 'manual',
+      amount: parseFloat(formData.amount),
+      fee: parseFloat(formData.fee),
+      referenceNumber: formData.referenceNumber || undefined,
+      description: formData.description || undefined,
+      customerName: formData.customerName || undefined,
+      customerContact: formData.customerMode === 'manual' ? formData.customerPhone : undefined,
+      transactionDate: formData.transactionDate || undefined,
+      feeAddedToBalance: formData.feeAddedToBalance,
+      additionalCharges: validCharges.length > 0 ? validCharges : [],
+      providerCharge: chargeApplies ? formData.providerCharge || undefined : undefined,
+      notes: formData.notes || undefined,
+      customerId: formData.customerMode === 'select' ? formData.customerId || undefined : undefined,
+      paymentMethod: movementRequested ? (formData.paymentMethod || undefined) : undefined,
+    };
+  };
+
+  // The leg preview (§6): debounced, because every keystroke in Amount or Fee
+  // re-prices the movement and a request per key would race its own answers.
+  // A response that has already been superseded is dropped rather than shown,
+  // so the panel never displays rows for a form the operator has moved past.
+  // Nothing to preview yet — no account, no type, no number — clears the panel
+  // instead of calling a request that could only come back refused.
+  useEffect(() => {
+    if (!showModal || !formData.accountId || !formData.feeRuleId || !Number.isFinite(parseFloat(formData.amount))) {
+      setPreview(null);
+      setPreviewError('');
+      setPreviewLoading(false);
+      return;
+    }
+    let stale = false;
+    setPreviewLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const result = await api.post<PreviewResult>('/transactions/preview', buildCreateBody());
+        if (!stale) { setPreview(result); setPreviewError(''); }
+      } catch (err: any) {
+        if (!stale) { setPreview(null); setPreviewError(err?.message || 'The preview could not be loaded'); }
+      } finally {
+        if (!stale) setPreviewLoading(false);
+      }
+    }, 350);
+    return () => { stale = true; clearTimeout(timer); };
+    // buildCreateBody reads exactly the state listed here, so a change to any
+    // of it is a change to the payload the preview is quoting.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showModal, formData, createCharges, feeMode]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     if (!formData.accountId) { setError('Please select an account'); return; }
     if (movementRequested && !formData.paymentMethod) { setError('Please select a payment method'); return; }
     try {
-      const validCharges = createCharges.filter(c => c.description.trim() && parseFloat(c.amount) > 0)
-        .map(c => ({ description: c.description.trim(), amount: Math.round(parseFloat(c.amount) * 100) / 100 }));
-      await api.post('/transactions', {
-        accountId: formData.accountId,
-        transactionTypeId: feeMode === 'manual' && selectedRule ? selectedRule.transaction_type_id : undefined,
-        feeRuleId: feeMode === 'auto' ? (formData.feeRuleId || undefined) : undefined,
-        manualFee: feeMode === 'manual',
-        amount: parseFloat(formData.amount),
-        fee: parseFloat(formData.fee),
-        referenceNumber: formData.referenceNumber || undefined,
-        description: formData.description || undefined,
-        customerName: formData.customerName || undefined,
-        customerContact: formData.customerMode === 'manual' ? formData.customerPhone : undefined,
-        transactionDate: formData.transactionDate || undefined,
-        feeAddedToBalance: formData.feeAddedToBalance,
-        additionalCharges: validCharges.length > 0 ? validCharges : [],
-        providerCharge: chargeApplies ? formData.providerCharge || undefined : undefined,
-        notes: formData.notes || undefined,
-        customerId: formData.customerMode === 'select' ? formData.customerId || undefined : undefined,
-        paymentMethod: movementRequested ? (formData.paymentMethod || undefined) : undefined,
-      });
+      await api.post('/transactions', buildCreateBody());
       setShowModal(false);
       setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: 'cash' });
       fetchTransactions(pagination.page);
@@ -579,7 +649,7 @@ export default function Transactions() {
                   <td className="px-4 py-3 text-sm">
                     <div className="flex items-center gap-1">
                       {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
-                      <span>{tx.type_name}</span>
+                      <span>{transactionTypeLabel(tx.type_code, tx.type_name)}</span>
                     </div>
                   </td>
                   <td className="px-4 py-3 text-sm">
@@ -656,7 +726,7 @@ export default function Transactions() {
               )}
               <div className="grid grid-cols-2 gap-3">
                 <div><p className="text-xs text-gray-500">Account</p><p className="font-medium">{showDetail.account_name}</p></div>
-                <div><p className="text-xs text-gray-500">Type</p><p className="font-medium">{showDetail.type_name}{showDetail.category_name ? ` / ${showDetail.category_name}` : ''}</p></div>
+                <div><p className="text-xs text-gray-500">Type</p><p className="font-medium">{transactionTypeLabel(showDetail.type_code, showDetail.type_name)}{showDetail.category_name ? ` / ${showDetail.category_name}` : ''}</p></div>
                 <div><p className="text-xs text-gray-500">Amount</p><p className={`font-bold ${showDetail.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>{formatCurrency(showDetail.amount)}</p></div>
                 <div><p className="text-xs text-gray-500">Fee (company income)</p><p className="font-medium text-yellow-600">{formatCurrency(showDetail.fee)}</p></div>
                 {(showDetail.status === 'completed' || showDetail.status === 'reversed') && (
@@ -799,13 +869,20 @@ export default function Transactions() {
                       <option value="">Select fee rule</option>
                       {feeRules.map(r => (
                         <option key={r.id} value={r.id}>
-                          [{r.direction.toUpperCase()}] {r.type_name}{r.category_name ? ` / ${r.category_name}` : ''} &mdash; {r.name} ({r.calculation_method === 'per_amount' ? 'per amount' : r.fee_type === 'percentage' ? `${r.fee_value}%` : formatCurrency(r.fee_value)})
+                          [{r.direction.toUpperCase()}] {transactionTypeLabel(r.type_code, r.type_name)}{r.category_name ? ` / ${r.category_name}` : ''} &mdash; {r.name} ({r.calculation_method === 'per_amount' ? 'per amount' : r.fee_type === 'percentage' ? `${r.fee_value}%` : formatCurrency(r.fee_value)})
                         </option>
                       ))}
                     </select>
                     {selectedRule && (
-                      <p className="text-xs text-gray-500 mt-1">
-                        Type: {selectedRule.type_name}{selectedRule.category_name ? ` > ${selectedRule.category_name}` : ''} &bull; {selectedRule.tiers && selectedRule.tiers.length > 0 ? `${selectedRule.tiers.length} tier(s)${selectedRule.calculation_method === 'per_amount' ? ' · per amount' : ''}` : selectedRule.fee_type === 'flat_per_step' ? `${formatCurrency(selectedRule.fee_value)} + ${formatCurrency(selectedRule.step_fee)}/${formatCurrency(selectedRule.step_amount)}` : `Fee: ${selectedRule.fee_type === 'percentage' ? `${selectedRule.fee_value}%` : formatCurrency(selectedRule.fee_value)}`}
+                      <p className="text-xs text-gray-500 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                        {preview?.cashBehavior && (
+                          <span className={preview.cashBehavior === 'in' ? 'badge-green' : preview.cashBehavior === 'out' ? 'badge-red' : 'badge-gray'}>
+                            {cashBehaviorLabel(preview.cashBehavior)}
+                          </span>
+                        )}
+                        <span>
+                          Type: {transactionTypeLabel(selectedRule.type_code, selectedRule.type_name)}{selectedRule.category_name ? ` > ${selectedRule.category_name}` : ''} &bull; {selectedRule.tiers && selectedRule.tiers.length > 0 ? `${selectedRule.tiers.length} tier(s)${selectedRule.calculation_method === 'per_amount' ? ' · per amount' : ''}` : selectedRule.fee_type === 'flat_per_step' ? `${formatCurrency(selectedRule.fee_value)} + ${formatCurrency(selectedRule.step_fee)}/${formatCurrency(selectedRule.step_amount)}` : `Fee: ${selectedRule.fee_type === 'percentage' ? `${selectedRule.fee_value}%` : formatCurrency(selectedRule.fee_value)}`}
+                        </span>
                       </p>
                     )}
                   </div>
@@ -866,6 +943,14 @@ export default function Transactions() {
                     <div>
                       <RequiredLabel htmlFor="transactionDate">Date &amp; Time</RequiredLabel>
                       <input id="transactionDate" type="datetime-local" required value={formData.transactionDate} onChange={(e) => setFormData({ ...formData, transactionDate: e.target.value })} className="input text-sm" />
+                      {/* The field defaults to *now* and stays editable to the
+                          minute; naming the instant it will book keeps a
+                          back-dated entry looking like one before it posts. */}
+                      {manilaInputToIso(formData.transactionDate) ? (
+                        <p className="text-[11px] text-gray-500 mt-1">
+                          Books on {manilaDateTimeLabel(manilaInputToIso(formData.transactionDate))} (Manila time)
+                        </p>
+                      ) : null}
                     </div>
                     <div>
                       <RequiredLabel htmlFor="referenceNumber">Reference #</RequiredLabel>
@@ -1062,9 +1147,58 @@ export default function Transactions() {
                 </FormSection>
               )}
 
+              {/* §6's leg preview: the rows the save would write, answered by
+                  the server that will write them. Refusals come first — a
+                  reason the save would fail is worth more than the rows it
+                  will never reach — and the badge beside the type above says
+                  the same answer's cash side out loud. */}
+              {(preview || previewLoading || previewError) && (
+                <FormSection title="This will post">
+                  {previewError && (
+                    <p className="text-sm text-red-600">{previewError}</p>
+                  )}
+                  {!preview && previewLoading && !previewError && (
+                    <p className="text-sm text-gray-500">Checking the rows&hellip;</p>
+                  )}
+                  {preview && (
+                    <div className="rounded-lg border border-gray-200 overflow-hidden">
+                      {preview.problems.length > 0 && (
+                        <div className="bg-red-50 px-3 py-2 border-b border-red-100">
+                          <ul className="list-disc list-inside space-y-0.5 text-sm text-red-700">
+                            {preview.problems.map((problem, i) => (
+                              <li key={i}>{problem}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <ul className="divide-y divide-gray-100 text-sm bg-white">
+                        {preview.legs.map((leg, i) => (
+                          <li key={i} className="flex items-center justify-between gap-3 px-3 py-2">
+                            <span className="text-gray-600">
+                              {leg.role === 'drawer' ? 'Cash drawer' : leg.role === 'charge' ? 'Provider charge' : 'Account'}
+                              {' \u00b7 '}{leg.accountName}
+                            </span>
+                            <span className={`font-medium tabular-nums whitespace-nowrap ${leg.entryType === 'credit' ? 'text-green-600' : 'text-red-600'}`}>
+                              {leg.entryType === 'credit' ? '+' : '\u2212'}{formatCurrency(leg.amount)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-gray-50 px-3 py-2 border-t text-xs text-gray-600">
+                        <span>Fee: <strong>{formatCurrency(preview.fee)}</strong></span>
+                        <span className={preview.status === 'completed' ? 'badge-green' : 'badge-yellow'}>
+                          {preview.status === 'completed' ? 'Completes now' : 'Pending \u2014 needs approval'}
+                        </span>
+                        <span>{cashBehaviorLabel(preview.cashBehavior) || 'No cash moves'}</span>
+                      </div>
+                    </div>
+                  )}
+                </FormSection>
+              )}
+
               <div className="flex justify-end gap-2 border-t pt-4">
                 <button type="button" onClick={() => setShowModal(false)} className="btn-secondary">Cancel</button>
-                <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!!hasInsufficientBalance || !formData.referenceNumber.trim() || (movementRequested && !formData.paymentMethod)}>Create Transaction</button>
+                <button type="submit" className="btn-primary disabled:opacity-50 disabled:cursor-not-allowed" disabled={!!hasInsufficientBalance || !formData.referenceNumber.trim() || (movementRequested && !formData.paymentMethod) || (preview?.problems.length ?? 0) > 0 || previewLoading}>Create Transaction</button>
               </div>
             </form>
           </div>
@@ -1077,7 +1211,7 @@ export default function Transactions() {
             <div className="flex items-center justify-between p-4 border-b">
               <div>
                 <h3 className="text-lg font-semibold">Edit Transaction #{editTx.transaction_number}</h3>
-                <p className="text-xs text-gray-500">{editTx.account_name} &bull; {editTx.type_name}</p>
+                <p className="text-xs text-gray-500">{editTx.account_name} &bull; {transactionTypeLabel(editTx.type_code, editTx.type_name)}</p>
               </div>
               <button onClick={() => setEditTx(null)}><X className="w-5 h-5" /></button>
             </div>
@@ -1205,7 +1339,7 @@ export default function Transactions() {
                       <div className="flex items-center gap-3">
                         {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                         <div>
-                          <p className="text-sm font-medium">#{tx.transaction_number} — {tx.type_name}</p>
+                          <p className="text-sm font-medium">#{tx.transaction_number} — {transactionTypeLabel(tx.type_code, tx.type_name)}</p>
                           <p className="text-xs text-gray-500">{tx.account_name} • {manilaDayLabel(tx.transaction_date)}</p>
                         </div>
                       </div>

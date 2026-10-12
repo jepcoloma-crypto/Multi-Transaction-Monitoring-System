@@ -14,7 +14,7 @@ import { NO_OPEN_SHIFT_HINT } from '../hooks/useShiftGate';
 import {
   Wallet, Landmark, Plus, Check, X, RefreshCw, ShieldAlert, AlertTriangle, Inbox, Receipt,
   TrendingUp, TrendingDown, Coins, ArrowRight, Calendar, Clock, List, Printer,
-  Search, Download, ChevronLeft, ChevronRight, Eye, RotateCcw, HandCoins,
+  Search, Download, ChevronLeft, ChevronRight, Eye, RotateCcw, HandCoins, Snowflake,
 } from 'lucide-react';
 
 // NUMERIC columns arrive as strings and a shift's close fields are still null
@@ -48,6 +48,8 @@ interface Statement {
   totals: { current: number };
   drawer?: number;
   drawerAccounts?: string;
+  frozenCash?: number;
+  frozenCashAccounts?: string;
   expenseApprovalThreshold?: number;
   borrowingsOutstanding?: number;
 }
@@ -1414,6 +1416,25 @@ export default function CashManagement() {
                 </div>
                 <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{formatCurrency(statement.drawer)}</p>
                 <p className="text-sm text-gray-500">{cashOnHandNote(statement.drawerAccounts)}</p>
+              </div>
+            )}
+
+            {/* §7's frozen line: cash the books still count but nobody can
+                open. Beside the till card, never inside it — the drawer
+                figure has to stay the number an operator matches against a
+                physical count, and folded-in legacy money would miss it by
+                the centavo every time. Hidden at zero like borrowings: a
+                branch with nothing frozen says so by showing nothing. */}
+            {statement.frozenCash !== undefined && statement.frozenCash !== 0 && (
+              <div className="card border border-gray-300">
+                <div className="flex items-center gap-2 text-gray-600">
+                  <Snowflake className="w-4 h-4" />
+                  <p className="text-xs font-semibold uppercase tracking-wide">Legacy cash &mdash; frozen</p>
+                </div>
+                <p className="text-2xl font-bold mt-2 tabular-nums text-gray-700">{formatCurrency(statement.frozenCash)}</p>
+                <p className="text-sm text-gray-500">
+                  {statement.frozenCashAccounts || 'Closed cash account'} &mdash; still on the books, outside every drawer
+                </p>
               </div>
             )}
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, manilaDayLabel, manilaDateTimeLabel, manilaClockLabel } from '../lib/format';
+import { formatCurrency, manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, transactionTypeLabel } from '../lib/format';
 import { Wallet, TrendingUp, TrendingDown, ArrowUpDown, ArrowRight, Coins, Smartphone, RefreshCw, Calendar } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
@@ -267,7 +267,7 @@ export default function Dashboard() {
             {recentTransactions.slice(0, 6).map((tx) => (
               <div key={tx.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-gray-900 truncate">{tx.type_name}</p>
+                  <p className="text-sm font-medium text-gray-900 truncate">{transactionTypeLabel(tx.type_code, tx.type_name)}</p>
                   <p className="text-xs text-gray-500">{tx.account_name} | {manilaDayLabel(tx.transaction_date)}</p>
                 </div>
                 <div className="text-right ml-3">

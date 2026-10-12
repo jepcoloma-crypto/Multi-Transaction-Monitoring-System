@@ -6,6 +6,7 @@ import {
   manilaDateTimeValue,
   manilaInputToIso,
   paymentMethodOptions,
+  transactionTypeLabel,
 } from '../lib/format';
 import Pagination from '../components/Pagination';
 import { AlertTriangle, CheckCircle2, Pencil, RefreshCw, Search, X } from 'lucide-react';
@@ -116,7 +117,7 @@ const describe = (type: SourceType, row: ListedRow) => {
     if (row.description) bits.push(String(row.description));
     return {
       title: bits.join(' · '),
-      subtitle: [row.account_name, row.type_name].filter(Boolean).join(' · '),
+      subtitle: [row.account_name, transactionTypeLabel(row.type_code as string | undefined, row.type_name as string | undefined)].filter(Boolean).join(' · '),
       amount: row.amount,
     };
   }

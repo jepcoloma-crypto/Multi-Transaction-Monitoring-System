@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, manilaDayLabel } from '../lib/format';
+import { formatCurrency, manilaDayLabel, transactionTypeLabel } from '../lib/format';
 import { Plus, Search, Edit2, Trash2, X, Phone, Mail, MapPin, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
 
 interface Customer {
@@ -325,7 +325,7 @@ export default function Customers() {
                           <div className="flex items-center gap-2">
                             {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                             <div>
-                              <p className="text-xs font-medium">#{tx.transaction_number} - {tx.type_name}</p>
+                              <p className="text-xs font-medium">#{tx.transaction_number} - {transactionTypeLabel(tx.type_code, tx.type_name)}</p>
                               <p className="text-xs text-gray-500">{tx.account_name} | {manilaDayLabel(tx.transaction_date)}</p>
                             </div>
                           </div>
@@ -348,7 +348,7 @@ export default function Customers() {
                           <div className="flex items-center gap-2">
                             {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                             <div>
-                              <p className="text-xs font-medium">#{tx.transaction_number} - {tx.type_name} <span className="text-yellow-600">(name match)</span></p>
+                              <p className="text-xs font-medium">#{tx.transaction_number} - {transactionTypeLabel(tx.type_code, tx.type_name)} <span className="text-yellow-600">(name match)</span></p>
                               <p className="text-xs text-gray-500">{tx.account_name} | {manilaDayLabel(tx.transaction_date)}</p>
                             </div>
                           </div>
@@ -412,7 +412,7 @@ export default function Customers() {
                       <div className="flex items-center gap-3">
                         {tx.direction === 'in' ? <ArrowDownLeft className="w-4 h-4 text-green-500" /> : <ArrowUpRight className="w-4 h-4 text-red-500" />}
                         <div>
-                          <p className="text-sm font-medium">#{tx.transaction_number} — {tx.type_name}</p>
+                          <p className="text-sm font-medium">#{tx.transaction_number} — {transactionTypeLabel(tx.type_code, tx.type_name)}</p>
                           <p className="text-xs text-gray-500">{tx.account_name} • {manilaDayLabel(tx.transaction_date)}</p>
                         </div>
                       </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, transactionTypeLabel } from '../lib/format';
 import { Plus, Edit2, Trash2, X, DollarSign, Percent, Layers } from 'lucide-react';
 
 interface TransactionType { id: string; name: string; code: string; direction: string; }
@@ -156,7 +156,7 @@ export default function TransactionFees() {
   };
 
   const grouped = filtered.reduce<Record<string, FeeConfig[]>>((acc, f) => {
-    const key = f.type_name;
+    const key = transactionTypeLabel(f.type_code, f.type_name);
     if (!acc[key]) acc[key] = [];
     acc[key].push(f);
     return acc;

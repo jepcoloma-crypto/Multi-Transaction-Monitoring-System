@@ -93,7 +93,7 @@ router.get('/unmatched/:accountId', authorize('reconciliation.read'), async (req
     );
 
     const transactions = await query(
-      `SELECT t.*, tt.name as type_name, tt.direction FROM transactions t
+      `SELECT t.*, tt.name as type_name, tt.code as type_code, tt.direction FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        WHERE t.account_id = $1 AND t.status = 'completed'
        AND t.id NOT IN (SELECT transaction_id FROM statement_matches)
@@ -115,7 +115,7 @@ router.post('/auto-match', authorize('reconciliation.write'), async (req: Reques
     );
 
     const unmatchedTransactions = await query(
-      `SELECT t.*, tt.name as type_name, tt.direction FROM transactions t
+      `SELECT t.*, tt.name as type_name, tt.code as type_code, tt.direction FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        WHERE t.account_id = $1 AND t.status = 'completed'
        AND t.id NOT IN (SELECT transaction_id FROM statement_matches)`,
@@ -194,7 +194,7 @@ router.get('/matches/:accountId', authorize('reconciliation.read'), async (req: 
   try {
     const matches = await query(
       `SELECT sm.*, bs.statement_date, bs.description as stmt_desc, bs.debit as stmt_debit, bs.credit as stmt_credit, bs.reference_number as stmt_ref,
-              t.transaction_number, t.amount as txn_amount, t.transaction_date as txn_date, tt.name as type_name, tt.direction
+              t.transaction_number, t.amount as txn_amount, t.transaction_date as txn_date, tt.name as type_name, tt.code as type_code, tt.direction
        FROM statement_matches sm
        JOIN bank_statements bs ON sm.statement_id = bs.id
        JOIN transactions t ON sm.transaction_id = t.id

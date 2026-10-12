@@ -2,11 +2,11 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Search, X, Wallet, ArrowLeftRight, ArrowUpDown, Smartphone, Users } from 'lucide-react';
 import { api } from '../lib/api';
-import { formatCurrency } from '../lib/format';
+import { formatCurrency, transactionTypeLabel } from '../lib/format';
 
 interface SearchResult {
   accounts: { id: string; name: string; masked_account_number: string; current_balance: number }[];
-  transactions: { id: string; transaction_number: number; amount: number; account_name: string; type_name: string; direction: string; status: string }[];
+  transactions: { id: string; transaction_number: number; amount: number; account_name: string; type_name: string; type_code?: string | null; direction: string; status: string }[];
   transfers: { id: string; transfer_number: number; transfer_amount: number; source_name: string; destination_name: string; status: string }[];
   loading: { id: string; transaction_number: number; customer_number: string; total_revenue: number; product_name: string; status: string }[];
   users: { id: string; email: string; first_name: string; last_name: string }[];
@@ -104,7 +104,7 @@ export default function GlobalSearch() {
                   <p className="px-4 py-1 text-xs font-semibold text-gray-500 uppercase flex items-center gap-1"><ArrowLeftRight className="w-3 h-3" /> Transactions</p>
                   {results.transactions.map(t => (
                     <button key={t.id} onClick={() => goTo('/transactions')} className="w-full px-4 py-2 text-left hover:bg-gray-50 flex items-center justify-between">
-                      <div><p className="text-sm font-medium">#{t.transaction_number} — {t.type_name}</p><p className="text-xs text-gray-500">{t.account_name}</p></div>
+                      <div><p className="text-sm font-medium">#{t.transaction_number} — {transactionTypeLabel(t.type_code, t.type_name)}</p><p className="text-xs text-gray-500">{t.account_name}</p></div>
                       <p className={`text-sm font-medium ${t.direction === 'in' ? 'text-green-600' : 'text-red-600'}`}>{t.direction === 'in' ? '+' : '-'}{formatCurrency(t.amount)}</p>
                     </button>
                   ))}
