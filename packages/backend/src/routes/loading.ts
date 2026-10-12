@@ -3,6 +3,8 @@ import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { branchClause, assertBranch } from '../middleware/scope';
 import { assertOpenShift } from '../middleware/shiftGate';
+import { updateAccountBalance, lockAccounts } from '../services/balance';
+import { loadingSaleLegs } from '../services/loadingPosting';
 import { manilaDayAtCurrentTime } from '../services/manilaTime';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
@@ -158,7 +160,7 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     const product = await client.query('SELECT * FROM loading_products WHERE id = $1 AND is_active = true', [productId]);
     if (!product.rows[0]) throw createError(404, 'Product not found');
 
-    const acct = await client.query('SELECT id, name, current_balance, status, created_by FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
+    const acct = await client.query('SELECT id, name, current_balance, status, created_by FROM accounts WHERE id = $1', [accountId]);
     if (!acct.rows[0]) throw createError(404, 'Account not found');
     // Loading deducts cost from this account, so it must be the caller's.
     await assertBranch(req, accountId, 'loading.write_all', 'Account not found');
@@ -169,17 +171,59 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
     await assertOpenShift(accountId, undefined, { eventDate: bookedAt });
 
     const qty = parseInt(quantity || '1');
-    const unitCost = parseFloat(product.rows[0].cost_price);
-    const unitPrice = parseFloat(product.rows[0].selling_price);
-    const totalCost = unitCost * qty;
-    const totalRevenue = unitPrice * qty;
-    const profit = totalRevenue - totalCost;
+    // Everything a cash load sale does to the two pools — the channel's
+    // deduction and the drawer's increase — is decided in loadingSaleLegs, the
+    // same pure function the entry preview reads, so the figure an operator is
+    // shown before saving is the figure this commit posts. The drawer leg is
+    // the half that was missing: the selling price is physical cash the customer
+    // handed over, and until now only the cost side was ever booked, which is
+    // why Cash on hand under-reported load sales by exactly their retail value.
+    const legs = loadingSaleLegs({
+      unitCost: product.rows[0].cost_price,
+      unitPrice: product.rows[0].selling_price,
+      quantity: qty,
+      paymentMethod: paymentMethod || 'cash',
+      fees: { providerConvenienceFee: product.rows[0].provider_convenience_fee },
+    });
+    const totalCost = parseFloat(product.rows[0].cost_price) * qty;
+    const totalRevenue = parseFloat(product.rows[0].selling_price) * qty;
+    const profit = legs.margin;
     const providerConvenienceFee = parseFloat(product.rows[0].provider_convenience_fee || '0') * qty;
     const companyAdditionalCharge = parseFloat(product.rows[0].company_additional_charge || '0');
-    const totalCustomerCharge = providerConvenienceFee + companyAdditionalCharge;
-    const totalBalanceDeduction = totalCost + providerConvenienceFee;
+    const totalBalanceDeduction = legs.channelDeduction;
 
-    if (parseFloat(acct.rows[0].current_balance) < totalBalanceDeduction) throw createError(400, 'Insufficient balance for loading purchase');
+    // When the account paid is itself the drawer, cost and selling price move on
+    // one balance and there is no second leg to write — the same guard
+    // resolveDrawerLeg applies to a cash movement booked straight onto cash.
+    const drawer = legs.drawerIncrease > 0
+      ? await client.query(
+          `SELECT a.id FROM accounts a
+           JOIN account_types t ON t.id = a.account_type_id
+           WHERE t.code = 'cash' AND a.status <> 'closed'
+             AND a.branch_id = (SELECT branch_id FROM accounts WHERE id = $1)
+           ORDER BY a.created_at ASC
+           LIMIT 1`,
+          [accountId]
+        )
+      : null;
+    const drawerId = drawer && drawer.rows[0] ? drawer.rows[0].id : null;
+    // The drawer is credited, so it can only gain; refusing to post one leg
+    // while quietly dropping the other is how a drawer drifts out of step with
+    // the statements meant to explain it.
+    const postDrawerLeg = drawerId !== null && legs.drawerIncrease > 0;
+    if (legs.drawerIncrease > 0 && !postDrawerLeg) {
+      throw createError(400, 'This branch has no cash account to take the money from');
+    }
+
+    // Both accounts are locked before anything is written, in sorted id order —
+    // the same order lockAccounts gives every other path that holds more than
+    // one account, so a concurrent load sale or cash movement can never deadlock
+    // against this one by locking the same pair the other way. The balance is
+    // read after the lock, so the check below sees the figure this transaction
+    // is about to move.
+    await lockAccounts(client, postDrawerLeg ? [accountId, drawerId] : [accountId]);
+    const lockedBalance = await client.query('SELECT CAST(current_balance AS NUMERIC(15,2)) AS current_balance FROM accounts WHERE id = $1', [accountId]);
+    if (parseFloat(lockedBalance.rows[0].current_balance) < totalBalanceDeduction) throw createError(400, 'Insufficient balance for loading purchase');
 
     const txNum = await client.query("SELECT nextval('loading_transactions_transaction_number_seq') as nextval");
     const txDate = bookedAt;
@@ -188,24 +232,44 @@ router.post('/', authorize('loading.write'), async (req: Request, res: Response,
        unit_cost, unit_price, total_cost, total_revenue, profit, provider_convenience_fee, company_additional_charge,
        payment_method, reference_number, created_by, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE($16::timestamptz, NOW())) RETURNING *`,
-      [txNum.rows[0].nextval, accountId, productId, customerNumber, qty, unitCost, unitPrice, totalCost, totalRevenue, profit,
+      [txNum.rows[0].nextval, accountId, productId, customerNumber, qty,
+       parseFloat(product.rows[0].cost_price), parseFloat(product.rows[0].selling_price),
+       totalCost, totalRevenue, profit,
        providerConvenienceFee, companyAdditionalCharge,
        paymentMethod || 'cash', referenceNumber || null, req.user!.userId, txDate]
     )).rows[0];
 
-    // Deduct from account: cost + provider convenience fee
-    const newBalance = parseFloat(acct.rows[0].current_balance) - totalBalanceDeduction;
-    await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, accountId]);
-
+    // Channel leg: cost plus the provider's convenience fee leaves the balance
+    // that bought the load.
+    const newBalance = await updateAccountBalance(accountId, totalBalanceDeduction, 'debit', client);
     await client.query(
       `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
        VALUES ($1, 'loading', $2, 'debit', $3, $4, $5, COALESCE($6::timestamptz, NOW()))`,
-      [accountId, loadingTx.id, totalBalanceDeduction, newBalance, `Loading sale to ${customerNumber}: ${product.rows[0].name}${providerConvenienceFee > 0 ? ` (incl. ₱${providerConvenienceFee} conv. fee)` : ''}`, txDate]
+      [accountId, loadingTx.id, totalBalanceDeduction, newBalance,
+       `Loading sale to ${customerNumber}: ${product.rows[0].name}${providerConvenienceFee > 0 ? ` (incl. ₱${providerConvenienceFee} conv. fee)` : ''}`,
+       txDate]
     );
+
+    // Drawer leg: the selling price is physical cash the customer handed over,
+    // so it is credited to the branch's cash account. This is the half load
+    // sales never booked — Cash on hand was short by exactly the retail value
+    // of every cash sale. It carries the same 'loading' source as the channel
+    // leg, so both rows trace back to the one sale.
+    if (postDrawerLeg) {
+      const drawerBalance = await updateAccountBalance(drawerId, legs.drawerIncrease, 'credit', client);
+      await client.query(
+        `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
+         VALUES ($1, 'loading', $2, 'credit', $3, $4, $5, COALESCE($6::timestamptz, NOW()))`,
+        [drawerId, loadingTx.id, legs.drawerIncrease, drawerBalance,
+         `Cash from loading sale to ${customerNumber}: ${product.rows[0].name} (selling price, incl. ₱${legs.margin} margin)`,
+         txDate]
+      );
+    }
 
     await client.query('COMMIT');
 
-    await createAuditLog({ userId: req.user!.userId, action: 'loading.created', entity: 'loading_transaction', entityId: loadingTx.id, ipAddress: req.ip });
+    await createAuditLog({ userId: req.user!.userId, action: 'loading.created', entity: 'loading_transaction', entityId: loadingTx.id, ipAddress: req.ip,
+      newData: postDrawerLeg ? { drawerLeg: legs.drawerIncrease, channelDeduction: totalBalanceDeduction, margin: legs.margin } : undefined });
 
     res.status(201).json({ success: true, data: loadingTx });
   } catch (error) { await client.query('ROLLBACK'); next(error); } finally { client.release(); }
@@ -246,6 +310,15 @@ router.delete('/:id', authorize('loading.delete'), async (req: Request, res: Res
 
     const entryAmount = parseFloat(loadingTx.total_cost) + parseFloat(loadingTx.provider_convenience_fee || '0');
 
+    // The drawer's half of a cash sale, found by the source link rather than by
+    // amount and date: it carries the sale's id, and a search keyed on figures
+    // would take the first row that happened to match them.
+    const drawerRow = (await client.query(
+      `SELECT id, account_id, amount FROM ledger_entries
+       WHERE source_type = 'loading' AND source_id = $1 AND entry_type = 'credit'`,
+      [req.params.id]
+    )).rows[0];
+
     // Restore account balance for completed loading transactions
     if (loadingTx.status === 'completed') {
       // Unwinding a settled loading transaction puts money back, so it is
@@ -259,12 +332,24 @@ router.delete('/:id', authorize('loading.delete'), async (req: Request, res: Res
         `UPDATE accounts SET current_balance = current_balance + $1, updated_at = NOW() WHERE id = $2`,
         [entryAmount, loadingTx.account_id]
       );
+      // The selling price goes back out of the till it went into. Left behind,
+      // a deleted cash sale would strand its drawer leg and count the drawer
+      // short by the retail value of a sale the books no longer show.
+      if (drawerRow) {
+        await client.query(
+          `UPDATE accounts SET current_balance = current_balance - $1, updated_at = NOW() WHERE id = $2`,
+          [drawerRow.amount, drawerRow.account_id]
+        );
+      }
     }
 
     await client.query(
       `DELETE FROM ledger_entries WHERE account_id = $1 AND entry_type = 'debit' AND amount = $2 AND entry_date = $3`,
       [loadingTx.account_id, entryAmount, loadingTx.created_at]
     );
+    if (drawerRow) {
+      await client.query(`DELETE FROM ledger_entries WHERE id = $1`, [drawerRow.id]);
+    }
 
     await client.query('DELETE FROM loading_transactions WHERE id = $1', [req.params.id]);
     await client.query('COMMIT');

@@ -4,6 +4,8 @@ import { authenticate, authorize } from '../middleware/auth';
 import { resolveNewAccountBranch } from '../middleware/scope';
 import { createAuditLog } from '../services/audit';
 import { importTypeRefusal } from '../services/cashManagement';
+import { loadingSaleLegs } from '../services/loadingPosting';
+import { lockAccounts, updateAccountBalance } from '../services/balance';
 import multer from 'multer';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -235,25 +237,67 @@ router.post('/loading', authorize('loading.write'), upload.single('file'), async
 
         const unitCost = parseFloat(product.cost_price);
         const unitPrice = parseFloat(product.selling_price);
+        // Imported rows carry their own payment method when they have one. A
+        // row that names no method is not assumed to be cash: a phantom peso in
+        // the till is worse than a missing one, and the drawer leg is the whole
+        // reason this path now shares the entry route's arithmetic.
+        const paymentMethod = row.payment_method ? String(row.payment_method).trim() : null;
+        const legs = loadingSaleLegs({
+          unitCost, unitPrice, quantity, paymentMethod,
+        });
+        // The row's own figures stay what the columns say — cost and revenue
+        // as sold — while the legs decide what moves where. The margin is
+        // centavo-safe, so a profit that would have landed a fraction off in
+        // binary floats matches what the drawer actually took.
         const totalCost = unitCost * quantity;
         const totalRevenue = unitPrice * quantity;
-        const profit = totalRevenue - totalCost;
+        const profit = legs.margin;
 
         const txNum = await client.query("SELECT nextval('loading_transactions_transaction_number_seq') as nextval");
         const importedLoading = (await client.query(
-          `INSERT INTO loading_transactions (transaction_number, account_id, product_id, customer_number, quantity, unit_cost, unit_price, total_cost, total_revenue, profit, status, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed', $11)
+          `INSERT INTO loading_transactions (transaction_number, account_id, product_id, customer_number, quantity, unit_cost, unit_price, total_cost, total_revenue, profit, payment_method, status, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'completed', $12)
            RETURNING id`,
-          [txNum.rows[0].nextval, accountId, product.id, customerNumber, quantity, unitCost, unitPrice, totalCost, totalRevenue, profit, req.user!.userId]
+          [txNum.rows[0].nextval, accountId, product.id, customerNumber, quantity, unitCost, unitPrice,
+           legs.channelDeduction, totalRevenue, profit, paymentMethod, req.user!.userId]
         )).rows[0];
 
-        const acct = await client.query('SELECT current_balance FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
-        const newBalance = parseFloat(acct.rows[0].current_balance) - totalCost;
-        await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, accountId]);
-        await client.query(
-          `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date) VALUES ($1, 'loading', $2, 'debit', $3, $4, $5, NOW())`,
-          [importedLoading.id, accountId, totalCost, newBalance, `Imported loading sale: ${productName} x${quantity}`]
-        );
+        // Both legs are written inside this one transaction and both accounts
+        // are locked in sorted id order, the same order the entry route takes,
+        // so a concurrent sale cannot deadlock against the import.
+        if (legs.drawerIncrease > 0) {
+          const drawer = await queryOne<{ id: string }>(
+            `SELECT a.id FROM accounts a
+             JOIN account_types t ON t.id = a.account_type_id
+             WHERE t.code = 'cash' AND a.status <> 'closed'
+               AND a.branch_id = (SELECT branch_id FROM accounts WHERE id = $1)
+             ORDER BY a.created_at ASC
+             LIMIT 1`,
+            [accountId]
+          );
+          if (!drawer) throw new Error('This branch has no cash account to take the money from');
+          await lockAccounts(client, [accountId, drawer.id]);
+
+          const channelBalance = await updateAccountBalance(accountId, legs.channelDeduction, 'debit', client);
+          await client.query(
+            `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date) VALUES ($1, 'loading', $2, 'debit', $3, $4, $5, NOW())`,
+            [accountId, importedLoading.id, legs.channelDeduction, channelBalance, `Imported loading sale: ${productName} x${quantity}`]
+          );
+
+          const drawerBalance = await updateAccountBalance(drawer.id, legs.drawerIncrease, 'credit', client);
+          await client.query(
+            `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date) VALUES ($1, 'loading', $2, 'credit', $3, $4, $5, NOW())`,
+            [drawer.id, importedLoading.id, legs.drawerIncrease, drawerBalance,
+             `Cash from imported loading sale: ${productName} x${quantity} (selling price, incl. ₱${legs.margin} margin)`]
+          );
+        } else {
+          await lockAccounts(client, [accountId]);
+          const channelBalance = await updateAccountBalance(accountId, legs.channelDeduction, 'debit', client);
+          await client.query(
+            `INSERT INTO ledger_entries (account_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date) VALUES ($1, 'loading', $2, 'debit', $3, $4, $5, NOW())`,
+            [accountId, importedLoading.id, legs.channelDeduction, channelBalance, `Imported loading sale: ${productName} x${quantity}`]
+          );
+        }
 
         results.created++;
       } catch (err: any) {
