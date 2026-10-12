@@ -208,6 +208,14 @@ router.post('/gap-fixes/:fixId/approve', authorize('transactions.correct'), asyn
     await client.query('SELECT id FROM accounts WHERE id = $1 FOR UPDATE', [fix.account_id]);
 
     const { accounts, entries } = await loadAccountsAndEntries([fix.account_id], client);
+
+    // Closed is closed: a gap fix writes a row or moves a balance, and the
+    // cutover's frozen line does not move after it is set.
+    const frozen = closedAccountNames(accounts);
+    if (frozen.length > 0) {
+      throw createError(409, `Cannot apply: ${frozen.join(', ')} ${frozen.length === 1 ? 'is' : 'are'} closed`);
+    }
+
     const audit = auditLedger(accounts, entries).accounts[0];
     const plan = planGapFix(audit, fix.direction);
     if (plan.problems.length > 0) throw createError(409, `Cannot apply: ${plan.problems.join('; ')}`);
@@ -328,6 +336,11 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
     const { accounts, entries } = await loadAccountsAndEntries(observed.accountIds);
     const before = auditLedger(accounts, entries);
 
+    // What apply refuses, this preview reports: a verdict of "safe" on a
+    // closed account would promise a commit that would throw (closed is
+    // closed — the cutover's frozen line does not move).
+    const frozen = closedAccountNames(accounts);
+
     const wantsAmounts = amounts !== undefined && amounts !== null;
     const wantsFields = fields !== undefined && fields !== null;
 
@@ -355,6 +368,7 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
 
     const safeToCorrect =
       shape.ok &&
+      frozen.length === 0 &&
       simulation !== null &&
       !nothingToDo &&
       simulation.problems.length === 0 &&
@@ -370,6 +384,7 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
         before: before.accounts,
         simulation,
         safeToCorrect,
+        closedAccounts: frozen,
         record,
         columns: plan ? plan.columns : null,
         recordChanged,
@@ -530,6 +545,15 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     await client.query('SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE', [accountIds]);
 
     const { accounts, entries } = await loadAccountsAndEntries(accountIds, client);
+
+    // Closed accounts refuse corrections like they refuse every other writer:
+    // the cutover freezes the legacy fund by closing it, and a correction
+    // landing afterwards would move the frozen line. Owner's rule: closed is
+    // closed.
+    const frozen = closedAccountNames(accounts);
+    if (frozen.length > 0) {
+      throw createError(409, `Refusing to correct — ${frozen.join(', ')} ${frozen.length === 1 ? 'is' : 'are'} closed`);
+    }
 
     // The record is read inside the transaction, after the accounts are locked,
     // so the figures it is corrected from are the ones the ledger will be
@@ -790,6 +814,7 @@ router.post('/re-enter/preview', authorize('transactions.correct'), async (req: 
     let before: AccountAudit[] = [];
     let moves: ReEntryMove[] | null = null;
     let simulation: { corrections: CorrectionEntry[]; problems: string[]; after: AccountAudit[] } | null = null;
+    let frozen: string[] = [];
 
     if (shape.ok) {
       const plan = planReEntry(sourceType, rows, originalAccounts(sourceType, original), accounts as ReEntryAccounts, sourceId, randomUUID());
@@ -797,6 +822,7 @@ router.post('/re-enter/preview', authorize('transactions.correct'), async (req: 
 
       const involved = [...new Set([...observed.accountIds, ...plan.newAccountIds])];
       const { accounts: live, entries } = await loadAccountsAndEntries(involved);
+      frozen = closedAccountNames(live);
       before = auditLedger(live, entries).accounts;
 
       const appended = appendPlannedRows(live, entries, plan.planned);
@@ -809,6 +835,7 @@ router.post('/re-enter/preview', authorize('transactions.correct'), async (req: 
 
     const safeToReEnter =
       shape.ok &&
+      frozen.length === 0 &&
       simulation !== null &&
       simulation.problems.length === 0 &&
       simulation.after.every((a) => a.reconciled);
@@ -824,6 +851,7 @@ router.post('/re-enter/preview', authorize('transactions.correct'), async (req: 
         before,
         simulation,
         safeToReEnter,
+        closedAccounts: frozen,
       },
     });
   } catch (error) { next(error); }
@@ -873,6 +901,14 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
     await client.query('SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE', [involved]);
 
     const { accounts, entries } = await loadAccountsAndEntries(involved, client);
+
+    // Same rule as apply: closed is closed — a re-entry writes new rows on
+    // every account it touches, and a frozen fund is not one of them.
+    const frozen = closedAccountNames(accounts);
+    if (frozen.length > 0) {
+      throw createError(409, `Refusing to re-enter — ${frozen.join(', ')} ${frozen.length === 1 ? 'is' : 'are'} closed`);
+    }
+
     const appended = appendPlannedRows(accounts, entries, plan.planned);
 
     if (appended.problems.length > 0) {
@@ -982,6 +1018,18 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
     client.release();
   }
 });
+
+// Closed accounts refuse every writer the same way — the cutover freezes the
+// legacy fund by closing it, and a correction, re-entry or gap fix landing
+// afterwards would move the frozen line the runbook just set. Owner's rule,
+// recorded with the cutover: closed is closed. Returns the offending names so
+// each path can refuse in its own voice ("Refusing to correct —",
+// "Cannot apply:"), while both previews use the same list to take back their
+// safe verdict: a preview that called a closed account safe would be lying
+// about what its commit does.
+function closedAccountNames(accounts: Array<{ name: string; status?: string }>): string[] {
+  return accounts.filter((a) => a.status === 'closed').map((a) => a.name);
+}
 
 const ACCOUNTS_SQL = `SELECT ${ACCOUNT_COLUMNS} FROM accounts a WHERE a.id = ANY($1) ORDER BY a.name, a.id`;
 const ACCOUNT_ENTRIES_SQL = `SELECT ${ENTRY_COLUMNS} FROM ledger_entries le WHERE le.account_id = ANY($1) ORDER BY le.created_at, le.id`;
