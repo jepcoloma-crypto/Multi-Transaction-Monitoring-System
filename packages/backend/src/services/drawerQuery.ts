@@ -1,12 +1,22 @@
-// The drawer's own ledger window. Two queries the cash-management screen and the
-// shift report have to agree on, kept in one place so a shift's expected figure
-// and the report that later audits it can never drift apart on what counts as
-// "the drawer" or where its window starts and ends.
+// The drawer's own questions, both asked here so the cash-management screen,
+// the shift report and the entry route can never answer them differently.
 //
-// The drawer is keyed on the branch's cash-type accounts rather than on one
-// named account, because it is the branch's physical cash whether or not it
-// happens to be split across two of them — and anything that touched physical
-// cash has to be in the count.
+// Two questions, two answers — and neither answer is generalized to the other:
+//
+//   Movements — did physical cash move? — key on the branch's cash-type
+//   accounts, because cash is cash whether or not the books happen to split it
+//   across two of them, and anything that touched physical cash has to be in
+//   the count.
+//
+//   Balances — what does the drawer hold right now? — key on the branch's
+//   Drawer: its oldest OPEN cash account, the very account the entry route
+//   writes a movement's drawer leg to. A till is counted against one account,
+//   and a report that summed a second one (the legacy Revolving Fund, once
+//   cutover freezes it) would tell an operator to expect cash nobody can hand
+//   over. See `drawerFlagSql`, `splitCashRows` and `drawerBalance`.
+//
+// `drawerMovementRows` is the first question; everything else here is the
+// second. The window itself is discussed where it is defined, below.
 
 import { query, queryOne } from '../database/connection';
 import type { ShiftMovement } from './shifts';
@@ -111,12 +121,103 @@ export async function drawerMovements(
   return rows.map(({ entry_type, amount }) => ({ entry_type, amount }));
 }
 
+/**
+ * The Drawer, as one SQL expression every balance figure wraps in a subquery:
+ * true when a cash-account row is its branch's oldest OPEN cash account.
+ *
+ * Deliberately the posting rule's rule — `resolveDrawerLeg` picks its target
+ * by the same status and the same order — so the account a movement's drawer
+ * leg lands on, the balance a shift closes against and the Cash on hand line
+ * are the same account by construction. `status <> 'closed'` is what makes
+ * cutover a data change and not a code change: the moment the legacy Revolving
+ * Fund is frozen, every balance figure moves to the new Drawer with this
+ * predicate untouched.
+ *
+ * Written once because three rewordings of "the drawer" is exactly how a till
+ * count and the report that audits it end up naming different accounts and
+ * disagreeing by a whole balance. Window expressions cannot sit in a WHERE, so
+ * callers select it as a column in a subquery and filter outside — which also
+ * lets a query keep rows of both kinds when it needs to show them separately
+ * (`splitCashRows`).
+ */
+export function drawerFlagSql(alias: string): string {
+  return (
+    `${alias}.status <> 'closed' AND ` +
+    `ROW_NUMBER() OVER (PARTITION BY ${alias}.branch_id, ${alias}.status <> 'closed' ` +
+    `ORDER BY ${alias}.created_at ASC) = 1`
+  );
+}
+
+export interface ClassifiedCashRow {
+  name: string;
+  balance: string | number;
+  is_drawer: boolean;
+}
+
+export interface CashSplit {
+  /** What the branch can count out of a drawer: its Drawers' balances. */
+  drawer: number;
+  drawerAccounts: string;
+  /** Cash that is not the till — the frozen legacy line after cutover. */
+  frozen: number;
+  frozenAccounts: string;
+}
+
+/**
+ * The two halves of a scope's cash accounts: its Drawers and everything else.
+ *
+ * `is_drawer` comes from `drawerFlagSql`; this only adds up what the SQL
+ * classified, in cents so fractional balances cannot drift, and keeps the
+ * account-name lists the statement prints beside each figure (distinct,
+ * alphabetical, the way the old `string_agg(DISTINCT ... ORDER BY)` printed
+ * them). The halves partition the rows exactly — drawer + frozen is every cash
+ * peso in scope, so either figure still reconciles against the account total
+ * the way D14 requires.
+ *
+ * Before cutover the frozen half is empty: one open cash account per branch
+ * and none closed, as the production check that accompanied this change
+ * confirmed. After cutover it is the Legacy Revolving Fund's line.
+ */
+export function splitCashRows(rows: ClassifiedCashRow[]): CashSplit {
+  let drawerCents = 0;
+  let frozenCents = 0;
+  const drawerNames = new Set<string>();
+  const frozenNames = new Set<string>();
+  for (const row of rows) {
+    const parsed = parseFloat(String(row.balance));
+    const cents = Number.isFinite(parsed) ? Math.round(parsed * 100) : 0;
+    if (row.is_drawer) {
+      drawerCents += cents;
+      drawerNames.add(row.name);
+    } else {
+      frozenCents += cents;
+      frozenNames.add(row.name);
+    }
+  }
+  const names = (set: Set<string>) => [...set].sort().join(', ');
+  return {
+    drawer: drawerCents / 100,
+    drawerAccounts: names(drawerNames),
+    frozen: frozenCents / 100,
+    frozenAccounts: names(frozenNames),
+  };
+}
+
 export async function drawerBalance(branchId: string): Promise<number> {
-  const row = await queryOne<{ balance: string }>(
-    `SELECT COALESCE(SUM(a.current_balance), 0) AS balance
-     FROM accounts a
-     JOIN account_types t ON t.id = a.account_type_id
-     WHERE t.code = 'cash' AND a.branch_id = $1`,
+  // The Drawer's own balance, not the branch's cash accounts added together:
+  // the three callers (a shift's live check, its opening cross-check and its
+  // closing) stand this figure against a counted float, and a float is counted
+  // in one till. Until cutover the two readings coincide — one open cash
+  // account per branch, none closed — which is precisely when the rule can be
+  // pointed at the right account without anyone seeing a figure move.
+  const row = await queryOne<{ balance: string | null }>(
+    `SELECT balance FROM (
+       SELECT a.current_balance AS balance, ${drawerFlagSql('a')} AS is_drawer
+       FROM accounts a
+       JOIN account_types t ON t.id = a.account_type_id
+       WHERE t.code = 'cash' AND a.branch_id = $1
+     ) d
+     WHERE d.is_drawer`,
     [branchId],
   );
   const parsed = parseFloat(String(row?.balance ?? 0));

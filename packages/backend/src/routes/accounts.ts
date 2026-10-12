@@ -4,6 +4,8 @@ import { authenticate, authorize } from '../middleware/auth';
 import { branchClause, assertBranch, assertBranchAssignable, resolveNewAccountBranch } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
+import { drawerFlagSql, splitCashRows } from '../services/drawerQuery';
+import type { ClassifiedCashRow } from '../services/drawerQuery';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -111,19 +113,26 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
       scope.params
     );
 
-    // How much of that total is physical cash. The drawer is a cash-type
-    // account and this page sums every balance into one figure, so without the
-    // split the drawer reads as though it were another wallet. Keyed on the
-    // type and scoped with the same predicate as `total_balance`, so the cash
-    // figure can never be subtracted from the total and leave a remainder that
-    // is off by a row the other query counted.
-    const cashRow = await queryOne<{ cash_balance: string }>(
-      `SELECT COALESCE(SUM(a.current_balance), 0) as cash_balance
+    // How much of that total is physical cash — the Drawer, keyed the way the
+    // posting route keys it (a branch's oldest OPEN cash account,
+    // `drawerFlagSql`), so the figure this page names "Cash on hand" is the
+    // account a movement's drawer leg lands on and the till a shift counts,
+    // to the centavo. Cash that is not the till rides along as
+    // `frozenCashBalance` rather than being dropped: `total_balance` sums
+    // every status, so drawer + frozen + non-cash still lands on
+    // `totalBalance` with no remainder, the same promise this paragraph used
+    // to make for a plain type sum — and after cutover the frozen half is the
+    // Legacy Revolving Fund, on the books and no longer in anyone's hands.
+    // Scoped with the same predicate as `total_balance`, so the two cannot
+    // disagree about which rows are in scope.
+    const cashRows = await query<ClassifiedCashRow>(
+      `SELECT a.name, a.current_balance AS balance, ${drawerFlagSql('a')} AS is_drawer
        FROM accounts a
        JOIN account_types at ON at.id = a.account_type_id
        WHERE at.code = 'cash'${and}`,
       joinScope.params
     );
+    const cashSplit = splitCashRows(cashRows);
 
     const byProvider = await query(
       `SELECT p.name as provider_name, p.code as provider_code,
@@ -155,7 +164,8 @@ router.get('/summary', authorize('accounts.read'), async (req: Request, res: Res
         summary: {
           totalAccounts: parseInt(summary?.total_accounts || '0'),
           totalBalance: parseFloat(summary?.total_balance || '0'),
-          cashBalance: parseFloat(cashRow?.cash_balance || '0'),
+          cashBalance: cashSplit.drawer,
+          frozenCashBalance: cashSplit.frozen,
           activeAccounts: parseInt(summary?.active_accounts || '0'),
           lowBalanceCount: parseInt(summary?.low_balance_count || '0'),
         },

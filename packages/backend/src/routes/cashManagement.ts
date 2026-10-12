@@ -4,7 +4,8 @@ import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
 import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
 import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
-import { drawerMovements, drawerBalance, drawerMovementRows } from '../services/drawerQuery';
+import { drawerMovements, drawerBalance, drawerMovementRows, drawerFlagSql, splitCashRows } from '../services/drawerQuery';
+import type { ClassifiedCashRow } from '../services/drawerQuery';
 import { classifyVariance, expectedClosing, netMovement, drawerDifference, openingReasonError, openShiftDateProblem, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -137,16 +138,24 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     // "cash on hand" is how the page came to call ₱122,372 the branch's cash
     // while the cash accounts held nothing. Two figures, two names, never
     // summed (design D14).
+    //
+    // The figure itself is now the Drawer — a branch's oldest OPEN cash
+    // account, the account postings write to (`drawerFlagSql`) — and cash that
+    // is not the till is read alongside it rather than folded in: `frozenCash`
+    // is empty until cutover freezes the legacy Revolving Fund, and after that
+    // it is the line the flow reserves for it (§7). Each half carries its own
+    // account names, so a reader who does not know the split still sees which
+    // accounts make up which number rather than seeing one pot under two names.
     const drawerConds = [`t.code = 'cash'`, ...branchConds];
-    const drawerRow = await queryOne<{ balance: string; account_names: string | null }>(
-      `SELECT COALESCE(SUM(a.current_balance), 0) AS balance,
-              string_agg(DISTINCT a.name, ', ' ORDER BY a.name) AS account_names
+    const cashRows = await query<ClassifiedCashRow>(
+      `SELECT a.name, a.current_balance AS balance, ${drawerFlagSql('a')} AS is_drawer
        FROM branches b
        JOIN accounts a ON a.branch_id = b.id
        JOIN account_types t ON t.id = a.account_type_id
        WHERE ${drawerConds.join(' AND ')}`,
       branchParams,
     );
+    const cashSplit = splitCashRows(cashRows);
 
     // What is still owed, counted from the beginning of the books up to the
     // end of the period rather than across it.
@@ -205,11 +214,18 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
           endDate: end ? manilaDateKey(end) : null,
         },
         ...statement,
-        drawer: num(drawerRow?.balance),
+        drawer: cashSplit.drawer,
         // The accounts that figure sums. The drawer is one number under two
         // names — the account holding the cash and the line totalling it — and
         // a reader who does not know that sees two pots holding the same peso.
-        drawerAccounts: drawerRow?.account_names ?? '',
+        drawerAccounts: cashSplit.drawerAccounts,
+        // Cash in scope that is not its branch's Drawer: frozen legacy money,
+        // reported beside — never inside — the countable till. Empty today
+        // (one open cash account per branch, none closed); after cutover it is
+        // the Legacy Revolving Fund's balance, still on the books and no
+        // longer in anyone's hands.
+        frozenCash: cashSplit.frozen,
+        frozenCashAccounts: cashSplit.frozenAccounts,
         // Borrowed money still outstanding. Deliberately beside the drawer
         // figure rather than inside `statement.totals`: a liability is not part
         // of the opening-plus-sources-minus-uses identity, and folding it in
@@ -449,12 +465,21 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
       drawerConds.push(`a.branch_id = $${drawerParams.length + 1}`);
       drawerParams.push(branchFilter);
     }
+    // Each branch's Drawer balance — its oldest OPEN cash account, the same
+    // rule the posting route keys a movement's drawer leg on, not a sum of
+    // every cash account. This is the figure an operator stands against a
+    // counted float, and a frozen legacy balance inside it would read as a
+    // shortage from the day the books froze it. Empty for a branch with no
+    // open cash account, same as the old grouped sum was for a branch with
+    // no cash accounts at all (drawerFlagSql).
     const drawerRows = await query<{ branch_id: string; balance: string }>(
-      `SELECT a.branch_id, COALESCE(SUM(a.current_balance), 0) AS balance
-       FROM accounts a
-       JOIN account_types t ON t.id = a.account_type_id
-       WHERE ${drawerConds.join(' AND ')}
-       GROUP BY a.branch_id`,
+      `SELECT branch_id, balance FROM (
+         SELECT a.branch_id, a.current_balance AS balance, ${drawerFlagSql('a')} AS is_drawer
+         FROM accounts a
+         JOIN account_types t ON t.id = a.account_type_id
+         WHERE ${drawerConds.join(' AND ')}
+       ) d
+       WHERE d.is_drawer`,
       drawerParams,
     );
 
