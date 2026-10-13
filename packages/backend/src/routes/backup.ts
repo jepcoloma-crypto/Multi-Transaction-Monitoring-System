@@ -107,11 +107,11 @@ router.post('/restore', authorize('settings.write'), async (req: Request, res: R
 // Read-only by default: with commit unset it returns the plan (what would be
 // emptied, what config is kept, whether a shift is open) and changes nothing.
 // With commit:true it backs up, verifies, then truncates the transactional
-// tables and resets account balances to opening — the `data` mode of the CLI,
-// sharing one implementation (services/dbClean) so the plan and the action
-// cannot disagree. The blunt `full` reset (drop schema + re-migrate) is CLI
-// only: it destroys config no migration can restore, which is not something to
-// hang behind a button.
+// tables and zeroes every account balance (opening and current) — the `data`
+// mode of the CLI, sharing one implementation (services/dbClean) so the plan
+// and the action cannot disagree. The blunt `full` reset (drop schema +
+// re-migrate) is CLI only: it destroys config no migration can restore, which
+// is not something to hang behind a button.
 router.get('/clean', authorize('settings.write'), async (_req: Request, res: Response, next: NextFunction) => {
   try {
     const plan = await describePlan();
@@ -122,8 +122,9 @@ router.get('/clean', authorize('settings.write'), async (_req: Request, res: Res
         keptTableCount: plan.keptTables.length,
         commit: false,
         message:
-          `Would empty ${plan.tables.length} transactional tables (${plan.totalRows} rows) and reset ` +
-          `account balances to opening. Configuration is kept. Nothing was changed.`,
+          `Would empty ${plan.tables.length} transactional tables (${plan.totalRows} rows) and zero ` +
+          `${plan.accountsToZero} account balance(s) (${plan.balanceToZero} on the books today). ` +
+          `Configuration is kept. Nothing was changed.`,
       },
     });
   } catch (error) {
@@ -181,8 +182,8 @@ router.post('/clean', authorize('settings.write'), async (req: Request, res: Res
         ...result,
         backup: { filename: backup.filename, size: backup.size },
         message:
-          `Cleaned ${result.truncated.length} tables and reset ${result.accountsReset} account balance(s) ` +
-          `to opening. A verified backup was taken first (${backup.filename}).`,
+          `Cleaned ${result.truncated.length} tables and zeroed ${result.accountsZeroed} account ` +
+          `balance(s), opening and current. A verified backup was taken first (${backup.filename}).`,
       },
     });
   } catch (error) {

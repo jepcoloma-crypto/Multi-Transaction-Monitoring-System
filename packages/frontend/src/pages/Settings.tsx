@@ -12,14 +12,19 @@ interface CleanPlan {
   totalRows: number;
   keptTableCount: number;
   openShifts: number;
+  accountsToZero?: number;
+  balanceToZero?: number;
   message?: string;
 }
 
 // Administrator-only. Empties the transactional history (transactions, ledger
 // entries, shifts, transfers, audit logs…) while keeping the configuration —
-// users, branches, providers, types, fees, charge types. A verified backup is
-// taken before anything is cleaned, and the confirmation is typed rather than
-// clicked because this is real money that a stray click would erase.
+// users, branches, providers, types, fees, charge types. Every account balance
+// (opening and current) is zeroed too, because the reports baseline on
+// opening_balance and would otherwise show money the clean just erased. A
+// verified backup is taken before anything is cleaned, and the confirmation is
+// typed rather than clicked because this is real money that a stray click
+// would erase.
 function DatabaseMaintenance() {
   const [plan, setPlan] = useState<CleanPlan | null>(null);
   const [loadingPlan, setLoadingPlan] = useState(true);
@@ -67,7 +72,7 @@ function DatabaseMaintenance() {
             <DatabaseZap className="w-4 h-4 text-red-600" /> Database Maintenance
           </h3>
           <p className="text-sm text-gray-600 mt-1">
-            Empty the transactional history and reset account balances to opening. Configuration is kept.
+            Empty the transactional history and zero every account balance, opening included. Configuration is kept.
           </p>
         </div>
       </div>
@@ -76,7 +81,7 @@ function DatabaseMaintenance() {
         <div className="text-sm text-gray-500 py-6">Loading plan…</div>
       ) : plan ? (
         <div className="mt-4 space-y-3">
-          <div className="grid grid-cols-3 gap-4 text-sm">
+          <div className="grid grid-cols-4 gap-4 text-sm">
             <div>
               <p className="text-gray-500">Rows emptied</p>
               <p className="font-medium">{plan.totalRows.toLocaleString()}</p>
@@ -88,6 +93,10 @@ function DatabaseMaintenance() {
             <div>
               <p className="text-gray-500">Config tables kept</p>
               <p className="font-medium">{plan.keptTableCount}</p>
+            </div>
+            <div>
+              <p className="text-gray-500">Balances zeroed</p>
+              <p className="font-medium">{plan.accountsToZero ?? 0} account(s)</p>
             </div>
           </div>
 

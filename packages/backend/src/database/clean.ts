@@ -7,12 +7,14 @@
 // "Clean" means two different things, so there are two modes:
 //
 //   --mode data  (default)  Empty the books without erasing how the business
-//     is configured. Truncates every transactional table and resets each
-//     account's current_balance back to its opening_balance. It KEEPS the
-//     configuration: users, branches, accounts, providers, transaction types
-//     and categories, loading products, additional charge types, transaction
-//     fees and tiers, roles/permissions and system settings. This is the one
-//     to reach for, and the only one the admin API endpoint exposes.
+//     is configured. Truncates every transactional table and zeroes every
+//     account's opening and current balance together, so the reports (which
+//     baseline on opening_balance) come up blank instead of showing money
+//     that no longer exists. It KEEPS the configuration: users, branches,
+//     accounts, providers, transaction types and categories, loading products,
+//     additional charge types, transaction fees and tiers, roles/permissions
+//     and system settings. This is the one to reach for, and the only one the
+//     admin API endpoint exposes.
 //
 //   --mode full  A factory reset. Drops the entire public schema and rebuilds
 //     it from every migration, then re-seeds the two default users. It does
@@ -123,13 +125,14 @@ async function main(): Promise<void> {
 
   const plan =
     args.mode === 'data'
-      ? `truncate ${DATA_TABLES.length} transactional tables and reset account balances (config kept)`
+      ? `truncate ${DATA_TABLES.length} transactional tables and zero every account balance (config kept)`
       : `drop the public schema, re-run all migrations, re-seed the default users (config LOST)`;
 
   if (!args.commit) {
     const summary = await describePlan();
     console.log(`\nDRY RUN — nothing was changed. Would: ${plan}.`);
     console.log(`  tables emptied: ${summary.tables.length}, rows removed: ${summary.totalRows}`);
+    console.log(`  balances zeroed: ${summary.accountsToZero} account(s), ${summary.balanceToZero} on the books today`);
     console.log(`  config kept: ${summary.keptTables.length} tables`);
     if (shifts > 0) {
       console.log(`Note: ${shifts} shift(s) are open — a real clean would refuse without --force.`);
@@ -145,7 +148,7 @@ async function main(): Promise<void> {
   const backup = await takeBackup();
   if (args.mode === 'data') {
     const result = await cleanData();
-    console.log(`\nTruncated ${result.truncated.length} tables; reset ${result.accountsReset} account balance(s) to opening.`);
+    console.log(`\nTruncated ${result.truncated.length} tables; zeroed ${result.accountsZeroed} account balance(s) (opening and current).`);
   } else {
     await cleanFull();
   }

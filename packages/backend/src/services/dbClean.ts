@@ -5,13 +5,17 @@
 //
 // "Clean" empties the operational history while keeping the configuration
 // that took real work to set up. It truncates the transactional tables and
-// resets every account's current_balance back to its opening_balance so the
-// books stay self-consistent (no ledger rows means no carried-over balances).
+// zeroes every account's balances — opening and current together — because
+// the reports baseline on opening_balance: Sources & Uses sums it per branch,
+// the account statement starts its running total from it, and the balance
+// reconciliation audits against it. Keeping a non-zero opening with an empty
+// ledger would leave every report showing money that no longer exists.
 // It deliberately KEEPS users, branches, accounts, providers, transaction
 // types/categories, loading products, additional charge types, fees/tiers,
 // roles/permissions and system settings — most of that exists only in the
 // live database and in no migration, so a wipe that touched it could not be
-// undone by re-running migrations.
+// undone by re-running migrations. The pre-clean balances themselves are in
+// the backup that always runs first.
 
 import { pool } from '../database/connection';
 import { config } from '../config';
@@ -56,6 +60,10 @@ export interface CleanPlan {
   totalRows: number;
   keptTables: string[];
   openShifts: number;
+  // Accounts that would actually change — a balance to zero or an opening to
+  // clear — so the dry run can show the money impact, not just row counts.
+  accountsToZero: number;
+  balanceToZero: number;
 }
 
 export async function openShiftCount(): Promise<number> {
@@ -86,11 +94,23 @@ export async function describePlan(): Promise<CleanPlan> {
     (t) => !DATA_TABLES.includes(t) && !TRACKING_TABLES.includes(t)
   );
 
+  // Money impact of the balance zeroing: how many accounts carry a balance
+  // today and the total it wipes — the figure on the books right now, which
+  // is what an admin is deciding to give up (the backup keeps it regardless).
+  const money = await pool.query(
+    `SELECT count(*)::int AS accounts,
+            COALESCE(SUM(current_balance), 0) AS amount
+     FROM accounts
+     WHERE opening_balance <> 0 OR current_balance <> 0`
+  );
+
   return {
     tables,
     totalRows: tables.reduce((sum, t) => sum + t.rows, 0),
     keptTables,
     openShifts: await openShiftCount(),
+    accountsToZero: money.rows[0].accounts,
+    balanceToZero: Math.round(Number(money.rows[0].amount) * 100) / 100,
   };
 }
 
@@ -136,13 +156,15 @@ export async function takeBackup(): Promise<BackupFile> {
 
 export interface CleanResult {
   truncated: string[];
-  accountsReset: number;
+  accountsZeroed: number;
 }
 
 // The clean itself: one TRUNCATE of the data tables (no CASCADE — the kept
 // config tables reference these only as children, never as parents, so
-// nothing outside the list depends on it), then balances back to opening.
-// Runs in a single transaction so a failure leaves the books untouched.
+// nothing outside the list depends on it), then every balance to zero in one
+// UPDATE so opening and current can never disagree with each other or with
+// the now-empty ledger. Runs in a single transaction so a failure leaves the
+// books untouched.
 export async function cleanData(): Promise<CleanResult> {
   const present = new Set(await existingTables());
   const toTruncate = DATA_TABLES.filter((t) => present.has(t));
@@ -154,10 +176,10 @@ export async function cleanData(): Promise<CleanResult> {
       `TRUNCATE TABLE ${toTruncate.map((t) => `"${t}"`).join(', ')} RESTART IDENTITY`
     );
     const reset = await client.query(
-      `UPDATE accounts SET current_balance = opening_balance, updated_at = NOW()`
+      `UPDATE accounts SET opening_balance = 0, current_balance = 0, updated_at = NOW()`
     );
     await client.query('COMMIT');
-    return { truncated: toTruncate, accountsReset: reset.rowCount ?? 0 };
+    return { truncated: toTruncate, accountsZeroed: reset.rowCount ?? 0 };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
