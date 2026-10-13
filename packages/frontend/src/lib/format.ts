@@ -116,6 +116,18 @@ export const dateKeyLabel = (
   });
 };
 
+/**
+ * How the shift panel names the days it covers. One day reads as itself; a
+ * span reads as its two ends — "Oct 13, 2026 – Oct 14, 2026" — because "2
+ * business days" answered how many without ever saying which, and a shift
+ * that spans midnight is exactly the case the number alone hides.
+ */
+export const shiftDaysLabel = (dates: string[]): string => {
+  if (dates.length === 0) return '';
+  if (dates.length === 1) return dateKeyLabel(dates[0]);
+  return `${dateKeyLabel(dates[0])} – ${dateKeyLabel(dates[dates.length - 1])}`;
+};
+
 const manilaTimeFmt = new Intl.DateTimeFormat('en-GB', {
   timeZone: MANILA_TZ,
   hour: '2-digit',

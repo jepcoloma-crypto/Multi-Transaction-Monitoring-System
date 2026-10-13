@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, Fragment } from 'react';
 import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
-import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote, paymentMethodCell, floatAgainstBooks } from '../lib/format';
+import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, shiftDaysLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote, paymentMethodCell, floatAgainstBooks } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
 import { denomQty, tallyCents, tallyUsed, denomSubtotalPesos, tallyPesos } from '../lib/tally';
 import {
@@ -539,6 +539,14 @@ export default function CashManagement() {
     ? shifts.some((s) => s.branch_id === shiftOpen.branchId && s.shift_date === shiftOpen.shiftDate)
     : false;
 
+  // The day the entry forms propose. With a shift open it is the shift's own
+  // day — recording under a shift means the movement belongs to that day, and
+  // backlog entry should not depend on anyone remembering to edit a field
+  // that used to default to today (D39). Today when no shift is open. The
+  // server's gate still decides what is allowed; this is only the proposal.
+  const proposedDate =
+    shifts.find((s) => s.branch_id === branchId && s.status === 'open')?.shift_date ?? manilaDateValue();
+
   // Served by GET /cash-management/shifts rather than copied into this file: a
   // reason list the server would refuse is worse than no list at all, and one
   // kept in two places is one kept badly. Both arrive before the shift cards
@@ -1018,7 +1026,7 @@ export default function CashManagement() {
   };
 
   const openForm = () => {
-    setForm({ ...emptyForm, transactionDate: manilaDateValue() });
+    setForm({ ...emptyForm, transactionDate: proposedDate });
     setFormError('');
     // Cash-on-hand expenses belong on the branch's cash account, so it is
     // preselected rather than made the operator hunt for it among the wallets.
@@ -1072,7 +1080,7 @@ export default function CashManagement() {
   };
 
   const openEventForm = () => {
-    setEventForm({ ...emptyEventForm, transactionDate: manilaDateValue() });
+    setEventForm({ ...emptyEventForm, transactionDate: proposedDate });
     setEventError('');
     // The drawer is preselected the same way the expense form preselects it,
     // for the same reason: a borrowed peso and a refund paid at the counter
@@ -1120,7 +1128,7 @@ export default function CashManagement() {
   };
 
   const openPaymentForm = () => {
-    setPaymentForm({ ...emptyPaymentForm, transactionDate: manilaDateValue() });
+    setPaymentForm({ ...emptyPaymentForm, transactionDate: proposedDate });
     setPaymentError('');
     // Preselected to the drawer for the same reason the other two forms
     // preselect it: a payment that does not come out of the branch's physical
@@ -1276,9 +1284,11 @@ export default function CashManagement() {
       ? 'What the drawer should hold'
       : 'No shift open';
 
-  // Both daily cards answer for the shift's own day, so both name it — or say
-  // there is none. Printing a zero with no window behind it would read as
-  // "nothing was earned today", which is a claim about a day nobody opened.
+  // Both daily cards answer for the days the open shift covers — its own day
+  // and any since, which is what the drawer itself counts — so both name the
+  // span, or say there is none. Printing a zero with no window behind it
+  // would read as "nothing was earned today", which is a claim about a day
+  // nobody opened.
   const dailyFigures =
     !loadingActivity && shiftActivity && shiftActivity.branches.length > 0
       ? {
@@ -1286,7 +1296,7 @@ export default function CashManagement() {
           expense: formatCurrency(shiftActivity.totals.expense.total),
           sub: shiftActivity.shiftDates.length === 1
             ? `Shift day · ${dateKeyLabel(shiftActivity.shiftDates[0])}`
-            : `${shiftActivity.shiftDates.length} shift days`,
+            : `Shift days · ${shiftDaysLabel(shiftActivity.shiftDates)}`,
         }
       : {
           income: '—',
@@ -1529,7 +1539,7 @@ export default function CashManagement() {
               <div>
                 <h4 className="font-medium">Income &amp; expense — the open shift</h4>
                 <p className="text-xs text-gray-500">
-                  Scoped to the business day the shift belongs to. Transaction fees and load margin on the
+                  Scoped to the days the open shift covers — its own day through today. Transaction fees and load margin on the
                   income side; transfer fees, provider charges and recorded operating expenses on the expense side.
                 </p>
               </div>
@@ -1538,7 +1548,7 @@ export default function CashManagement() {
                   <Calendar className="w-3.5 h-3.5" />
                   {shiftActivity.shiftDates.length === 1
                     ? dateKeyLabel(shiftActivity.shiftDates[0])
-                    : `${shiftActivity.shiftDates.length} business days`}
+                    : shiftDaysLabel(shiftActivity.shiftDates)}
                 </span>
               )}
             </div>
@@ -1653,7 +1663,7 @@ export default function CashManagement() {
               here rather than rebuilt here. */}
           <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-gray-500">
             <span>
-              Daily income and expense cover the shift's day only — not a chosen period.
+              Daily income and expense cover the days the open shift covers — its day through today — not a chosen period.
             </span>
             <Link
               to="/reports"

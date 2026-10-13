@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expectedClosing, netMovement, classifyVariance, drawerDifference, openingReasonError, openShiftDateProblem, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
+import { expectedClosing, netMovement, classifyVariance, drawerDifference, openingReasonError, openShiftDateProblem, shiftCoverage, VARIANCE_LABELS, countDetailCents, countDetailError, normalizeCountDetail, varianceReasonError, DENOMINATIONS, VARIANCE_REASONS } from '../services/shifts';
 import type { ShiftMovement, VarianceStatus } from '../services/shifts';
 
 const inCash = (amount: string | number): ShiftMovement => ({ entry_type: 'credit', amount });
@@ -250,4 +250,21 @@ test('an approved back-date opens the past day without making her an administrat
 
 test("today needs nobody's leave, so a shift opened on the day is unaffected", () => {
   assert.equal(openShiftDateProblem('2026-10-10', '2026-10-10', false, false), null);
+});
+
+test('a shift covers its own day, and every day since it was opened', () => {
+  // The drawer a shift opens is counted once, from its day to its close, and
+  // the gate lets a shift left open take the days since — so the panel's
+  // window is the same span the drawer implies (D39).
+  assert.deepEqual(shiftCoverage('2026-10-13', '2026-10-13'), ['2026-10-13']);
+  assert.deepEqual(shiftCoverage('2026-10-13', '2026-10-14'), ['2026-10-13', '2026-10-14']);
+  assert.deepEqual(
+    shiftCoverage('2026-10-11', '2026-10-13'),
+    ['2026-10-11', '2026-10-12', '2026-10-13'],
+  );
+  // The walk crosses a month boundary by the calendar, not by assumption.
+  assert.deepEqual(shiftCoverage('2026-09-30', '2026-10-01'), ['2026-09-30', '2026-10-01']);
+  // A shift dated ahead of today cannot exist (the open form refuses it), so
+  // it names its own day rather than walking backwards.
+  assert.deepEqual(shiftCoverage('2026-10-15', '2026-10-13'), ['2026-10-15']);
 });

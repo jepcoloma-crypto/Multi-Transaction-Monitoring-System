@@ -11,7 +11,8 @@ import { statementReversal } from '../services/statementReversal';
 import { isFeeLedgerRow } from '../services/cashManagement';
 import { loadScopedLedger } from '../services/ledgerQuery';
 import { drawerMovements } from '../services/drawerQuery';
-import { netMovement } from '../services/shifts';
+import { netMovement, shiftCoverage } from '../services/shifts';
+import { manilaDateKey } from '../services/manilaTime';
 import { buildShiftReport } from '../services/shiftReport';
 
 const router = Router();
@@ -1056,11 +1057,20 @@ router.get('/shift-activity', authorize('reports.read'), async (req: Request, re
       params,
     );
 
+    // A shift left open from an earlier day keeps taking the days since —
+    // the gate allows it and the closing count includes them — so the panel
+    // answers for the same span, its own day through today, rather than only
+    // the day it was opened for (D39). Otherwise the dashboard calls the
+    // drawer's work "nothing" while the close counts every peso of it.
+    const today = manilaDateKey();
+    const coveredDays = new Set<string>();
     const branches: ShiftActivityBranch[] = [];
     for (const shift of shifts) {
+      const coverage = shiftCoverage(shift.shift_date, today);
+      coverage.forEach((day) => coveredDays.add(day));
       const [income, expense] = await Promise.all([
-        loadIncomeReport(req, { startDate: shift.shift_date, endDate: shift.shift_date, branchId: shift.branch_id }),
-        loadExpenseReport(req, { startDate: shift.shift_date, endDate: shift.shift_date, branchId: shift.branch_id }),
+        loadIncomeReport(req, { startDate: shift.shift_date, endDate: coverage[coverage.length - 1], branchId: shift.branch_id }),
+        loadExpenseReport(req, { startDate: shift.shift_date, endDate: coverage[coverage.length - 1], branchId: shift.branch_id }),
       ]);
       branches.push({
         branchId: shift.branch_id,
@@ -1090,10 +1100,11 @@ router.get('/shift-activity', authorize('reports.read'), async (req: Request, re
     res.json({
       success: true,
       data: {
-        // Branches may hold their shift on different days, so the dates are
-        // reported as the set they are rather than one label that would be
-        // false for every branch outside the first.
-        shiftDates: [...new Set(branches.map((branch) => branch.shiftDate))].sort(),
+        // The days actually covered — every open shift's span folded together
+        // — because branches may hold their shift on different days, and a
+        // shift may itself span more than one. Reported as the set they are
+        // rather than one label that would be false outside the first.
+        shiftDates: [...coveredDays].sort(),
         branches,
         totals: {
           income: {

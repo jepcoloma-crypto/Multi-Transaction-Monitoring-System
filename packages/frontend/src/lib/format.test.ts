@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel, floatAgainstBooks, transactionTypeLabel, cashBehaviorLabel } from './format';
+import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, shiftDaysLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel, floatAgainstBooks, transactionTypeLabel, cashBehaviorLabel } from './format';
 
 // Manila is UTC+8 all year — no DST — so these boundaries are stable.
 const justAfterManilaMidnight = '2026-10-04T16:30:00.000Z'; // 00:30 on 5 Oct in Manila
@@ -240,5 +240,26 @@ describe('cashBehaviorLabel', () => {
     expect(cashBehaviorLabel(null)).toBe('');
     expect(cashBehaviorLabel(undefined)).toBe('');
     expect(cashBehaviorLabel('sideways' as any)).toBe('');
+  });
+});
+
+describe('shiftDaysLabel', () => {
+  it('names a single day as itself', () => {
+    expect(shiftDaysLabel(['2026-10-13'])).toBe(dateKeyLabel('2026-10-13'));
+  });
+
+  it('names a span by its two ends, not by how many days it holds', () => {
+    // "2 business days" answered how many without ever saying which — and a
+    // shift spanning midnight is exactly the case the count alone hides.
+    expect(shiftDaysLabel(['2026-10-13', '2026-10-14'])).toBe(
+      `${dateKeyLabel('2026-10-13')} – ${dateKeyLabel('2026-10-14')}`,
+    );
+    expect(shiftDaysLabel(['2026-10-11', '2026-10-12', '2026-10-13'])).toBe(
+      `${dateKeyLabel('2026-10-11')} – ${dateKeyLabel('2026-10-13')}`,
+    );
+  });
+
+  it('says nothing rather than printing an empty dash for no days at all', () => {
+    expect(shiftDaysLabel([])).toBe('');
   });
 });

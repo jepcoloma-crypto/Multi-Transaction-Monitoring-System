@@ -1782,3 +1782,37 @@ entering the backlog she sat down to enter. And the control it would add is weak
 looks — the administrator can already open any past day directly from her own account, so the
 queue would only have reordered the paperwork. If reopening a *closed* day is ever allowed,
 that is the request that belongs in the queue.
+
+## 31. The day a movement belongs to
+
+A shift can now span more than one day — the gate lets a shift left open from an earlier day
+take the days since, and D38 made that an ordinary Tuesday rather than an accident — but two
+screens were still built for the old world where a shift's day and today were the same day.
+The entry forms defaulted their date to *today*, so recording yesterday's backlog under
+yesterday's shift quietly stamped today's date on every line; and the income and expense panel
+read only `shift_date`, so a shift that had recorded eight transactions since midnight
+answered the dashboard with ₱0.00 while the closing count for that same drawer included every
+one of them. Both screens were correct about the day they were built for. Neither followed the
+drawer.
+
+### D39 — a movement belongs to the shift's day; the panel answers for the days the shift covers
+
+The entry forms propose the open shift's own day, not today. Recording under a shift means the
+movement belongs to that shift's day, and backlog entry must not depend on anyone remembering
+to edit a field that used to default to the current date. Today is proposed only when no shift
+is open; the field stays editable, because the proposal is a default and the server's gate is
+the authority.
+
+The income and expense panel answers for the span the drawer itself implies — the shift's own
+day and every day since, up to and including today (`shiftCoverage`). This is not a window
+invented for the dashboard; it is the window the closing count has always used, since
+`expectedClosing` counts the drawer's rows from the moment the shift opened to when it closes.
+The panel names the span by its ends — "Oct 13 – Oct 14" — rather than by how many days it
+holds — "2 business days" — because the count alone hid exactly the case it was introduced to
+show.
+
+Nothing about reversals, fees or the statement changed. A correction's date has always
+cascaded to the ledger rows under it (§21), so the eight transactions recorded in the small
+hours of Oct 14 under an Oct-13 shift were re-dated to Oct 13 through that same cascade when
+this shipped. The form's default is what made the correction necessary; the correction is what
+made the dashboard, the register and the closing count agree again.

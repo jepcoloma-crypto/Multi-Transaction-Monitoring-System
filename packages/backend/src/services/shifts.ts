@@ -277,6 +277,40 @@ export function openShiftDateProblem(
   return null;
 }
 
+/**
+ * The business days an open shift covers: its own day, and every day since,
+ * up to today.
+ *
+ * Two rules already imply this span and one screen did not follow them. The
+ * gate lets a shift left open from an earlier day take the days since —
+ * backfill yesterday's shift, then keep working under it — and the closing
+ * count includes everything the drawer took from the moment it opened. The
+ * income and expense panel was built when a shift's day and today were
+ * always the same day, so it read only `shift_date` and went silent the
+ * moment a back-dated shift recorded the next day's work: the dashboard
+ * called the drawer's takings "nothing" while the close counted every peso
+ * of them. This is the span the drawer itself implies (D39).
+ *
+ * Dates are calendar strings walked in UTC, so no host timezone can shift a
+ * day out of the walk.
+ */
+export function shiftCoverage(shiftDate: string, today: string): string[] {
+  const asUtc = (key: string): number => Date.parse(`${key}T00:00:00Z`);
+  const start = asUtc(shiftDate);
+  const end = asUtc(today);
+  // A shift for today covers its own day and nothing else — and a shift
+  // dated ahead of today cannot exist (the open form refuses it), so it is
+  // named as itself rather than walked backwards.
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start >= end) return [shiftDate];
+
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const days: string[] = [];
+  for (let t = start; t <= end; t += DAY_MS) {
+    days.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return days;
+}
+
 /** What the denomination grid adds up to, in centavos. */
 export function countDetailCents(detail: unknown): number {
   if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return 0;

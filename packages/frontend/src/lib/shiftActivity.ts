@@ -31,7 +31,8 @@ export interface ShiftActivity {
 }
 
 /**
- * Income and expense for the business day the open shift belongs to.
+ * Income and expense for the days the open shift covers — its own day and
+ * every day since, which is the span the drawer itself counts (D39).
  *
  * The period is the shift's own, never a filter the client is allowed to
  * invent (D18), so the only thing that narrows it is the branch — the same
