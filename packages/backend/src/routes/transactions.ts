@@ -7,7 +7,7 @@ import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
 import type { CounterpartyLeg } from '../services/balance';
-import { drawerLeg, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod } from '../services/cashManagement';
+import { drawerLeg, drawerLegs, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod } from '../services/cashManagement';
 import type { RecordedLedgerRow } from '../services/cashManagement';
 import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf } from '../services/movementPlan';
 import { resolveMovementFee } from '../services/movementFee';
@@ -311,11 +311,12 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
 // The drawer's side of a movement settled in physical cash (design D12; the
 // direction is opposite to the account leg, design D24).
 //
-// The amount comes from drawerLeg rather than being restated here, so the rule
-// covering both directions and both fee modes lives in one tested place. The
-// account is the branch's own cash account; a movement already booked against
-// one — an expense paid straight out of the float — posts a single row rather
-// than two against the same balance.
+// The rows come from `drawerLegs` rather than being restated here: the fee
+// first, then the movement (D37), so the rule covering both directions and
+// both fee modes lives in one tested place. The account is the branch's own
+// cash account; a movement already booked against one — an expense paid
+// straight out of the float — posts a single row rather than two against the
+// same balance.
 //
 // Nothing is locked here. queryOne runs through the pool rather than the open
 // transaction, so any lock it took would be released at statement end and would
@@ -329,8 +330,8 @@ async function resolveDrawerLeg(
   paymentMethod: string | null,
   signedAmount: number,
   fee: number
-): Promise<CounterpartyLeg | null> {
-  if (paymentMethod !== 'cash') return null;
+): Promise<CounterpartyLeg[]> {
+  if (paymentMethod !== 'cash') return [];
 
   const drawer = await queryOne<{ id: string }>(
     // The branch's oldest open cash account. `t.code = 'cash'` is what makes it
@@ -350,13 +351,23 @@ async function resolveDrawerLeg(
   // leg while quietly dropping the other is how a drawer drifts out of step with
   // the statements meant to explain it.
   if (!drawer) throw createError(400, 'This branch has no cash account to take the money from');
-  if (drawer.id === accountId) return null;
+  if (drawer.id === accountId) return [];
 
-  const leg = drawerLeg(signedAmount, fee);
-  if (!leg) return null;
+  const legs = drawerLegs(signedAmount, fee);
+  if (legs.length === 0) return [];
 
-  await assertDrawerCanFund({ accountId: drawer.id, amount: leg.amount, entryType: leg.entryType });
-  return { accountId: drawer.id, amount: leg.amount, entryType: leg.entryType };
+  // The advisory checks the net figure — the fee lands in the till before the
+  // movement draws on it, so what the drawer must hold to hand the money out is
+  // still the amount it has always been asked for.
+  const net = drawerLeg(signedAmount, fee);
+  if (net) await assertDrawerCanFund({ accountId: drawer.id, ...net });
+
+  return legs.map((leg) => ({
+    accountId: drawer.id,
+    amount: leg.amount,
+    entryType: leg.entryType,
+    role: leg.role,
+  }));
 }
 
 // The ledger rows a completed movement wrote on accounts other than its own —
@@ -531,12 +542,14 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // Resolved before anything is written, so a branch with no drawer refuses
     // the whole submission rather than leaving a row whose drawer leg never
     // landed. A pending row moves nothing yet — its leg belongs to approval,
-    // which is where the money actually leaves (design D5).
-    const counterparty = finalStatus === 'completed'
+    // which is where the money actually leaves (design D5). Completed movements
+    // hand over the fee row and the movement row (D37); an e-wallet tender or a
+    // movement booked onto the drawer itself posts no counterparties at all.
+    const counterparties = finalStatus === 'completed'
       ? await resolveDrawerLeg(
           accountId, paymentMethodValue, entryType === 'credit' ? totalAmount : -totalAmount, feeNum
         )
-      : null;
+      : [];
 
     // A pending row withdraws nothing yet, so there is nothing to fund: the
     // balance belongs to approval, which checks it inside the same
@@ -583,7 +596,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       ({ newBalance } = await processTransaction(
         accountId, resolvedTypeId, totalAmount, feeNum, entryType as 'debit' | 'credit',
         transaction!.id, referenceNumber, description, effectiveDate, client,
-        feeAddedToBalance !== false, counterparty
+        feeAddedToBalance !== false, counterparties
       ));
     }
 
@@ -757,20 +770,25 @@ router.post('/preview', authorize('transactions.write'), async (req: Request, re
     let drawerBalance: number | null = null;
     if (plan.finalStatus === 'completed') {
       try {
-        const counterparty = await resolveDrawerLeg(
+        // The same rows the save posts, in the same order — the fee first,
+        // then the movement (D37) — so what the operator reads here is what
+        // the statement will show.
+        const drawerRows = await resolveDrawerLeg(
           accountId, plan.paymentMethod, plan.drawerSignedAmount, feeNum
         );
-        if (counterparty) {
+        if (drawerRows.length > 0) {
           const drawerAcct = await queryOne<{ name: string; current_balance: string }>(
-            'SELECT name, current_balance FROM accounts WHERE id = $1', [counterparty.accountId]
+            'SELECT name, current_balance FROM accounts WHERE id = $1', [drawerRows[0].accountId]
           );
-          legs.push({
-            role: 'drawer',
-            accountId: counterparty.accountId,
-            accountName: drawerAcct?.name || 'Cash on hand',
-            entryType: counterparty.entryType,
-            amount: counterparty.amount,
-          });
+          for (const row of drawerRows) {
+            legs.push({
+              role: row.role === 'fee' ? 'fee' : 'drawer',
+              accountId: row.accountId,
+              accountName: drawerAcct?.name || 'Cash on hand',
+              entryType: row.entryType,
+              amount: row.amount,
+            });
+          }
           drawerBalance = parseFloat(drawerAcct?.current_balance || '0');
         }
       } catch (err: any) {
@@ -1187,7 +1205,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
           reverseEntryType as 'debit' | 'credit', created.id,
           `REV-${original.transaction_number}`, `Reversal: ${reason || 'Transaction reversal'}`,
           new Date(), client,
-          true, drawerSide
+          true, drawerSide ? [drawerSide] : []
         );
 
         return created;
@@ -1323,12 +1341,12 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     // take the two locks in the same order. Locking the primary first here and
     // letting processTransaction sort them afterwards would give the two paths
     // opposite orders whenever the drawer sorts ahead of the wallet.
-    const counterparty = await resolveDrawerLeg(
+    const counterparties = await resolveDrawerLeg(
       row.account_id, row.payment_method,
       entryType === 'credit' ? totalAmount : -totalAmount, parseFloat(row.fee || 0)
     );
 
-    await lockAccounts(client, [row.account_id, ...(counterparty ? [counterparty.accountId] : [])]);
+    await lockAccounts(client, [row.account_id, ...counterparties.map((leg) => leg.accountId)]);
 
     const account = (await client.query(
       'SELECT id, name, current_balance, status FROM accounts WHERE id = $1',
@@ -1344,7 +1362,7 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     const { newBalance } = await processTransaction(
       row.account_id, row.transaction_type_id, totalAmount, parseFloat(row.fee || 0), entryType,
       row.id, row.reference_number, row.description, new Date(row.transaction_date), client,
-      row.fee_added_to_balance !== false, counterparty
+      row.fee_added_to_balance !== false, counterparties
     );
 
     const updated = (await client.query(
@@ -1533,7 +1551,7 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
         reverseEntryType as 'debit' | 'credit', reverseTx!.id,
         `REV-${original.transaction_number}`, `Reversal: ${pending.reason || 'Admin approved reversal'}`,
         new Date(), client,
-        true, drawerSide
+        true, drawerSide ? [drawerSide] : []
       );
     } catch (err: any) {
       if (err?.message !== 'Insufficient balance') throw err;

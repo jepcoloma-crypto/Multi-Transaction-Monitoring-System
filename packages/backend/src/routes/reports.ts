@@ -8,6 +8,7 @@ import { buildReversalReport, reversalReason } from '../services/reversalReport'
 import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../services/incomeReport';
 import { buildExpenseReport, buildExpenseDetail, type ExpenseReport, type ExpenseDetail } from '../services/expenseReport';
 import { statementReversal } from '../services/statementReversal';
+import { isFeeLedgerRow } from '../services/cashManagement';
 import { loadScopedLedger } from '../services/ledgerQuery';
 import { drawerMovements } from '../services/drawerQuery';
 import { netMovement } from '../services/shifts';
@@ -168,6 +169,11 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
       // ledger_entries has no correction column and its reference_number is
       // left NULL, and this is the string corrections.ts writes on every row.
       const isCorrection = /^Correction:/.test(e.description || '');
+      // The drawer's fee row (D37): the movement's own fee column is a memo
+      // about the pair, so printing it again on the row that *is* the fee would
+      // count the same ₱20 twice — in the cell and in the footer that sums the
+      // column. The row keeps its own amount and says what it is instead.
+      const isFeeRow = isFeeLedgerRow(e.description);
       return {
         ...entry,
         // The reversal's own referents were destructured out above for the
@@ -179,23 +185,31 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
         reverses_type_name,
         reverses_type_code,
         is_correction: isCorrection,
+        is_fee_row: isFeeRow,
         reversal_reason: rev.reason,
         is_compensating: rev.isCompensating,
         reversal_resolves_to: rev.resolvesTo,
         reversal_of_number: rev.ofNumber,
         statement_status: rev.status,
         running_balance: running,
-        charges_total: charges,
+        charges_total: isFeeRow ? 0 : charges,
+        fee: isFeeRow ? null : e.fee,
         entry_source: entrySource,
         display_name: rev.label ?? (e.transaction_number
           ? `${e.type_name || 'Transaction'} #${e.transaction_number}`
           : e.transfer_id
             ? `Transfer ${e.transfer_number ? `#${e.transfer_number} ` : ''}${e.source_account_name || '?'} → ${e.destination_account_name || '?'}`
             : e.description || 'Adjustment'),
-        type_display: isCorrection ? 'Correction'
-          : rev.typeDisplay ?? (entrySource ? entrySource.charAt(0).toUpperCase() + entrySource.slice(1) : e.entry_type),
         reference_display: rev.referenceDisplay,
         number_display: rev.numberDisplay,
+        // Named through the fallback chain rather than beside it: with the
+        // type blanked, `transactionTypeLabel` returns nothing and the Type
+        // cell falls through to this — the fee row is not the movement.
+        type_code: isFeeRow ? null : e.type_code,
+        type_name: isFeeRow ? null : e.type_name,
+        type_display: isFeeRow ? 'Service fee'
+          : isCorrection ? 'Correction'
+            : rev.typeDisplay ?? (entrySource ? entrySource.charAt(0).toUpperCase() + entrySource.slice(1) : e.entry_type),
       };
     });
 

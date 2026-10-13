@@ -1,5 +1,6 @@
 import { query, queryOne, getClient } from '../database/connection';
 import { createError } from '../middleware/error';
+import { feeRowDescription } from './cashManagement';
 
 export async function getAccountBalance(accountId: string): Promise<number> {
   const result = await queryOne<{ current_balance: string }>(
@@ -53,7 +54,8 @@ export async function createLedgerEntry(
   referenceNumber: string | null,
   description: string | null,
   entryDate: Date,
-  client?: any
+  client?: any,
+  writeSeq: number = 0,
 ): Promise<void> {
   const conn = client || (await getClient());
   const shouldRelease = !client;
@@ -61,10 +63,18 @@ export async function createLedgerEntry(
   try {
     const sourceType = transactionId ? 'transaction' : transferId ? 'transfer' : 'adjustment';
     const sourceId = transactionId || transferId || null;
+    // `created_at` is stamped per row rather than left to the column default:
+    // NOW() is the transaction's start, so every INSERT in one database
+    // transaction would carry the same instant — and two rows on one account,
+    // the drawer's fee beside its movement (D37) or a movement beside its
+    // provider charge, would then order by random UUID. The statement's running
+    // balance and the chain audit both walk `created_at, id`, so it has to be
+    // the order the rows were written in. `writeSeq` makes that strict within
+    // one write; the clock makes separate writes in a transaction distinct.
     await conn.query(
-      `INSERT INTO ledger_entries (account_id, transaction_id, transfer_id, source_type, source_id, entry_type, amount, balance_after, reference_number, description, entry_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [accountId, transactionId, transferId, sourceType, sourceId, entryType, amount, balanceAfter, referenceNumber, description, entryDate]
+      `INSERT INTO ledger_entries (account_id, transaction_id, transfer_id, source_type, source_id, entry_type, amount, balance_after, reference_number, description, entry_date, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, clock_timestamp() + ($12 * INTERVAL '1 microsecond'))`,
+      [accountId, transactionId, transferId, sourceType, sourceId, entryType, amount, balanceAfter, referenceNumber, description, entryDate, writeSeq]
     );
   } finally {
     if (shouldRelease) conn.release();
@@ -75,22 +85,26 @@ export interface CounterpartyLeg {
   accountId: string;
   amount: number;
   entryType: 'debit' | 'credit';
+  /** Which drawer row this is — the fee, or the movement it earned on. */
+  role?: 'fee' | 'movement';
 }
 
 export interface Posting {
   accountId: string;
   entryType: 'debit' | 'credit';
   amount: number;
+  role?: 'fee' | 'movement';
 }
 
 /**
  * Decide which ledger rows a movement writes, without touching the database.
  *
- * The counterparty carries its own direction from the caller, so this function takes no
- * position on it. Under D24 a cash movement is a transfer between the drawer and the
- * account, so the drawer leg runs *opposite* to the primary leg — but the caller states
- * that direction and amount explicitly, which is what keeps the fee formula
- * (section 12 D12) out of this function.
+ * Each counterparty carries its own direction from the caller, so this function takes no
+ * position on any of them. Under D24 a cash movement is a transfer between the drawer and the
+ * account, so the drawer legs run *opposite* to the primary leg — but the caller states
+ * each direction and amount explicitly, which is what keeps the fee formula
+ * (section 12 D12) out of this function. A cash movement may hand over two drawer rows
+ * (the fee and the movement, D37); anything else is one or none.
  *
  * A zero-amount counterparty writes no row. A 0.00 ledger entry carries no information and
  * would show up as a movement in the Statement of Account.
@@ -99,27 +113,29 @@ export function planPostings(
   accountId: string,
   entryType: 'debit' | 'credit',
   amount: number,
-  counterparty: CounterpartyLeg | null = null
+  counterparties: CounterpartyLeg[] | null = null
 ): Posting[] {
   const postings: Posting[] = [{ accountId, entryType, amount }];
 
-  if (!counterparty) return postings;
-  if (!counterparty.accountId) {
-    throw createError(500, 'Counterparty account id is required');
-  }
-  if (counterparty.accountId === accountId) {
-    throw createError(500, 'Counterparty must be a different account than the primary');
-  }
-  if (!Number.isFinite(counterparty.amount) || counterparty.amount < 0) {
-    throw createError(500, 'Counterparty amount must be a non-negative finite number');
-  }
-  if (counterparty.amount === 0) return postings;
+  for (const counterparty of counterparties || []) {
+    if (!counterparty.accountId) {
+      throw createError(500, 'Counterparty account id is required');
+    }
+    if (counterparty.accountId === accountId) {
+      throw createError(500, 'Counterparty must be a different account than the primary');
+    }
+    if (!Number.isFinite(counterparty.amount) || counterparty.amount < 0) {
+      throw createError(500, 'Counterparty amount must be a non-negative finite number');
+    }
+    if (counterparty.amount === 0) continue;
 
-  postings.push({
-    accountId: counterparty.accountId,
-    entryType: counterparty.entryType,
-    amount: counterparty.amount,
-  });
+    postings.push({
+      accountId: counterparty.accountId,
+      entryType: counterparty.entryType,
+      amount: counterparty.amount,
+      role: counterparty.role,
+    });
+  }
   return postings;
 }
 
@@ -147,10 +163,10 @@ export async function processTransaction(
   transactionDate: Date,
   client: any,
   feeAddedToBalance: boolean = true,
-  counterparty: CounterpartyLeg | null = null
+  counterparties: CounterpartyLeg[] = []
 ): Promise<{ newBalance: number; netAmount: number; counterpartyBalance: number | null }> {
   const netAmount = amount;
-  const postings = planPostings(accountId, entryType, netAmount, counterparty);
+  const postings = planPostings(accountId, entryType, netAmount, counterparties);
 
   if (postings.length > 1) {
     await lockAccounts(client, postings.map((p) => p.accountId));
@@ -168,28 +184,29 @@ export async function processTransaction(
     referenceNumber,
     description,
     transactionDate,
-    client
+    client,
+    0
   );
 
-  const leg = postings[1];
-  if (!leg) return { newBalance, netAmount, counterpartyBalance: null };
+  let counterpartyBalance: number | null = null;
+  for (let i = 1; i < postings.length; i++) {
+    const leg = postings[i];
+    counterpartyBalance = await updateAccountBalance(leg.accountId, leg.amount, leg.entryType, client);
 
-  const counterpartyBalance = await updateAccountBalance(
-    leg.accountId, leg.amount, leg.entryType, client
-  );
-
-  await createLedgerEntry(
-    leg.accountId,
-    leg.entryType,
-    leg.amount,
-    counterpartyBalance,
-    transactionId,
-    null,
-    referenceNumber,
-    description,
-    transactionDate,
-    client
-  );
+    await createLedgerEntry(
+      leg.accountId,
+      leg.entryType,
+      leg.amount,
+      counterpartyBalance,
+      transactionId,
+      null,
+      referenceNumber,
+      leg.role === 'fee' ? feeRowDescription(description) : description,
+      transactionDate,
+      client,
+      i
+    );
+  }
 
   return { newBalance, netAmount, counterpartyBalance };
 }

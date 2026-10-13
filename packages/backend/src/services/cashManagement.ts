@@ -3,15 +3,15 @@
 // subtotal is testable without one.
 //
 // The statement is built from ledger_entries rather than from the income
-// report's figures on purpose. Fee income is not a separate credit anywhere in
-// the ledger: a transfer posts one debit to the sender and one credit to the
-// receiver, and the fee rides inside them. A statement that tried to reproduce
-// totalIncome would therefore stop adding up to the balance it exists to
-// explain.
-//
-// So the two answer different questions and are not expected to agree:
+// report's figures on purpose: the two answer different questions and are not
+// expected to agree.
 //   this one   — where did the cash physically move
 //   income     — what did the company earn
+//
+// A transfer still folds its fee inside the two rows it posts (one debit to
+// the sender, one credit to the receiver). A cash movement posts its fee as
+// its own credit on the drawer (D37), so the statement reads gross — the pair
+// and the fee, each as the row it physically was.
 //
 // Because every ledger row lands in exactly one bucket, the tie-out holds by
 // construction: opening + Σsources − Σuses = closing. If it ever does not,
@@ -165,6 +165,66 @@ export function drawerLeg(signedAmount: number, fee: number): DrawerLeg | null {
   return delta > 0
     ? { amount: delta, entryType: 'credit' }
     : { amount: -delta, entryType: 'debit' };
+}
+
+/** One drawer row, and which of the two it is. */
+export interface DrawerPosting extends DrawerLeg {
+  role: 'fee' | 'movement';
+}
+
+/**
+ * The drawer's side of a movement as the two rows it physically was: the fee
+ * credited back to the drawer, then the movement itself (D37).
+ *
+ * Their sum is exactly `drawerLeg`'s net row — the identity
+ * `signedAmount + drawer_delta = fee` holds over the pair the same way it held
+ * over the net — so balances, the shift's expected figure and the Sources and
+ * Uses tie-out do not move by a centavo. What changes is the statement: the
+ * movement pairs at its full amount against the account's row, and the fee
+ * reads as the line of income it is rather than hiding inside a difference.
+ *
+ * The fee posts first because that is the order the cash arrives in: the fee
+ * lands in the till, then the movement settles out of it. That keeps the
+ * drawer's funding requirement at the net figure it has always been.
+ *
+ * A pair that nets to zero writes nothing — same as `drawerLeg`, and for the
+ * same reason: the books still grow by exactly the fee. `fee` is always
+ * positive; `signedAmount` is the signed account leg.
+ */
+export function drawerLegs(signedAmount: number, fee: number): DrawerPosting[] {
+  const net = Math.round((fee - signedAmount) * 100) / 100;
+  if (net === 0) return [];
+
+  const legs: DrawerPosting[] = [];
+  const feeAmount = Math.round(fee * 100) / 100;
+  if (feeAmount > 0) legs.push({ amount: feeAmount, entryType: 'credit', role: 'fee' });
+
+  const movement = Math.round(-signedAmount * 100) / 100;
+  if (movement !== 0) {
+    legs.push({ amount: Math.abs(movement), entryType: movement > 0 ? 'credit' : 'debit', role: 'movement' });
+  }
+  return legs;
+}
+
+// The fee row's durable marker, following the prefix precedent corrections
+// already set: `ledger_entries` has no column to say which leg a row is, and
+// the description is the one field every statement reads.
+const FEE_ROW_PREFIX = 'Service fee';
+
+/** How the fee row names itself in the ledger. */
+export function feeRowDescription(description: string | null | undefined): string {
+  return description ? `${FEE_ROW_PREFIX} — ${description}` : FEE_ROW_PREFIX;
+}
+
+/**
+ * Whether a ledger row is a movement's fee row rather than the movement.
+ *
+ * Anchored on the whole prefix so an ordinary description that merely talks
+ * about a service fee ("Service fee billed monthly") keeps its fee column.
+ */
+export function isFeeLedgerRow(description: string | null | undefined): boolean {
+  if (!description) return false;
+  return description === FEE_ROW_PREFIX || description.startsWith(`${FEE_ROW_PREFIX} — `);
 }
 
 /** What the drawer does, in the shape the posting path takes a counterparty in. */

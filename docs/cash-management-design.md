@@ -1065,6 +1065,8 @@ total while the income report said ₱10.
   object, and the transaction still carries `fee`, so the split stays recoverable in the
   register and the Statement of Account. Two rows would widen the change across `planPostings`
   and the balance-after sequencing for no gain in information.
+  *(Superseded by D37: the split turned out to be the gain — the statement reads it as the
+  textbook entry it always summed to.)*
 - **`planPostings` still decides nothing.** It writes what the caller gives it; only its
   comment claimed otherwise. The direction now lives where it always should have — in
   `drawerLeg`, one tested expression.
@@ -1574,7 +1576,8 @@ stands, history is never backfilled. Those 149 rows add up to Sources of ₱482,
 could ever appear in — so it is not inflated today, and never will be on existing data.
 
 **The inflation starts with the first cash-settled movement booked from now on.** At that
-point a ₱500 cash-in with a ₱10 fee writes two rows: Sources +500, Uses +490, net +10 — the
+point a ₱500 cash-in with a ₱10 fee writes three rows (D37): Sources +510 — the account's
+₱500 credit and the drawer's ₱10 fee — and Uses +500, net +10 — the
 fee, exactly what the income report books. The tie-out holds either way, which is why this was
 a reporting question and not a correctness one.
 
@@ -1666,3 +1669,64 @@ used. The card says `Every account totalled`, and that is precisely what it does
 **What was deliberately not built:** a net-worth figure. It would be one subtraction away from
 two cards that already sit beside each other, and §24 is the cautionary tale — three names for
 one drawer is how the reader ends up trusting none of them.
+
+## 29. The fee becomes a row of its own
+
+A ₱1,500 cash-in with a ₱20 fee settled in cash showed a Statement of Account reading `Credit
+1,500` against `Debit 1,480`, with the ₱20 living in a memo column between them. Every figure
+was right — the books grew by ₱20, the drawer moved ₱1,480 — and the statement still looked
+wrong to the person it is written for. The reason is that a fee *column* is a note about a row,
+not a posting, and a debit that never equals the credit it answers looks like an error to
+anyone reading it as one. The question asked directly — *"shouldn't the amount debited be the
+same?"* — has a real answer: it was only unequal because the fee income had no line of its own.
+
+### D37 — the drawer posts the movement and the fee as two rows
+
+The drawer now writes what it physically did, in order: the fee arrives in the till, then the
+movement settles out of it. For the transaction that started this:
+
+| Leg | Row |
+|---|---|
+| Account (Jed) | credit ₱1,500 |
+| Drawer (Revolving) — fee | credit ₱20, described `Service fee — …` |
+| Drawer (Revolving) — movement | debit ₱1,500 |
+
+The three lines read as the textbook entry always implied: 1,500 = 1,480 + 20.
+
+**No balance moves.** The pair nets to exactly the row it replaces — D24's identity
+`signedAmount + drawer_delta = fee` holds over the *sum* of the rows the same way it held over
+the net — so every balance, a shift's expected closing figure and the Sources and Uses tie-out
+are unchanged to the centavo. The net-row rule survives as `drawerLeg`, which now answers what
+the two rows sum to rather than what single row to write; the rows themselves come from
+`drawerLegs`, each tagged `role: 'fee' | 'movement'`.
+
+**The fee posts first because that is the order the cash arrives in.** The ₱20 lands in the
+till, then the ₱1,500 leaves it — so the drawer's funding requirement is still the net figure
+it has always been (`assertDrawerCanFund` checks the net, not each leg), and a shift cannot
+encounter the movement before the fee that funds part of it. A pair netting to zero still
+writes nothing at all: the books grow by the fee either way.
+
+**Write order had to become explicit.** Two rows on one account are only meaningful in
+sequence, but `ledger_entries.id` is a random UUID and `NOW()` is the transaction timestamp —
+identical for every row written in one database transaction — so the statement's running
+balance and `auditLedger`'s chain would have ordered the fee and the movement arbitrarily, and
+reversed them half the time. `createLedgerEntry` now stamps `created_at` itself, from
+`clock_timestamp()` plus a per-row microsecond offset. This incidentally fixes the same latent
+ambiguity wherever one write touches one account twice, such as a movement and its provider
+charge.
+
+**The statement recognises the fee row by its description,** following the prefix precedent
+corrections already set (`ledger_entries` has no column for it): `feeRowDescription` builds
+`Service fee` or `Service fee — <description>`, and `isFeeLedgerRow` detects it, anchored so an
+ordinary description that merely mentions a fee keeps its own fee column. Such a row shows `fee:
+null`, `charges_total: 0` and no type code, so the Fee/Charges cells and the footer sums count
+the ₱20 once — in the movement row, which keeps it — and the Type cell reads `Service fee`. The
+movement row keeps its Fee 20, so the statement renders the complete three-line entry.
+
+**Reversals are untouched on purpose.** `unwindDrawerLeg` sums the recorded rows, which is the
+same net it always read, and posts one net row against whoever holds it — the split changes
+what was written, not what unwinding means. The fee stays where the fee mode says it belongs.
+
+**Superseded:** D24's "one net row, not two" — its argument was that two rows gain no
+information over one, and on balances that was true; the gain turned out to be in the reading.
+§27's "two rows" arithmetic for a cash-settled movement now names three.
