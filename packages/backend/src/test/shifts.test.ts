@@ -235,6 +235,19 @@ test('a past day is a call only an administrator may make', () => {
   assert.equal(openShiftDateProblem('2026-10-09', '2026-10-10', false, true), null);
 });
 
+test('an approved back-date opens the past day without making her an administrator', () => {
+  // The second signature (D38): the override *is* the administrator's call,
+  // made at the moment the day was picked. The operator's own roles do not
+  // change, and neither does any other day's rule.
+  assert.equal(openShiftDateProblem('2026-10-09', '2026-10-10', false, false, true), null);
+  // An approval buys a past day and nothing else: the future stays out of
+  // reach, a day already recorded is still the more useful thing to say, and
+  // today needs no signature at all.
+  assert.equal(openShiftDateProblem('2026-10-11', '2026-10-10', false, false, true)?.status, 400);
+  assert.equal(openShiftDateProblem('2026-10-09', '2026-10-10', true, false, true)?.status, 409);
+  assert.equal(openShiftDateProblem('2026-10-10', '2026-10-10', false, false, true), null);
+});
+
 test("today needs nobody's leave, so a shift opened on the day is unaffected", () => {
   assert.equal(openShiftDateProblem('2026-10-10', '2026-10-10', false, false), null);
 });

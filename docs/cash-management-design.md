@@ -1730,3 +1730,55 @@ what was written, not what unwinding means. The fee stays where the fee mode say
 **Superseded:** D24's "one net row, not two" — its argument was that two rows gain no
 information over one, and on balances that was true; the gain turned out to be in the reading.
 §27's "two rows" arithmetic for a cash-settled movement now names three.
+
+## 30. Back-dating a shift, and who signs for it
+
+The shift-date picker refused every day before today for anyone who was not an administrator,
+and the server refused them the same way — so an operator with a week of backlogs to enter
+could not record a single one of them. Missing a day is a real thing that happens, and the
+record should still be made; what must not happen is anybody *quietly* writing yesterday's
+date. The window was never the question. The signature was.
+
+### D38 — a past day needs the administrator's signature at the moment it is picked
+
+The rule keeps its shape — future refused to everybody, a taken day refused to everybody, a
+past day the administrator's call — but the call can now be made from inside the dialog the
+operator is already in. She picks the past day; a panel collects the administrator's username
+and password; the server proves them exactly as login does, and answers with a token; the
+shift opens carrying it, under both names.
+
+**It is a signature, not a login.** The operator's session never changes hands. The
+administrator asserts once — username and password, verified against the same hash, refused
+the same way — and what comes back is an HMAC-signed token good for **five minutes** and
+bound to **that branch and that day**. An approval for Monday cannot be spent on Tuesday; one
+for Main Street cannot open a shift across town. A captured one is worth at most the single
+shift the one-per-day rule already lets that day take, which is why no revocation table
+exists: stateless verification, five minutes, binding — nothing left to clean up.
+
+**The credentials check is not a second front door.** The verify endpoint sits behind the same
+rate limiter as login — twenty attempts a quarter-hour — because a second place to type
+passwords is a second place to guess them. It requires an authenticated caller, refuses
+non-administrator accounts with their own sentence, and reads the two wrong-credential cases
+in login's order so a wrong password and an unknown name stay indistinguishable.
+
+**The record keeps both names.** The shift row says who opened it, as it always has; the
+audit log gains a line naming who seconded the back-date, and the response echoes the
+approver. `opened_at` continues to show when the count really took place — an honest back-date
+is traceable, and an unhonest one stays visible.
+
+**An approval buys a past day and nothing else.** The future is still refused, a taken day is
+still the 409 it always was (asked *before* any credentials, so nobody types a password for a
+day that could not be opened anyway), and today needs no signature at all. The picker no
+longer disables anything for non-admins — the gate moved from the control to the moment of
+action, which is where it can actually be enforced. `openShiftDateProblem` gained one
+parameter, `hasOverride`, and refused the same 403 without it; the dialog's submit became
+"Approve & open shift" for a past day.
+
+**What was deliberately not built:** the queue version — a back-dated shift sitting as a
+pending request in the approval module until somebody cleared it. It was refused for one
+workflow fact: nothing can be recorded for a day until that day's shift is *open*, so an
+asynchronous approval would strand the operator mid-sitting, waiting on a queue to continue
+entering the backlog she sat down to enter. And the control it would add is weaker than it
+looks — the administrator can already open any past day directly from her own account, so the
+queue would only have reordered the paperwork. If reopening a *closed* day is ever allowed,
+that is the request that belongs in the queue.

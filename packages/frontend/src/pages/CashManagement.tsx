@@ -506,6 +506,11 @@ export default function CashManagement() {
     openingReason: string;
     openingNotes: string;
   } | null>(null);
+  // The administrator's signature for a past day (D38): collected in the
+  // dialog, proved by the server inside the same submit, and spent on this
+  // branch and this day only. The password is a field, never stored — cleared
+  // the moment the day or the branch changes, and when the shift opens.
+  const [overrideCreds, setOverrideCreds] = useState({ username: '', password: '' });
   // `step` is the count's integrity: until it flips to 'review' the dialog
   // holds nothing the counter could anchor on. Expected, difference and the
   // drawer's books balance are all in `shift`, but none of them are rendered
@@ -776,16 +781,21 @@ export default function CashManagement() {
       setShiftError(`A shift cannot be dated ahead of today — today is ${today}`);
       return;
     }
-    // The same two refusals the server makes, in the same order, so what she
-    // is told here matches what she would be told there — and the second is
-    // only worth saying because `min` cannot be set for her and an
-    // administrator alike at once.
+    // The same refusal the server makes, in the same order, so what she is
+    // told here matches what she would be told there — a day already recorded
+    // is the more useful thing to say, and the approval below is not asked
+    // for a day that could not be opened anyway.
     if (shiftDateTaken) {
       setShiftError('This branch already has a shift for that date — a day is recorded once');
       return;
     }
-    if (shiftDatePassed && !isAdmin) {
-      setShiftError('Only an administrator can open a shift for a day that has already passed');
+    // A past day is still the administrator's call (D38), but the call is now
+    // made from inside this dialog: she types her credentials, the server
+    // proves them, and the shift opens under both names. Collected here so
+    // the form says what it needs before the float is counted; proved below,
+    // inside the same submit.
+    if (shiftDatePassed && !isAdmin && (!overrideCreds.username.trim() || !overrideCreds.password)) {
+      setShiftError('A day that has passed needs an administrator to approve it — enter her username and password below');
       return;
     }
     // A float that missed the drawer owes an answer, and this is the moment to
@@ -809,6 +819,24 @@ export default function CashManagement() {
     setSavingShift(true);
     setShiftError('');
     try {
+      // The administrator's assertion first (D38): her credentials are proved
+      // to the server, which answers with a token bound to this branch and
+      // this day. The open below carries it; a failure here is hers to see —
+      // a wrong password, or an account that is not an administrator — and
+      // the operator's own session never changes hands.
+      let overrideToken: string | null = null;
+      if (shiftDatePassed && !isAdmin) {
+        const approval = await api.post<{ token: string; approvedBy: string }>(
+          '/cash-management/shifts/override-verify',
+          {
+            username: overrideCreds.username.trim(),
+            password: overrideCreds.password,
+            branchId: shiftOpen.branchId,
+            shiftDate: shiftOpen.shiftDate,
+          },
+        );
+        overrideToken = approval.token;
+      }
       await api.post('/cash-management/shifts/open', {
         branchId: shiftOpen.branchId,
         openingFloat,
@@ -818,8 +846,10 @@ export default function CashManagement() {
         // deciding that once, in one place, is how the two sides stay agreed.
         openingDifferenceReason: shiftOpen.openingReason.trim() || null,
         openingDifferenceNotes: shiftOpen.openingNotes.trim() || null,
+        overrideToken,
       });
       setShiftOpen(null);
+      setOverrideCreds({ username: '', password: '' });
       // The daily figures are keyed on the open shift's own day, so opening one
       // changes which day they describe. Without this the cards keep reading
       // "No shift open" until a reload, and closing one would leave the closed
@@ -2998,6 +3028,9 @@ export default function CashManagement() {
                       branchId: next,
                       booksBalance: drawers.find((d) => d.branchId === next)?.balance ?? 0,
                     });
+                    // An approval, once minted, names one branch — switching
+                    // branches spends nothing and keeps nothing.
+                    setOverrideCreds({ username: '', password: '' });
                   }}
                 >
                   {branches
@@ -3010,23 +3043,31 @@ export default function CashManagement() {
 
               <div>
                 <label className="form-label">Shift date</label>
-                {/* A datepicker that cannot offer the refusal is kinder than one
-                    that does and then explains. An administrator keeps the whole
-                    range, because recording a missed day is hers to allow. */}
+                {/* The range is open to everybody because a missed day is a
+                    real thing that still has to be recorded (D38). What
+                    gates the past is not the picker but the administrator's
+                    signature the dialog collects below it; tomorrow stays
+                    out of reach for everybody — a shift cannot cover a day
+                    that has not happened. */}
                 <input
                   type="date"
                   className="form-input"
                   required
-                  min={isAdmin ? undefined : manilaDateValue()}
                   max={manilaDateValue()}
                   value={shiftOpen.shiftDate}
-                  onChange={(e) => setShiftOpen((s) => s && { ...s, shiftDate: e.target.value })}
+                  onChange={(e) => {
+                    setShiftOpen((s) => s && { ...s, shiftDate: e.target.value });
+                    // An approval, once minted, names one day — changing the
+                    // date spends nothing and keeps nothing.
+                    setOverrideCreds({ username: '', password: '' });
+                    setShiftError('');
+                  }}
                 />
                 <p className="text-xs text-gray-500 mt-1">
                   The day this drawer covers, in Manila time. Every transaction recorded under this
                   shift has to carry the same date — one dated otherwise is refused. Today is{' '}
                   {manilaDateValue()}. A branch records each day once, and a day that has already
-                  passed can only be opened by an administrator.
+                  passed opens only with an administrator's approval.
                 </p>
                 {/* Said before the float is typed. The server refuses both of these
                     too — this only saves a count she was never going to be allowed
@@ -3039,11 +3080,43 @@ export default function CashManagement() {
                   </p>
                 ) : shiftDatePassed ? (
                   <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1">
-                    {dateKeyLabel(shiftOpen.shiftDate)} has already passed. A missed day can still be
-                    recorded, but only by an administrator — and opened_at will always show when the
-                    count really happened.
+                    {dateKeyLabel(shiftOpen.shiftDate)} has already passed. It can still be recorded —
+                    an administrator approves it in this form — and opened_at will always show when
+                    the count really happened.
                   </p>
                 ) : null}
+                {/* The second signature itself (D38): the administrator's
+                    credentials, proved by the server the moment "Approve &
+                    open" is pressed. Her username stays so the dialog reads
+                    back; her password is cleared the moment the shift opens,
+                    and the token it buys names only this branch and this
+                    day. */}
+                {shiftDatePassed && !isAdmin && !shiftDateTaken && (
+                  <div className="mt-2 space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                    <p className="text-xs font-semibold text-amber-800">Administrator approval</p>
+                    <p className="text-xs text-amber-700">
+                      An administrator proves who she is here, at the moment the day is opened.
+                      The approval is good for five minutes, for this branch and this day only,
+                      and both names stay on the record.
+                    </p>
+                    <input
+                      type="text"
+                      className="form-input"
+                      autoComplete="off"
+                      placeholder="Administrator username"
+                      value={overrideCreds.username}
+                      onChange={(e) => setOverrideCreds((c) => ({ ...c, username: e.target.value }))}
+                    />
+                    <input
+                      type="password"
+                      className="form-input"
+                      autoComplete="off"
+                      placeholder="Administrator password"
+                      value={overrideCreds.password}
+                      onChange={(e) => setOverrideCreds((c) => ({ ...c, password: e.target.value }))}
+                    />
+                  </div>
+                )}
               </div>
 
               <div>
@@ -3107,9 +3180,19 @@ export default function CashManagement() {
               )}
 
               <div className="flex justify-end gap-3 pt-1">
-                <button type="button" className="btn-secondary" onClick={() => setShiftOpen(null)}>Cancel</button>
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => { setShiftOpen(null); setOverrideCreds({ username: '', password: '' }); }}
+                >
+                  Cancel
+                </button>
                 <button type="submit" className="btn-primary" disabled={savingShift}>
-                  {savingShift ? 'Saving…' : 'Open shift'}
+                  {savingShift
+                    ? 'Saving…'
+                    : shiftDatePassed && !isAdmin
+                      ? 'Approve & open shift'
+                      : 'Open shift'}
                 </button>
               </div>
             </form>

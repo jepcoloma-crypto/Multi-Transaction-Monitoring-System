@@ -245,6 +245,12 @@ export function openingReasonError(difference: number, reason: unknown, notes: u
  * only `opened_at` records when the count really took place, which is what
  * keeps an honest back-date traceable and an unhonest one visible.
  *
+ * The call can be made two ways since D38: the administrator opens the day
+ * herself, or she approves the operator's back-date at the moment it is
+ * picked — `hasOverride`, proved by a token bound to this branch and this
+ * day. Either way the signature is hers; the operator's own roles never
+ * change, and an approval buys a past day and nothing else.
+ *
  * Order matters: a day already taken is the more useful thing to say, and an
  * administrator gets the same 409, so the message is never hiding a
  * permission behind a date.
@@ -254,6 +260,7 @@ export function openShiftDateProblem(
   today: string,
   dayTaken: boolean,
   isAdmin: boolean,
+  hasOverride: boolean = false,
 ): { status: 400 | 403 | 409; message: string } | null {
   if (shiftDate > today) {
     return { status: 400, message: `Shift date cannot be in the future — today is ${today}` };
@@ -261,7 +268,7 @@ export function openShiftDateProblem(
   if (dayTaken) {
     return { status: 409, message: `This branch already has a shift for ${shiftDate}` };
   }
-  if (shiftDate < today && !isAdmin) {
+  if (shiftDate < today && !isAdmin && !hasOverride) {
     return {
       status: 403,
       message: `Only an administrator can open a shift for ${shiftDate} — that day has already passed`,

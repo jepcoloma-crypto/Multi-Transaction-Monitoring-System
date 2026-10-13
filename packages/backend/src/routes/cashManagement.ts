@@ -1,4 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
+import bcrypt from 'bcryptjs';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
@@ -7,6 +8,8 @@ import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashReco
 import { drawerMovements, drawerBalance, drawerMovementRows, drawerFlagSql, splitCashRows } from '../services/drawerQuery';
 import type { ClassifiedCashRow } from '../services/drawerQuery';
 import { classifyVariance, expectedClosing, netMovement, drawerDifference, openingReasonError, openShiftDateProblem, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
+import { mintShiftOverrideToken, verifyShiftOverrideToken, SHIFT_OVERRIDE_TTL_SECONDS } from '../services/shiftOverride';
+import { createAuditLog } from '../services/audit';
 import { parseManilaDateTime, parseDateKey, manilaDateKey, entryDateBounds } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
 import type { BranchBalance, CashBucket, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
@@ -503,6 +506,59 @@ router.get('/shifts', authorize('reports.read'), async (req: Request, res: Respo
   }
 });
 
+// The second signature for a back-dated shift (D38): an administrator proves
+// who she is so the operator's past day can proceed. The operator's own
+// session never changes hands — this is one assertion, not a login — and what
+// comes back is a short-lived token bound to this branch and this day, which
+// the open below checks again. Credentials are read exactly as login reads
+// them, in the same order, and the route sits behind the same limiter, so the
+// approval cannot become a quieter door to guess passwords through.
+router.post('/shifts/override-verify', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const body = req.body || {};
+    const username = String(body.username ?? '').trim();
+    const password = String(body.password ?? '');
+    const branchId = String(body.branchId || '');
+    const shiftDate = String(body.shiftDate || '').trim();
+    if (!username || !password) {
+      throw createError(400, 'Administrator username and password are required');
+    }
+    if (!branchId || !parseDateKey(shiftDate)) {
+      throw createError(400, 'Branch and shift date are required');
+    }
+
+    const admin = await queryOne<{ id: string; first_name: string; last_name: string; password_hash: string; is_active: boolean }>(
+      'SELECT id, first_name, last_name, password_hash, is_active FROM users WHERE username = $1',
+      [username],
+    );
+    // The same two refusals as login, in the same order: a wrong password and
+    // an unknown name must not be distinguishable here any more than there.
+    if (!admin) throw createError(401, 'Invalid credentials');
+    const valid = await bcrypt.compare(password, admin.password_hash);
+    if (!valid) throw createError(401, 'Invalid credentials');
+    if (!admin.is_active) throw createError(403, 'Account is deactivated');
+
+    const roles = await query<{ name: string }>(
+      `SELECT r.name FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = $1`,
+      [admin.id],
+    );
+    if (!roles.some((r) => r.name === 'administrator')) {
+      throw createError(403, 'A back-dated shift must be approved by an administrator');
+    }
+
+    res.json({
+      success: true,
+      data: {
+        token: mintShiftOverrideToken(admin.id, branchId, shiftDate),
+        approvedBy: `${admin.first_name} ${admin.last_name}`.trim() || username,
+        expiresInSeconds: SHIFT_OVERRIDE_TTL_SECONDS,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post('/shifts/open', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const body = req.body || {};
@@ -531,11 +587,27 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
     const dayTaken = Boolean(
       await queryOne(`SELECT id FROM shifts WHERE branch_id = $1 AND shift_date = $2::date`, [branchId, shiftDate]),
     );
+    // A past day is the administrator's call (D17), and since D38 she can
+    // make that call from right here — proving who she is, instead of opening
+    // the day from her own account. The token is checked against the branch
+    // and the day being opened, so an approval for one day cannot be spent on
+    // another, and the approver travels into the audit trail: the shift row
+    // says who opened it, and this says who seconded the back-date.
+    const isAdmin = (req.user!.roles || []).includes('administrator');
+    let overrideApprover: string | null = null;
+    if (!isAdmin && shiftDate < manilaDateKey()) {
+      const verified = verifyShiftOverrideToken(body.overrideToken, branchId, shiftDate);
+      if (!verified) {
+        throw createError(403, `Only an administrator can open a shift for ${shiftDate} — approve it in the dialog to proceed`);
+      }
+      overrideApprover = verified.adminUserId;
+    }
     const dateProblem = openShiftDateProblem(
       shiftDate,
       manilaDateKey(),
       dayTaken,
-      (req.user!.roles || []).includes('administrator'),
+      isAdmin,
+      overrideApprover !== null,
     );
     if (dateProblem) throw createError(dateProblem.status, dateProblem.message);
 
@@ -582,6 +654,24 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
       throw err;
     }
 
+    // The back-date is an event worth a line of its own. The shift row says
+    // who opened it; this says who seconded it — the one fact the row itself
+    // has nowhere to carry without a column of its own.
+    if (overrideApprover) {
+      await createAuditLog({
+        userId: req.user!.userId,
+        action: 'shift_opened_backdated',
+        entity: 'shift',
+        entityId: shift.id,
+        newData: {
+          branchId,
+          shiftDate,
+          openedBy: req.user!.userId,
+          approvedBy: overrideApprover,
+        },
+      });
+    }
+
     res.status(201).json({
       success: true,
       data: {
@@ -589,6 +679,7 @@ router.post('/shifts/open', authorize('transactions.write'), async (req: Request
         // Echoed so the screen can state the gap from the row rather than from
         // a figure it worked out itself, which could differ by a centavo.
         drawerDifference: openingGap,
+        overrideApprovedBy: overrideApprover,
       },
     });
   } catch (error) {

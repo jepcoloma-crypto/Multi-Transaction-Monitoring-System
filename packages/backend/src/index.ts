@@ -42,6 +42,10 @@ const authLimiter = rateLimit({
   message: { success: false, error: { message: 'Too many login attempts, please try again later' } },
 });
 app.use('/api/auth/login', authLimiter);
+// The back-dated shift approval (D38) checks a password too, so it gets the
+// same protection against guessing that login has — a second door to the same
+// lock needs the same limit.
+app.use('/api/cash-management/shifts/override-verify', authLimiter);
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
