@@ -21,6 +21,7 @@ const transactionRecord = (overrides: Record<string, unknown> = {}): Record<stri
   fee: '20.00',
   net_amount: '400.00',
   fee_added_to_balance: true,
+  direction: 'in',
   additional_charges: JSON.stringify([{ name: 'Handling', amount: '25.00' }]),
   ...overrides,
 });
@@ -59,18 +60,20 @@ const throwsStatus = (fn: () => unknown, statusCode: number, pattern: RegExp) =>
     `expected ${pattern} with ${statusCode}`
   );
 
-test('a transaction posts net amount plus charges to the ledger', () => {
+test('a transaction posts the fee-riding net amount plus charges to the ledger', () => {
+  // Cash-in with the fee paid on top: the account lands 500 + 20 (D42), and
+  // the charges ride on top of that.
   const result = plan('transaction', transactionRecord(), [creditRow()], { amount: 500 });
 
-  assert.deepEqual(result.columns, { amount: 500, fee: 20, net_amount: 500 });
-  assert.deepEqual(result.amounts, { a1: 525 });
+  assert.deepEqual(result.columns, { amount: 500, fee: 20, net_amount: 520 });
+  assert.deepEqual(result.amounts, { a1: 545 });
 });
 
-test('a fee inside the amount posts the same figures as a fee paid on top (D40)', () => {
-  // The customer sent 500 of which 20 was the fee. The ledger still receives
-  // the whole 500: the fee is income netted into the drawer's movement, not a
-  // subtraction from what lands, so the two fee modes are indistinguishable
-  // to the ledger and only the tender record differs.
+test('a fee inside a cash-in is cut from the drawer, not from the account (D42)', () => {
+  // The customer sent 500 of which 20 was the fee. The account still lands the
+  // whole 500 — the carve-out is a drawer's story, not an account's — so this
+  // cell posts what it always posted, and the fee stays the tender record it
+  // was. The fee-on-top row above differs by exactly the fee now (D42).
   const record = transactionRecord({ fee_added_to_balance: false });
   const result = plan('transaction', record, [creditRow()], { amount: 500 });
 
@@ -87,26 +90,27 @@ test('a fee larger than the amount it was taken inside is refused', () => {
   );
 });
 
-test('a fee inside the amount never shrinks what a debit removes', () => {
-  const record = transactionRecord({ fee_added_to_balance: false });
+test('a fee carved from a cash-out is cut from what the account hands out (D42)', () => {
+  const record = transactionRecord({ direction: 'out', fee_added_to_balance: false });
   const result = plan('transaction', record, [debitRow()], { amount: 500 });
 
-  // The whole amount leaves the balance in both fee modes (D40). Shrinking it
-  // would have taken the fee from nobody: the balance would drop by 480 and
-  // 480 would be handed over, so the fee was recorded as income and never
-  // physically collected.
-  assert.equal(result.columns.net_amount, 500);
-  assert.deepEqual(result.amounts, { a1: 525 });
+  // 480 leaves the balance and the drawer hands over 480: the 20 was carved
+  // from the amount the customer paid, so the books shrink by 480 and the fee
+  // is the cut the till kept. Shrinking the account without shrinking what is
+  // handed over — or vice versa — would take the fee from nobody.
+  assert.equal(result.columns.net_amount, 480);
+  assert.deepEqual(result.amounts, { a1: 505 });
 });
 
 test('charges are summed and an unreadable charge list is refused, never guessed', () => {
+  // in-ON: the account lands 400 + 20 fee (D42), and the charges ride on top.
   const result = plan(
     'transaction',
     transactionRecord({ additional_charges: '[{"amount":"10.00"},{"amount":"15.50"}]' }),
     [creditRow()],
     { amount: 400 }
   );
-  assert.deepEqual(result.amounts, { a1: 425.5 });
+  assert.deepEqual(result.amounts, { a1: 445.5 });
 
   throwsStatus(
     () =>
@@ -266,9 +270,11 @@ test('a figure that is not a number is refused before it can reach the ledger', 
   throwsStatus(() => plan('loading', loadingRecord(), [debitRow()], { quantity: 'two' }), 400, /whole number/);
 });
 
-test('a record carrying no charges contributes nothing to the ledger', () => {
+test('a record carrying no charges contributes nothing beyond its own figures', () => {
+  // in-ON with no proposal: the account's figure is the stored amount plus the
+  // fee (D42), and the absent charges add nothing on top of it.
   const absent = plan('transaction', transactionRecord({ additional_charges: null }), [creditRow()], {});
-  assert.deepEqual(absent.amounts, { a1: 400 });
+  assert.deepEqual(absent.amounts, { a1: 420 });
 
   const alreadyParsed = plan(
     'transaction',
@@ -276,7 +282,7 @@ test('a record carrying no charges contributes nothing to the ledger', () => {
     [creditRow()],
     {}
   );
-  assert.deepEqual(alreadyParsed.amounts, { a1: 410 });
+  assert.deepEqual(alreadyParsed.amounts, { a1: 430 });
 });
 
 test('a charge list that is not an array is refused rather than counted as zero', () => {

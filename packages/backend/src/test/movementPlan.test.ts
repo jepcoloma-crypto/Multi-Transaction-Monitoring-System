@@ -36,23 +36,28 @@ test('cash received → e-money sent: the drawer gains the amount and the fee, t
   assert.equal(plan.finalStatus, 'completed');
 });
 
-test('e-money received → cash paid out: the drawer loses the amount less the fee withheld', () => {
-  // The sentence the flow promises the entry form: "This will post: Cash on
-  // Hand −24,550 · Sheryll's e-wallet +24,800."
+test('e-money received → cash paid out: the fee rides the account, so the drawer hands over the whole amount', () => {
+  // The sentence the flow promises the entry form, on the owner's own numbers:
+  // a ₱24,800 GCash cash-in with the ₱250 fee paid on top lands the whole
+  // ₱25,050 on Sheryll's wallet and the till hands over ₱24,800. The old
+  // figures shortchanged the till by the fee (D42); this is the row that
+  // complained.
   const plan = walletPlan({ amount: 24800, fee: 250 });
 
   assert.deepEqual(plan.problems, []);
   assert.equal(plan.entryType, 'credit', "Sheryll's e-wallet is credited");
-  assert.equal(plan.netAmount, 24800, 'the fee never shrinks the credit (D40)');
-  assert.deepEqual(plan.drawerLeg, { amount: 24550, entryType: 'debit' }, 'Cash on Hand −24,550');
+  assert.equal(plan.netAmount, 25050, 'the fee rides the account that received it (D42)');
+  assert.deepEqual(plan.drawerLeg, { amount: 24800, entryType: 'debit' }, 'Cash on Hand −24,800');
   assert.equal(plan.cashBehavior, 'out', 'the badge reads: cash leaves the drawer');
 });
 
-test('a fee inside the amount posts exactly like a fee paid on top (D40)', () => {
-  // The customer e-money-sends ₱510 of which ₱10 is the fee: the balance
-  // lands the whole ₱510, the drawer nets ₱10 − ₱510 = −₱500, and the fee is
-  // income. Identical postings to the fee-on-top row above — only the tender
-  // record differs.
+test('a fee inside a cash-in is cut from the drawer, not the account', () => {
+  // The customer e-money-sends ₱500 of which ₱10 is the fee: the balance
+  // lands the whole ₱500, the drawer nets ₱10 − ₱500 = −₱490 — what
+  // physically crossed the tin — and the fee is income. Under the old rule
+  // this cell posted the same figures as the fee-on-top row; only the tender
+  // record differs. Now the two cells are distinct (D42), and this is the
+  // half where the old arithmetic was already right.
   const plan = walletPlan({ feeAddedToBalance: false });
 
   assert.equal(plan.feeInside, true, 'the tender record survives as a record');
@@ -60,11 +65,15 @@ test('a fee inside the amount posts exactly like a fee paid on top (D40)', () =>
   assert.deepEqual(plan.drawerLeg, { amount: 490, entryType: 'debit' }, 'the drawer nets fee − amount');
 });
 
-test('a fee inside the amount never shrinks what a debit removes', () => {
+test('a fee carved from a cash-out is cut from what the account hands out', () => {
+  // ₱500 of cash crosses the tin, of which ₱10 is the fee: the channel hands
+  // over ₱490 and the drawer keeps ₱500 (D42). The old rule took the whole
+  // ₱500 out of the channel and credited the drawer ₱510 — ₱10 that was
+  // never counted.
   const plan = walletPlan({ direction: 'out', code: 'cash_out', feeAddedToBalance: false });
 
-  assert.equal(plan.netAmount, 500, 'the whole amount leaves the channel');
-  assert.deepEqual(plan.drawerLeg, { amount: 510, entryType: 'credit' }, 'the drawer retains the fee');
+  assert.equal(plan.netAmount, 490, 'the fee is cut from what the account hands out');
+  assert.deepEqual(plan.drawerLeg, { amount: 500, entryType: 'credit' }, 'the drawer retains the fee');
 });
 
 test('a movement settled by e-wallet touches no drawer at all', () => {
@@ -150,15 +159,16 @@ test('a non-administrator cannot create an ordinary movement as pending', () => 
   );
 });
 
-test('additional charges ride on the account leg without touching the drawer leg', () => {
+test('additional charges ride the account leg and the drawer hands them over', () => {
   const plan = walletPlan({ additionalCharges: [{ amount: '50' }, { amount: 25 }] });
 
   assert.equal(plan.totalCharges, 75);
-  assert.equal(plan.totalAmount, 575, 'what the account leg moves includes the charges');
+  assert.equal(plan.netAmount, 510, 'the ₱10 fee rides the account too (D42)');
+  assert.equal(plan.totalAmount, 585, 'what the account leg moves includes the fee and the charges');
   assert.deepEqual(
     plan.drawerLeg,
-    { amount: 565, entryType: 'debit' },
-    'the drawer hands over the full 575 less the 10 it withholds as its fee'
+    { amount: 575, entryType: 'debit' },
+    'the drawer hands over the full 585 less the 10 it withholds as its fee'
   );
 });
 

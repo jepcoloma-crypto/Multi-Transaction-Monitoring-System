@@ -140,10 +140,13 @@ export interface DrawerLeg {
 //
 // The drawer and the account are two pools of the same money, so a cash
 // movement transfers between them: the drawer moves opposite to the account
-// leg, and the fee is credited back to the drawer as income.
+// leg, and the fee is credited back as income on the side that received it
+// (D42). With `signedAmount` the account's whole row, the four cells are:
 //
-//   cash-in,   any fee mode   account +500   drawer -490
-//   cash-out,  any fee mode   account -500   drawer +510
+//   cash-in,   fee on top   account +510   drawer -500
+//   cash-in,   fee inside   account +500   drawer -490
+//   cash-out,  fee on top   account -500   drawer +510
+//   cash-out,  fee inside   account -490   drawer +500
 //
 // The sign is what makes the two legs sum to the fee in every row:
 //
@@ -152,9 +155,10 @@ export interface DrawerLeg {
 // so the books grow by exactly what the income report books. Adding them in
 // the same direction instead grew the total by the whole movement again — a
 // ₱500 cash-in would have added ₱990 to the total while income reported ₱10.
-// The account's row is the amount as typed in both fee modes (D40): a debit
-// loses the whole 500 and a credit lands the whole 500, so neither row is
-// narrowed by the fee and the four cells collapse to two.
+// The account's row is what the balance moves under D42: a debit loses
+// amount − fee when the fee was carved from the amount, a credit lands
+// amount + fee when the fee rode on top, and the other two cells carry the
+// amount as typed.
 //
 // `signedAmount` is the signed account leg; `fee` is always positive. Null means
 // nothing physically changed hands and no ledger row should be written.
@@ -172,15 +176,20 @@ export interface DrawerPosting extends DrawerLeg {
 }
 
 /**
- * The drawer's side of a movement as the two rows it physically was: the fee
- * credited back to the drawer, then the movement itself (D37).
+ * The drawer's side of a movement, as the rows it physically was (D37/D42).
  *
- * Their sum is exactly `drawerLeg`'s net row — the identity
- * `signedAmount + drawer_delta = fee` holds over the pair the same way it held
+ * On a cash-out the customer paid the fee in cash, so it is the till's own
+ * first row — the fee credited back, then the movement settling against it
+ * (D37). On a cash-in the fee was paid in e-money and lands on the receiving
+ * account as its own line instead (D42), so the drawer's only row is the net:
+ * the cash that actually crossed it.
+ *
+ * Either way the sum is exactly `drawerLeg`'s net row — the identity
+ * `signedAmount + drawer_delta = fee` holds over the rows the same way it held
  * over the net — so balances, the shift's expected figure and the Sources and
- * Uses tie-out do not move by a centavo. What changes is the statement: the
- * movement pairs at its full amount against the account's row, and the fee
- * reads as the line of income it is rather than hiding inside a difference.
+ * Uses tie-out do not move by a centavo. What changes is the statement: each
+ * movement pairs at its full figure on both sides, and the fee reads as the
+ * line of income it is rather than hiding inside a difference.
  *
  * The fee posts first because that is the order the cash arrives in: the fee
  * lands in the till, then the movement settles out of it. That keeps the
@@ -190,12 +199,19 @@ export interface DrawerPosting extends DrawerLeg {
  * same reason: the books still grow by exactly the fee. `fee` is always
  * positive; `signedAmount` is the signed account leg.
  */
-export function drawerLegs(signedAmount: number, fee: number): DrawerPosting[] {
+export function drawerLegs(signedAmount: number, fee: number, direction: string): DrawerPosting[] {
   const net = Math.round((fee - signedAmount) * 100) / 100;
   if (net === 0) return [];
 
-  const legs: DrawerPosting[] = [];
   const feeAmount = Math.round(fee * 100) / 100;
+
+  // A cash-in's fee never touched the till — the customer paid it in e-money —
+  // so the till writes only what crossed it: the net, as the movement row.
+  if (direction === 'in') {
+    return [{ amount: Math.abs(net), entryType: net > 0 ? 'credit' : 'debit', role: 'movement' }];
+  }
+
+  const legs: DrawerPosting[] = [];
   if (feeAmount > 0) legs.push({ amount: feeAmount, entryType: 'credit', role: 'fee' });
 
   const movement = Math.round(-signedAmount * 100) / 100;
@@ -279,13 +295,15 @@ export function drawerAccountId(rows: RecordedLedgerRow[]): string | null {
  * carries the charges folded into `totalAmount` at creation and any charge
  * adjustment made since, without restating the rules that decided them.
  *
- * The fee comes back with the movement whichever way it was taken (D40). The
- * recorded rows are the fee credited to the drawer and the movement settling
- * against it, so mirroring their sum hands back the net the drawer actually
- * moved and the fee's income is refunded alongside it — which is exactly what
- * the income report does with a reversed row, whichever mode it carries. Two
- * surfaces that disagree about where the money is cannot both be right, and an
- * operator counting the till is the one who finds out.
+ * The fee comes back with the movement whichever way it was taken (D40's rule,
+ * kept by D42). The recorded rows are whatever the original actually wrote —
+ * the fee credited to the drawer beside its movement on a cash-out, the single
+ * net on a cash-in whose fee posted on the account instead — so mirroring
+ * their sum hands back the net the drawer actually moved and the fee's income
+ * is refunded alongside it, which is exactly what the income report does with a
+ * reversed row, whichever mode it carries. Two surfaces that disagree about
+ * where the money is cannot both be right, and an operator counting the till is
+ * the one who finds out.
  *
  * Several rows on the same account are summed, in whole centavos: corrections
  * append, so the drawer can legitimately own more than one row for the record

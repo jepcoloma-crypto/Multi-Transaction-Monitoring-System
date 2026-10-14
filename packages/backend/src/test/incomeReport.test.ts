@@ -212,8 +212,9 @@ test('a fee inside the amount on a reversed transaction is totalled as refunded'
   });
 
   // A reversal hands the whole transaction back, so nothing it carried is
-  // income — the fee inside the amount is refunded like any other, since both
-  // fee modes post identically (D40).
+  // income — the fee inside the amount is refunded like any other, because a
+  // reversal mirrors the rows the original wrote whichever cell it posted
+  // under (D40's rule, kept by D42).
   assert.equal(summary.earnedFee, 10);
   assert.equal(summary.earnedCharges, 5);
   assert.equal(summary.earned, 15);

@@ -11,6 +11,7 @@
 // explain, so the record side and the ledger side are kept side by side here
 // rather than being worked out independently at each call site.
 import { createError } from '../middleware/error';
+import { netAmountOf } from './movementPlan';
 
 export type AmountableSource = 'transaction' | 'transfer' | 'loading';
 
@@ -145,18 +146,23 @@ function planTransaction(
   const amount = readMoney(read('amount'), 'Amount', 0);
   const fee = readMoney(read('fee'), 'Fee', 0);
 
-  // The fee never changes what the balance moves (design D40): the amount as
-  // typed is what the ledger row posts, whichever way the fee was taken — the
-  // fee is income netted into the drawer's movement, not a subtraction from
-  // what lands or leaves. A fee taken inside the amount still cannot exceed
-  // it, because it is a cut of the amount the customer sent and a larger cut
-  // would book income that money never carried. Reproducing exactly what
-  // creation would have written, instead of quietly re-pricing the movement.
-  const feeInside = record.fee_added_to_balance === false && fee > 0;
-  if (feeInside && amount < fee) {
+  // The same rule as creation, asked of the same function (design D42): the fee
+  // rides the side the customer paid it on — amount + fee on a cash-in that
+  // collected it on top, amount − fee on a cash-out that carved it from the
+  // amount, amount otherwise — and the balance moves by that net figure. A fee
+  // taken inside the amount still cannot exceed it, because it is a cut of the
+  // amount the customer sent and a larger cut would book income that money
+  // never carried. Reproducing exactly what creation would have written,
+  // instead of quietly re-pricing the movement.
+  const { exceeds, netAmount } = netAmountOf({
+    direction: String(record.direction ?? ''),
+    amount,
+    fee,
+    feeAddedToBalance: record.fee_added_to_balance !== false,
+  });
+  if (exceeds) {
     throw createError(400, 'Fee cannot exceed the transaction amount when the fee is taken inside the amount');
   }
-  const netAmount = amount;
   const charges = sumCharges(record.additional_charges);
 
   return {

@@ -308,10 +308,25 @@ export default function Transactions() {
   // actually changed hands, because that is what decides whether the drawer
   // takes part in it. The type is always whatever the selected fee rule carries.
   const movementRequested = isCashMovementCode(selectedRule?.type_code);
-  // The balance moves by the amount as typed, whichever way the fee was paid:
-  // the fee is income netted into the drawer's movement, never a subtraction
-  // from what lands or leaves (D40), so the flag below records the tender only.
-  const totalOutflow = inputAmount + chargesTotal + providerChargeAmount;
+  // The fee rides the side the customer paid it on (D42): paid on top of a
+  // cash-in it lands on the account too, carved from the amount of a cash-out
+  // it is cut from what leaves. The other two cells carry the amount as
+  // typed, and additional charges ride the account leg in all four. This is
+  // the figure the balance moves — the same one the server's `netAmountOf`
+  // computes — so the funding check and the label cannot drift from the row
+  // the save will write.
+  const accountNet = selectedDirection === 'in'
+    ? (formData.feeAddedToBalance ? inputAmount + feeAmount : inputAmount)
+    : selectedDirection === 'out'
+      ? (formData.feeAddedToBalance ? inputAmount : inputAmount - feeAmount)
+      : inputAmount;
+  const totalOutflow = accountNet + chargesTotal + providerChargeAmount;
+  // What physically crosses the till, charges included (D42): a cash-in hands
+  // out the amount less any fee carved from it, a cash-out takes in the amount
+  // plus any fee paid on top — the same figure `drawerLeg` computes server-side.
+  const drawerCash = selectedDirection === 'out'
+    ? (formData.feeAddedToBalance ? inputAmount + feeAmount + chargesTotal : inputAmount + chargesTotal)
+    : (formData.feeAddedToBalance ? inputAmount + chargesTotal : inputAmount - feeAmount + chargesTotal);
   const hasInsufficientBalance = selectedDirection === 'out' && selectedAccount != null && totalOutflow > 0 && totalOutflow > selectedAccount.current_balance;
   const movementLabel = selectedDirection === 'out'
     ? `Total: ${formatCurrency(totalOutflow)}`
@@ -1016,9 +1031,10 @@ export default function Transactions() {
                         </div>
                       )}
                       <p className="text-xs text-gray-500 leading-relaxed">
-                        Cash: {formatBreakdown(inputAmount)}{feeAmount >= 1 && <> &bull; Fee cash: {formatBreakdown(feeAmount)}</>}
+                        Cash: {formatBreakdown(formData.paymentMethod === 'cash' ? Math.max(drawerCash, 0) : inputAmount + chargesTotal)}
+                        {selectedDirection === 'out' && feeAmount >= 1 && <> &bull; Fee cash: {formatBreakdown(feeAmount)}</>}
                         {' '}&bull; {selectedDirection === 'out'
-                          ? 'movement = amount + charges'
+                          ? (formData.feeAddedToBalance ? 'movement = amount + charges' : 'movement = amount − fee + charges')
                           : 'credited to account'}
                         {createCharges.filter(c => (parseFloat(c.amount) || 0) > 0).map((c, i) => (
                           <span key={i}> &bull; {c.description || 'Charge'} {formatCurrency(parseFloat(c.amount) || 0)}</span>

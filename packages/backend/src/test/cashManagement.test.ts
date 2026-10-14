@@ -242,15 +242,15 @@ test('only physical cash touches the drawer', () => {
 });
 
 test('the drawer moves opposite to the account and keeps the fee', () => {
-  // Cash in: ₱500 lands in the account, ₱500 leaves the drawer and ₱10 comes
-  // back as income, so the drawer nets −490. Both fee modes land here — the
-  // account's row is the amount as typed (D40).
+  // The fee lands on the side that paid it (D42), so these examples quote the
+  // account's whole figure — the four-cell net. Cash in, fee inside: the
+  // account lands the ₱500 the customer sent, ₱500 leaves the drawer and the
+  // ₱10 comes back as income, so the drawer nets −490.
   assert.deepEqual(drawerLeg(500, 10), { amount: 490, entryType: 'debit' });
   // A smaller landing nets less out of the drawer.
   assert.deepEqual(drawerLeg(490, 10), { amount: 480, entryType: 'debit' });
-  // Cash out: ₱500 leaves the account, ₱500 arrives in the drawer plus the
-  // ₱10 income on top, so the drawer nets +510. Both fee modes land here —
-  // a debit loses the whole amount, whichever way the fee was paid (D40).
+  // Cash out, fee on top: ₱500 leaves the account, ₱500 arrives in the drawer
+  // plus the ₱10 income on top, so the drawer nets +510.
   assert.deepEqual(drawerLeg(-500, 10), { amount: 510, entryType: 'credit' });
   // Cash out with no fee is a plain ₱500 into the drawer.
   assert.deepEqual(drawerLeg(-500, 0), { amount: 500, entryType: 'credit' });
@@ -293,54 +293,59 @@ test('the drawer figure is rounded to centavos rather than left to float error',
   assert.deepEqual(drawerLeg(-(0.1 + 0.2), 0.01), { amount: 0.31, entryType: 'credit' });
 });
 
-// The pair the drawer really writes (D37): the fee credited back to the till,
-// then the movement itself. The net is unchanged — these tests hold the split
-// to the figure the single row used to carry.
+// The rows the drawer really writes (D37/D42): on a cash-out the fee credited
+// back to the till, then the movement itself; on a cash-in the till's only row
+// is the net, because the fee was paid in e-money and posts on the account.
+// The net is unchanged either way — these tests hold the rows to the figure
+// the single row used to carry.
 
-test('the drawer posts the fee and the movement as two rows, fee first', () => {
-  // Cash-in, separate: the ₱20 lands in the till, then ₱1,500 settles out of
-  // it. The statement now reads a full ₱1,500 against the account's ₱1,500
-  // credit, with the fee as its own line — the pair the textbook entry is.
-  assert.deepEqual(drawerLegs(1500, 20), [
-    { amount: 20, entryType: 'credit', role: 'fee' },
-    { amount: 1500, entryType: 'debit', role: 'movement' },
-  ]);
-  // A smaller landing pairs at its own figure — the fee still posts first,
-  // netting ₱1,460 out of the till.
-  assert.deepEqual(drawerLegs(1480, 20), [
-    { amount: 20, entryType: 'credit', role: 'fee' },
-    { amount: 1480, entryType: 'debit', role: 'movement' },
-  ]);
-  // Cash-out: ₱500 comes back to the till and the ₱10 income is on top.
-  assert.deepEqual(drawerLegs(-500, 10), [
+test("a cash-out's drawer keeps D37's split: the fee, then the movement", () => {
+  // ₱500 comes back to the till and the ₱10 income is on top — the customer
+  // paid the fee in cash, so it lands in the till as its own line.
+  assert.deepEqual(drawerLegs(-500, 10, 'out'), [
     { amount: 10, entryType: 'credit', role: 'fee' },
     { amount: 500, entryType: 'credit', role: 'movement' },
   ]);
   // No fee: one row, exactly as before — the split changes nothing when there
   // is nothing to split.
-  assert.deepEqual(drawerLegs(-500, 0), [
+  assert.deepEqual(drawerLegs(-500, 0, 'out'), [
     { amount: 500, entryType: 'credit', role: 'movement' },
   ]);
 });
 
-test('the two rows net to the drawer leg, so no balance moves', () => {
+test("a cash-in's drawer posts the net cash alone (D42)", () => {
+  // The fee was paid in e-money, so it never touched the till: ₱1,500 crosses
+  // it and the ₱20 fee posts on the receiving account instead.
+  assert.deepEqual(drawerLegs(1500, 20, 'in'), [
+    { amount: 1480, entryType: 'debit', role: 'movement' },
+  ]);
+  // The whole account figure crossing the till nets the same single row.
+  assert.deepEqual(drawerLegs(1480, 20, 'in'), [
+    { amount: 1460, entryType: 'debit', role: 'movement' },
+  ]);
+});
+
+test('the drawer rows net to the drawer leg, so no balance moves', () => {
   const signedOf = (leg: { amount: number; entryType: 'credit' | 'debit' }): number =>
     leg.entryType === 'credit' ? leg.amount : -leg.amount;
 
-  const cases: Array<[number, number]> = [
-    [1500, 20],
-    [1480, 20],
-    [-500, 10],
-    [-500, 0],
-    [0, 20],
-    [0, 0],
-    [10, 10],
-    [0.1 + 0.2, 0.01],
+  const cases: Array<[number, number, string]> = [
+    [1500, 20, 'in'],
+    [1480, 20, 'in'],
+    [-500, 10, 'out'],
+    [-500, 0, 'out'],
+    [1500, 20, 'out'],
+    [-500, 10, 'in'],
+    [0, 20, 'out'],
+    [0, 0, 'in'],
+    [10, 10, 'out'],
+    [10, 10, 'in'],
+    [0.1 + 0.2, 0.01, 'in'],
   ];
 
-  for (const [signedAmount, fee] of cases) {
-    const context = `signedAmount=${signedAmount} fee=${fee}`;
-    const rows = drawerLegs(signedAmount, fee);
+  for (const [signedAmount, fee, direction] of cases) {
+    const context = `signedAmount=${signedAmount} fee=${fee} direction=${direction}`;
+    const rows = drawerLegs(signedAmount, fee, direction);
     const split = rows.reduce((sum, row) => sum + signedOf(row), 0);
     const net = drawerLeg(signedAmount, fee);
     const single = net ? signedOf(net) : 0;
@@ -356,11 +361,13 @@ test('the two rows net to the drawer leg, so no balance moves', () => {
   }
 });
 
-test('a pair that nets to zero writes no rows, like the net row it replaces', () => {
+test('rows that net to zero write nothing, like the net row they replace', () => {
   // ₱20 fee on a ₱20 movement: the books still grow by the fee (the account's
   // own ₱20), so nothing is owed to the drawer either way.
-  assert.deepEqual(drawerLegs(20, 20), []);
-  assert.deepEqual(drawerLegs(0, 0), []);
+  assert.deepEqual(drawerLegs(20, 20, 'out'), []);
+  assert.deepEqual(drawerLegs(20, 20, 'in'), []);
+  assert.deepEqual(drawerLegs(0, 0, 'out'), []);
+  assert.deepEqual(drawerLegs(0, 0, 'in'), []);
 });
 
 test('the fee row names itself so a statement can tell it apart', () => {
@@ -458,14 +465,14 @@ test('a reversal hands back exactly what the original booked, whichever way the 
 
   // [signed account leg, fee]. The original's two legs sum to the fee it
   // books, and the reversal's two legs sum to that fee negated — a complete
-  // undo, whichever way the fee was paid, because both fee modes post
-  // identically (D40) and a reversal refunds the fee with the movement. That
-  // is what the income report says about the same row: a reversed transaction
-  // is totalled wholly as refunded, so nothing that was undone is still
-  // claimed as earned.
+  // undo, whichever way the fee was paid, because a reversal mirrors the
+  // recorded rows rather than recomputing them (D40), so the fee comes back
+  // with the movement under D42's cells too. That is what the income report
+  // says about the same row: a reversed transaction is totalled wholly as
+  // refunded, so nothing that was undone is still claimed as earned.
   const cases: [number, number][] = [
-    [500, 10],    // cash-in
-    [-500, 10],   // cash-out
+    [500, 10],    // cash-in, fee inside
+    [-500, 10],   // cash-out, fee on top
     [-500, 0],    // no fee: nothing to refund
   ];
 

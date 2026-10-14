@@ -37,24 +37,29 @@ export function entryTypeFor(direction: string): 'debit' | 'credit' {
 }
 
 /**
- * What the balance moves, whichever way the fee was taken (D40).
+ * What the balance moves: the fee rides the side the customer paid it on (D42).
  *
- * The fee never touches the balance figure. A fee taken inside the amount —
- * the customer sent 510 of which 10 is the fee — still posts the whole 510 on
- * the account's row: the fee is recognized as income and netted into the
- * drawer's movement, not subtracted from what lands. On a debit likewise the
- * whole amount leaves. So the credit and the debit both carry the amount as
- * typed, and the two fee modes post identically; `feeAddedToBalance` survives
- * only as the record of whether the customer paid the fee on top of the
- * amount or inside it.
+ * A fee paid on top of a cash-in is e-money arriving with the amount, so the
+ * account lands amount + fee. A fee carved from the amount of a cash-out is
+ * cash the till keeps, so the account hands out amount − fee. The other two
+ * cells need no rule of their own: a fee inside a cash-in is already cut from
+ * the drawer's leg by `drawerLeg`'s formula, and a fee on top of a cash-out is
+ * already added to it — so those two cells carry the amount as typed, and the
+ * books grow by exactly the fee in all four (design D24's identity).
+ *
+ * D40 posted the amount as typed in every cell, which left two of them
+ * wrong: a ₱510 cash-in with a ₱10 fee on top booked ₱500 on the account and
+ * ₱490 out of the drawer — ₱10 that never existed in the till. This restores
+ * the tender flag as a posting rule, but only where it moves a peso: the
+ * account's figure changes in the two cells the old formula mis-netted.
  *
  * A fee inside the amount cannot exceed it — the fee is a cut of what was
  * sent, and a larger cut would book income the money never carried — so that
- * is refused rather than silently absorbed.
+ * is refused rather than silently absorbed (D40's guard, unchanged).
  *
- * Shared by the entry route, the entry preview and the edit route: editing
- * must reproduce what creation would have written, or correcting an amount
- * would quietly re-price the movement.
+ * Shared by the entry route, the entry preview, the edit route and the
+ * correction planner: editing must reproduce what creation would have
+ * written, or correcting an amount would quietly re-price the movement.
  */
 export function netAmountOf(input: {
   direction: string;
@@ -64,7 +69,13 @@ export function netAmountOf(input: {
 }): { feeInside: boolean; exceeds: boolean; netAmount: number } {
   const feeInside = input.feeAddedToBalance === false && input.fee > 0;
   const exceeds = feeInside && input.amount < input.fee;
-  return { feeInside, exceeds, netAmount: input.amount };
+  const fee = input.fee > 0 ? round2(input.fee) : 0;
+  const netAmount = input.direction === 'in' && !feeInside
+    ? round2(input.amount + fee)
+    : input.direction === 'out' && feeInside
+      ? round2(input.amount - fee)
+      : input.amount;
+  return { feeInside, exceeds, netAmount };
 }
 
 /**
@@ -115,7 +126,7 @@ export interface PaymentPlan {
   /** After the cash-account rule has forced or accepted it. */
   paymentMethod: string | null;
   entryType: 'debit' | 'credit';
-  /** Whether the fee was taken inside the amount (a record, not a posting rule). */
+  /** Whether the fee was taken inside the amount: tender record and posting rule (D42). */
   feeInside: boolean;
   netAmount: number;
   totalCharges: number;
@@ -220,10 +231,12 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
   }
 
   // Signed for `drawerLeg`: positive when the account's leg is a credit. It is
-  // the account's whole row — amount plus charges, the amount as typed in both
-  // fee modes (D40) — because the drawer has to move opposite to exactly what
-  // the account moved, or the identity `signed + drawer_delta = fee` breaks on
-  // any movement that carries charges.
+  // the account's whole row — netAmount plus charges, the figure the balance
+  // actually moves (D42) — because the drawer has to move opposite to exactly
+  // what the account moved, or the identity `signed + drawer_delta = fee`
+  // breaks on any movement that carries charges. The fee rides the side that
+  // paid it (D42), so this is where the two fee modes stop being the same
+  // number: a cash-in that collected the fee on top signs for amount + fee.
   const drawerSignedAmount = entryType === 'credit' ? totalAmount : -totalAmount;
   const drawerLegRow = method === 'cash' ? drawerLeg(drawerSignedAmount, input.fee) : null;
 

@@ -92,6 +92,49 @@ test('the drawer fee and its movement post as two rows, fee first (D37)', () => 
   ]);
 });
 
+test("a cash-in's fee posts on the account, fee first, movement pairing at its full figure (D42)", () => {
+  // ₱500 crosses the tin and the ₱10 fee was paid in e-money, so the wallet's
+  // two rows are the fee and the ₱500 movement beside it — the movement pairs
+  // exactly with the drawer's single net row, and the fee stands as the line
+  // of income it is, on the side that received it.
+  const postings = planPostings(WALLET, 'credit', 510, [
+    { accountId: DRAWER, amount: 500, entryType: 'debit', role: 'movement' },
+  ], 10);
+
+  assert.deepEqual(postings, [
+    { accountId: WALLET, entryType: 'credit', amount: 10, role: 'fee' },
+    { accountId: WALLET, entryType: 'credit', amount: 500, role: 'movement' },
+    { accountId: DRAWER, entryType: 'debit', amount: 500, role: 'movement' },
+  ]);
+});
+
+test('a fee equal to the whole amount writes the fee row alone, not a zero second row', () => {
+  // The extreme fee-off cell: everything the account received is fee. One
+  // row carries it, because a 0.00 movement row would say nothing.
+  const postings = planPostings(WALLET, 'credit', 10, [
+    { accountId: DRAWER, amount: 0, entryType: 'debit', role: 'movement' },
+  ], 10);
+
+  assert.deepEqual(postings, [
+    { accountId: WALLET, entryType: 'credit', amount: 10, role: 'fee' },
+  ]);
+});
+
+test('no account fee keeps the primary a single whole row', () => {
+  const postings = planPostings(WALLET, 'credit', 500, [
+    { accountId: DRAWER, amount: 490, entryType: 'debit', role: 'movement' },
+  ], 0);
+
+  assert.deepEqual(postings, [
+    { accountId: WALLET, entryType: 'credit', amount: 500 },
+    { accountId: DRAWER, entryType: 'debit', amount: 490, role: 'movement' },
+  ]);
+});
+
+test('an account fee larger than the amount it sits beside is refused', () => {
+  expectServerError(() => planPostings(WALLET, 'credit', 5, [], 10), /exceed the amount/);
+});
+
 test('a zero-amount counterparty writes no second row', () => {
   const postings = planPostings(WALLET, 'credit', 500, [{
     accountId: DRAWER,

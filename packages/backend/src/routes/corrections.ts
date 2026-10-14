@@ -67,6 +67,17 @@ function pick(row: any, columns: string[]): Record<string, unknown> {
   return Object.fromEntries(columns.map((c) => [c, row[c]]));
 }
 
+// The record the amount planner reads, enriched with its type's direction when
+// the record is a transaction: what the balance moves depends on direction and
+// fee mode (design D42), and the transactions table stores only the type's id.
+function recordSql(table: string): string {
+  return table === 'transactions'
+    ? `SELECT t.*, tt.direction FROM ${table} t
+       JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       WHERE t.id = $1`
+    : `SELECT * FROM ${table} WHERE id = $1`;
+}
+
 function observedShape(rows: LedgerRowRef[]) {
   return {
     rowCount: rows.length,
@@ -352,7 +363,7 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
       if (!shape.ok) throw createError(409, `Cannot preview: ${shape.problems.join('; ')}`);
       let proposed = amounts;
       if (wantsFields) {
-        record = await queryOne(`SELECT * FROM ${table} WHERE id = $1`, [sourceId]);
+        record = await queryOne(recordSql(table), [sourceId]);
         if (!record) throw createError(404, `No ${sourceType} found with that id`);
         plan = planAmountCorrection(sourceType, record, rows, fields);
         proposed = plan.amounts;
@@ -562,7 +573,7 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     let columns: Record<string, number> | null = null;
     let recordBefore: Record<string, unknown> | null = null;
     if (wantsFields) {
-      const loaded = await client.query(`SELECT * FROM ${table} WHERE id = $1`, [sourceId]);
+      const loaded = await client.query(recordSql(table), [sourceId]);
       recordBefore = loaded.rows[0] ?? null;
       if (!recordBefore) throw createError(404, `No ${sourceType} found with that id`);
       const plan = planAmountCorrection(sourceType, recordBefore, rows, fields);

@@ -106,6 +106,12 @@ export interface Posting {
  * (section 12 D12) out of this function. A cash movement may hand over two drawer rows
  * (the fee and the movement, D37); anything else is one or none.
  *
+ * `accountFee` moves the fee onto the account's own side (D42): a cash-in's
+ * fee was paid in e-money, so it lands beside the account's movement as its
+ * own line — the fee row first, the movement pairing at its full figure
+ * against the drawer's row after it — instead of being netted into the
+ * drawer's movement. Zero keeps the single whole row.
+ *
  * A zero-amount counterparty writes no row. A 0.00 ledger entry carries no information and
  * would show up as a movement in the Statement of Account.
  */
@@ -113,9 +119,23 @@ export function planPostings(
   accountId: string,
   entryType: 'debit' | 'credit',
   amount: number,
-  counterparties: CounterpartyLeg[] | null = null
+  counterparties: CounterpartyLeg[] | null = null,
+  accountFee: number = 0
 ): Posting[] {
-  const postings: Posting[] = [{ accountId, entryType, amount }];
+  const postings: Posting[] = [];
+
+  if (accountFee > 0) {
+    if (accountFee > amount) {
+      throw createError(500, 'The fee row cannot exceed the amount it sits beside');
+    }
+    postings.push({ accountId, entryType, amount: accountFee, role: 'fee' });
+    const movement = Math.round((amount - accountFee) * 100) / 100;
+    if (movement > 0) {
+      postings.push({ accountId, entryType, amount: movement, role: 'movement' });
+    }
+  } else {
+    postings.push({ accountId, entryType, amount });
+  }
 
   for (const counterparty of counterparties || []) {
     if (!counterparty.accountId) {
@@ -162,45 +182,39 @@ export async function processTransaction(
   description: string | null,
   transactionDate: Date,
   client: any,
-  counterparties: CounterpartyLeg[] = []
+  counterparties: CounterpartyLeg[] = [],
+  feeOnAccount: boolean = false
 ): Promise<{ newBalance: number; netAmount: number; counterpartyBalance: number | null }> {
-  // The account's row is the amount as typed, whichever way the fee was paid
-  // (D40): the fee is income netted into the drawer's counterparties below,
-  // never a subtraction from what lands or leaves. `fee_added_to_balance`
-  // stays on the transaction as the tender record only.
+  // The account's row carries the whole amount the balance moves (D42): the
+  // fee is a second line beside it when it belongs on this side — a cash-in's
+  // fee was paid in e-money and lands on the receiving account — and part of
+  // the drawer's movement when it does not, never a subtraction from what
+  // lands or leaves. `fee_added_to_balance` decides which, recorded on the
+  // transaction alongside the figure it produced.
   const netAmount = amount;
-  const postings = planPostings(accountId, entryType, netAmount, counterparties);
+  const postings = planPostings(accountId, entryType, netAmount, counterparties, feeOnAccount ? fee : 0);
 
   if (postings.length > 1) {
     await lockAccounts(client, postings.map((p) => p.accountId));
   }
 
-  const newBalance = await updateAccountBalance(accountId, netAmount, entryType, client);
-
-  await createLedgerEntry(
-    accountId,
-    entryType,
-    netAmount,
-    newBalance,
-    transactionId,
-    null,
-    referenceNumber,
-    description,
-    transactionDate,
-    client,
-    0
-  );
-
+  // Every row walks the same path: an account's fee row and the movement
+  // beside it chain their balance_after values in write order exactly as a
+  // drawer's two rows do (D37) — the order the statement's running balance
+  // and the chain audit both read.
+  let newBalance = 0;
   let counterpartyBalance: number | null = null;
-  for (let i = 1; i < postings.length; i++) {
+  for (let i = 0; i < postings.length; i++) {
     const leg = postings[i];
-    counterpartyBalance = await updateAccountBalance(leg.accountId, leg.amount, leg.entryType, client);
+    const balance = await updateAccountBalance(leg.accountId, leg.amount, leg.entryType, client);
+    if (leg.accountId === accountId) newBalance = balance;
+    else counterpartyBalance = balance;
 
     await createLedgerEntry(
       leg.accountId,
       leg.entryType,
       leg.amount,
-      counterpartyBalance,
+      balance,
       transactionId,
       null,
       referenceNumber,

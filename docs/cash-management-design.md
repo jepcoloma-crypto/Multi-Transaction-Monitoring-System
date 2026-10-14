@@ -1727,12 +1727,13 @@ null`, `charges_total: 0` and no type code, so the Fee/Charges cells and the foo
 the ₱20 once — in the movement row, which keeps it — and the Type cell reads `Service fee`. The
 movement row keeps its Fee 20, so the statement renders the complete three-line entry.
 
-**Reversals are untouched on purpose** *(updated by D40)*. `unwindDrawerLeg` sums the recorded
-rows, which is the same net it always read, and posts one net row against whoever holds it — the
-split changes what was written, not what unwinding means. D40 then removed the fee-mode branch
-the sentence below used to carry: the fee comes back with the movement whichever way it was
-taken, because both fee modes post identically and the income report refunds a reversed row's
-fee in both.
+**Reversals are untouched on purpose** *(updated by D40, again by D42)*. `unwindDrawerLeg`
+sums the recorded rows, which is the same net it always read, and posts one net row against
+whoever holds it — the split changes what was written, not what unwinding means. The
+fee-mode branch the sentence below used to carry stayed removed: a reversal mirrors the rows
+the original actually wrote, so the fee comes back with the movement whichever cell — in or
+out, on top or inside — that movement was posted under (D42), and the income report refunds a
+reversed row's fee in all of them.
 
 **Superseded:** D24's "one net row, not two" — its argument was that two rows gain no
 information over one, and on balances that was true; the gain turned out to be in the reading.
@@ -1873,6 +1874,12 @@ restated — it never subtracted anything else, and D40 retires only the subtrac
 debit is never narrowed by the fee — was right, and is now simply the rule for both
 directions. §27's gross amounts are unaffected: gross was already the amount as typed.
 
+**Superseded in part by D42** (§33): "both fee modes post identically" no longer holds. The
+guard (a fee inside the amount cannot exceed it) and the reversal paragraph stand — reversals
+still mirror the recorded rows — but the posting table above moves to the four-cell rule, the
+tender flag is a posting rule again on two cells, and a cash-in's fee row leaves the till for
+the receiving account.
+
 ### D41 — the entry preview shows the drawer as its net
 
 The save posts two drawer rows (D37), but the entry preview lists one: the net of the pair.
@@ -1884,3 +1891,76 @@ preview says −500: the route nets the two rows into a single `Cash drawer` leg
 fee, so `+510 − 500 = 10` ties out on sight. Only the display moved: what saves, the
 statement's rows, and every balance are untouched, and the arithmetic stays the server's —
 the form keeps rendering the preview's answer verbatim.
+
+## 33. The fee lands where the customer paid it
+
+D40 collapsed the four fee cells to two — the account's row is the amount as typed, whichever
+way the fee was paid — and that fixed one half of the problem it inherited and broke the other.
+A cash-out with the fee carved from the amount was already right under D40's rule (a debit is
+never narrowed by the fee, so ₱490 leaves the balance and the till hands ₱490 and keeps ₱10).
+A cash-in with the fee collected on top was not, and the wrong only grew once the owner's own
+flows were read closely: he e-moneys ₱25,050 for a ₱24,800 send *with a ₱250 fee on top*. The
+wallet must land the whole ₱25,050 and the tin must hand over ₱24,800 — that is what physically
+happened. The books said +24,800 and −24,550: ₱250 short on both sides of the same movement,
+₱250 that no drawer held and no account credited. The mirror case is a cash-out with the fee
+carved: the customer hands ₱500 of which ₱10 is the fee, the account hands over ₱490, the till
+takes ₱500. D40's table said ₱500 left the account and ₱510 entered the till — ₱10 the till
+never received. The tender flag was not a decoration after all: two of the four cells were
+simply different postings.
+
+### D42 — the fee rides the side that paid it
+
+A fee collected on top of a cash-in was paid in e-money, so it lands on the account with the
+amount. A fee carved from the amount of a cash-out was paid in cash, so it is cut from what the
+account hands out. The other two cells need no rule of their own: a fee inside a cash-in is
+already cut from the drawer's leg by `drawerLeg`'s formula, and a fee on top of a cash-out is
+already added to it. The account's row (`netAmountOf`):
+
+| Cell | Account leg | Drawer net |
+|---|---|---|
+| In, fee on top | credit `amount + fee` | debit `amount` |
+| In, fee inside | credit `amount` | debit `amount − fee` |
+| Out, fee on top | debit `amount` | credit `amount + fee` |
+| Out, fee inside | debit `amount − fee` | credit `amount` |
+
+Charges ride inside the account leg in all four, as they always did, and the drawer moves
+opposite to it. Only two cells differ from the amount as typed — in with the fee on top, out
+with the fee inside — and those are exactly the two D40 got wrong. D24's identity
+`signed + drawer_delta = fee` still holds in every cell, so the books still grow by exactly the
+fee the income report books; the ₱250 that had no home now sits in the account that received
+it, and the ₱10 the till never saw is no longer booked as having been seen.
+
+**The fee keeps its own row, on the side it landed on.** D37's promise — the fee reads as the
+line of income it is, and each movement pairs at its full figure — survives intact for a
+cash-out: the customer paid it in cash, so the till's first row is still its `Service fee`
+credit, then the movement settles against it (D37 unchanged). For a cash-in the fee row moves
+to the receiving account: `planPostings` splits the account's own leg into the fee row and the
+movement beside it, fee first so the balance chains in write order, and the drawer's single row
+is the net — the cash that physically crossed the tin. A non-cash movement has no counterparty
+to keep honest, so it keeps its single whole row, exactly as D40 left it. The movement rows
+pair at their full figure on both sides now, in both directions.
+
+**Everything downstream of the rows is structurally untouched.** Reversals mirror the recorded
+rows (D40's rule, kept), so an unwind hands back whatever the rows moved — the till gives back
+the ₱24,800 it actually took, the account gives back the ₱25,050 it actually received — and the
+pending-reversal approval passes the same mirror. Corrections ask the same `netAmountOf`, so
+editing an amount reproduces creation to the centavo; a cash movement's correction is refused
+on its two-account shape as it was before. The shift's expected closing, the register, the
+Sources and Uses statement and the chain audit read the same rows they always read — the fee
+row changed account, not sign, so the statement's buckets and its tie-out to every balance do
+not move. D41's netted preview stands, quoting the new nets; the form still renders the
+server's answer verbatim. Historical rows are not rewritten: a recorded movement is what was
+posted when it was posted, and the two cells whose nets change do so only for rows written
+from here.
+
+**What the tender flag decides again.** `fee_added_to_balance` is a posting rule on the two
+cells D42 moved — in with the fee on top, out with the fee inside — and stays the tender
+record, badge and all, on the other two. The entry toggle has never meant more than it does
+now: it says which of the two postings the customer actually made. D40's guard stands
+unchanged — a fee inside the amount cannot exceed it, because it is a cut of what was sent.
+
+**Superseded:** D40's posting table and its "both fee modes post identically" claim, in part —
+the two debit-side cells it left correct are unchanged, and its guard and reversal paragraphs
+stand. D37's fee-row placement for cash-ins: the split moves from the till to the receiving
+account, because the till never received it. D41 is unaffected — its nets simply quote D42's
+figures.
