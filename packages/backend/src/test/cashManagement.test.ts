@@ -242,14 +242,15 @@ test('only physical cash touches the drawer', () => {
 });
 
 test('the drawer moves opposite to the account and keeps the fee', () => {
-  // Cash in, separate: ₱500 lands in the account, ₱500 leaves the drawer and
-  // ₱10 comes back as income, so the drawer nets −490.
+  // Cash in: ₱500 lands in the account, ₱500 leaves the drawer and ₱10 comes
+  // back as income, so the drawer nets −490. Both fee modes land here — the
+  // account's row is the amount as typed (D40).
   assert.deepEqual(drawerLeg(500, 10), { amount: 490, entryType: 'debit' });
-  // Cash in, deducted: the account only lands ₱490, so the drawer nets −480.
+  // A smaller landing nets less out of the drawer.
   assert.deepEqual(drawerLeg(490, 10), { amount: 480, entryType: 'debit' });
   // Cash out: ₱500 leaves the account, ₱500 arrives in the drawer plus the
-  // ₱10 income on top, so the drawer nets +510. Both fee modes land here
-  // because a debit is never shrunk by a deducted fee (D13).
+  // ₱10 income on top, so the drawer nets +510. Both fee modes land here —
+  // a debit loses the whole amount, whichever way the fee was paid (D40).
   assert.deepEqual(drawerLeg(-500, 10), { amount: 510, entryType: 'credit' });
   // Cash out with no fee is a plain ₱500 into the drawer.
   assert.deepEqual(drawerLeg(-500, 0), { amount: 500, entryType: 'credit' });
@@ -304,8 +305,8 @@ test('the drawer posts the fee and the movement as two rows, fee first', () => {
     { amount: 20, entryType: 'credit', role: 'fee' },
     { amount: 1500, entryType: 'debit', role: 'movement' },
   ]);
-  // Cash-in, deducted: the account only lands ₱1,480, so the movement is
-  // ₱1,480 — the fee still posts first, netting the same ₱1,460 as before.
+  // A smaller landing pairs at its own figure — the fee still posts first,
+  // netting ₱1,460 out of the till.
   assert.deepEqual(drawerLegs(1480, 20), [
     { amount: 20, entryType: 'credit', role: 'fee' },
     { amount: 1480, entryType: 'debit', role: 'movement' },
@@ -404,29 +405,21 @@ test('an unwind is the exact opposite of what the movement recorded', () => {
   });
 });
 
-test('a separate fee stays in the drawer instead of coming back with the movement', () => {
-  // That cash-in booked ₱20 as income the branch keeps. Unwinding returns the
-  // movement and leaves the fee behind: the drawer is credited the full
-  // ₱1,500, so the ₱20 the income report still counts is sitting in the till
-  // where the next count will find it.
-  assert.deepEqual(unwindDrawerLeg([drawerRow(1480, 'debit')], { cents: 2000, separate: true }), {
-    accountId: 'drawer-1', amount: 1500, entryType: 'credit',
-  });
-  // The same rule from the other side: a cash-out that took ₱510 in gives back
-  // ₱500, keeping the ₱10 the branch earned.
-  assert.deepEqual(unwindDrawerLeg([drawerRow(510, 'credit')], { cents: 1000, separate: true }), {
-    accountId: 'drawer-1', amount: 500, entryType: 'debit',
-  });
-});
-
-test('a deducted fee comes back inside the movement, so the unwind adds nothing', () => {
-  // Deducted mode already reduced what the customer received, and the income
-  // report books that fee as refunded — so the mirror alone is the whole story.
-  assert.deepEqual(unwindDrawerLeg([drawerRow(1480, 'debit')], { cents: 2000, separate: false }), {
+test('the fee comes back inside the movement, so the mirror alone is the whole unwind (D40)', () => {
+  // The recorded rows are the fee credited to the till and the movement
+  // settling against it, so mirroring their sum hands back the net the drawer
+  // actually moved: that ₱1,480 debit (the ₱20 fee row and the ₱1,500
+  // movement netted) is taken back by a credit of ₱1,480, and the ₱20 income
+  // is refunded alongside it — sitting nowhere in the till where the next
+  // count would fail to find it.
+  assert.deepEqual(unwindDrawerLeg([drawerRow(1480, 'debit')]), {
     accountId: 'drawer-1', amount: 1480, entryType: 'credit',
   });
-  // A fee that exactly cancels the movement leaves nothing worth posting.
-  assert.equal(unwindDrawerLeg([drawerRow(20, 'credit')], { cents: 2000, separate: true }), null);
+  // A cash-out that put ₱510 into the drawer gives back the full ₱510 —
+  // the ₱10 fee included, since a reversal refunds the fee with the movement.
+  assert.deepEqual(unwindDrawerLeg([drawerRow(510, 'credit')]), {
+    accountId: 'drawer-1', amount: 510, entryType: 'debit',
+  });
 });
 
 test('a movement that never touched the drawer unwinds nothing', () => {
@@ -456,32 +449,28 @@ test('a drawer side spanning two accounts is refused rather than guessed at', ()
   assert.throws(() => chargeDrawerLeg(rows, 5, 'credit'), (err: any) => err.statusCode === 409);
 });
 
-test('a reversal leaves the fee where the fee mode says it belongs', () => {
+test('a reversal hands back exactly what the original booked, whichever way the fee was paid', () => {
   const signedOf = (leg: { amount: number; entryType: 'credit' | 'debit' }): number =>
     leg.entryType === 'credit' ? leg.amount : -leg.amount;
-  const round2 = (n: number) => Math.round(n * 100) / 100;
+  // `+ 0` normalizes a computed −0 to 0 so a strict comparison cannot fail on
+  // the sign of zero in the no-fee case.
+  const round2 = (n: number) => Math.round(n * 100) / 100 + 0;
 
-  // [signed account leg, fee, separate?]. A separate fee stays in the drawer,
-  // so the reversal's two legs net to nothing; a deducted fee is handed back,
-  // so they net to the fee negated. Either way the books end up holding exactly
-  // what happened to the cash: a separate fee was taken at the counter and was
-  // never returned, a deducted fee came back inside the movement.
-  //
-  // The income report answers a different question about the same fee and says
-  // so deliberately: a reversed row is totalled wholly as refunded, whichever
-  // mode it carries, because a reversal hands the transaction back in full. The
-  // drawer figure is where the cash is; income is what the business earned, and
-  // a transaction that was undone earned nothing.
-  const cases: [number, number, boolean][] = [
-    [500, 10, true],    // cash-in, separate
-    [490, 10, false],   // cash-in, deducted
-    [-500, 10, true],   // cash-out, separate
-    [-500, 10, false],  // cash-out, deducted
-    [-500, 0, true],    // no fee: nothing to keep
+  // [signed account leg, fee]. The original's two legs sum to the fee it
+  // books, and the reversal's two legs sum to that fee negated — a complete
+  // undo, whichever way the fee was paid, because both fee modes post
+  // identically (D40) and a reversal refunds the fee with the movement. That
+  // is what the income report says about the same row: a reversed transaction
+  // is totalled wholly as refunded, so nothing that was undone is still
+  // claimed as earned.
+  const cases: [number, number][] = [
+    [500, 10],    // cash-in
+    [-500, 10],   // cash-out
+    [-500, 0],    // no fee: nothing to refund
   ];
 
-  for (const [signedAmount, fee, separate] of cases) {
-    const context = `signedAmount=${signedAmount} fee=${fee} separate=${separate}`;
+  for (const [signedAmount, fee] of cases) {
+    const context = `signedAmount=${signedAmount} fee=${fee}`;
     const originalDrawer = drawerLeg(signedAmount, fee);
 
     // The identity the income report leans on: the original's two legs sum to
@@ -491,14 +480,13 @@ test('a reversal leaves the fee where the fee mode says it belongs', () => {
 
     const unwind = unwindDrawerLeg(
       originalDrawer ? [drawerRow(originalDrawer.amount, originalDrawer.entryType)] : [],
-      { cents: Math.round(fee * 100), separate },
     );
     const reversalAccount = -signedAmount;
     const reversalDrawer = unwind ? signedOf(unwind) : 0;
     const reversalBooks = reversalAccount + reversalDrawer;
-    assert.equal(round2(reversalBooks), separate ? 0 : -fee, context);
+    assert.equal(round2(reversalBooks), round2(-fee), context);
     // Stated without a -0 that could fail a strict comparison.
-    assert.equal(round2(originalBooks + reversalBooks), separate ? fee : 0, context);
+    assert.equal(round2(originalBooks + reversalBooks), 0, context);
   }
 });
 

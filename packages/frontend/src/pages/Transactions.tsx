@@ -308,9 +308,10 @@ export default function Transactions() {
   // actually changed hands, because that is what decides whether the drawer
   // takes part in it. The type is always whatever the selected fee rule carries.
   const movementRequested = isCashMovementCode(selectedRule?.type_code);
-  const totalOutflow = (formData.feeAddedToBalance
-    ? inputAmount + chargesTotal
-    : inputAmount - feeAmount + chargesTotal) + providerChargeAmount;
+  // The balance moves by the amount as typed, whichever way the fee was paid:
+  // the fee is income netted into the drawer's movement, never a subtraction
+  // from what lands or leaves (D40), so the flag below records the tender only.
+  const totalOutflow = inputAmount + chargesTotal + providerChargeAmount;
   const hasInsufficientBalance = selectedDirection === 'out' && selectedAccount != null && totalOutflow > 0 && totalOutflow > selectedAccount.current_balance;
   const movementLabel = selectedDirection === 'out'
     ? `Total: ${formatCurrency(totalOutflow)}`
@@ -670,8 +671,8 @@ export default function Transactions() {
                   <td className="px-4 py-3 text-sm text-right text-gray-500">{tx.fee > 0 ? formatCurrency(tx.fee) : '-'}</td>
                   <td className="px-4 py-3 text-center">
                     {tx.fee > 0 ? (
-                      <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${tx.fee_added_to_balance ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
-                        {tx.fee_added_to_balance ? 'Separate' : 'Deducted'}
+                      <span title={tx.fee_added_to_balance ? 'The customer paid the fee on top of the amount' : 'The fee was included in the amount the customer sent'} className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${tx.fee_added_to_balance ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                        {tx.fee_added_to_balance ? 'Fee on top' : 'Fee inside'}
                       </span>
                     ) : <span className="text-gray-400 text-xs">-</span>}
                   </td>
@@ -925,7 +926,7 @@ export default function Transactions() {
                         <div className="w-9 h-5 bg-gray-200 peer-focus:ring-2 peer-focus:ring-primary-500 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600"></div>
                       </label>
                       <span className="text-sm text-gray-700">Fee Handling</span>
-                      <span className="text-xs text-gray-500">({formData.feeAddedToBalance ? 'Fee paid separately by customer' : 'Fee deducted from transaction amount'})</span>
+                      <span className="text-xs text-gray-500">({formData.feeAddedToBalance ? 'Fee paid on top of the amount' : 'Fee included in the amount sent'})</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <label className="relative inline-flex items-center cursor-pointer">
@@ -1008,16 +1009,16 @@ export default function Transactions() {
                           {selectedDirection === 'out' ? '-' : '+'}{formatCurrency(totalOutflow)}
                         </span>
                       </div>
-                      {formData.feeAddedToBalance && selectedDirection === 'in' && (
+                      {selectedDirection === 'in' && (
                         <div className="flex justify-between gap-2">
                           <span className="font-semibold">Customer pays</span>
-                          <span className="font-bold text-green-700">{formatCurrency(inputAmount + chargesTotal + feeAmount)}</span>
+                          <span className="font-bold text-green-700">{formatCurrency(formData.feeAddedToBalance ? inputAmount + chargesTotal + feeAmount : inputAmount)}</span>
                         </div>
                       )}
                       <p className="text-xs text-gray-500 leading-relaxed">
                         Cash: {formatBreakdown(inputAmount)}{feeAmount >= 1 && <> &bull; Fee cash: {formatBreakdown(feeAmount)}</>}
                         {' '}&bull; {selectedDirection === 'out'
-                          ? (formData.feeAddedToBalance ? 'movement = amount + charges' : 'movement = amount - fee + charges')
+                          ? 'movement = amount + charges'
                           : 'credited to account'}
                         {createCharges.filter(c => (parseFloat(c.amount) || 0) > 0).map((c, i) => (
                           <span key={i}> &bull; {c.description || 'Charge'} {formatCurrency(parseFloat(c.amount) || 0)}</span>
@@ -1032,7 +1033,7 @@ export default function Transactions() {
                       {!hasInsufficientBalance && (
                         <span className="text-xs">
                           {selectedDirection === 'out'
-                            ? (formData.feeAddedToBalance ? '(Fee + charges paid separately)' : '(Fee deducted from amount)')
+                            ? (formData.feeAddedToBalance ? '(Fee paid on top of the amount)' : '(Fee included in the amount)')
                             : '(No balance required)'}
                         </span>
                       )}
@@ -1271,15 +1272,15 @@ export default function Transactions() {
                   <div className="flex rounded-md border border-gray-300 overflow-hidden w-fit">
                     <button type="button" onClick={() => setEditForm({ ...editForm, feeAddedToBalance: true })}
                       className={`px-3 py-1 text-xs font-medium ${editForm.feeAddedToBalance ? 'bg-primary-600 text-white' : 'bg-white text-gray-500 hover:text-gray-700'}`}>
-                      Separate
+                      Fee on top
                     </button>
                     <button type="button" onClick={() => setEditForm({ ...editForm, feeAddedToBalance: false })}
                       className={`px-3 py-1 text-xs font-medium ${!editForm.feeAddedToBalance ? 'bg-primary-600 text-white' : 'bg-white text-gray-500 hover:text-gray-700'}`}>
-                      Deducted
+                      Fee inside
                     </button>
                   </div>
                   <p className="text-xs text-gray-500 mt-1">
-                    Fee is company income either way. &quot;Deducted&quot; also removes it from the account movement.
+                    A record of how the customer paid the fee. The account always moves the full amount, and the fee is company income either way.
                   </p>
                 </div>
                 <div>

@@ -66,15 +66,19 @@ test('a transaction posts net amount plus charges to the ledger', () => {
   assert.deepEqual(result.amounts, { a1: 525 });
 });
 
-test('a fee deducted from the amount reduces what the ledger receives', () => {
+test('a fee inside the amount posts the same figures as a fee paid on top (D40)', () => {
+  // The customer sent 500 of which 20 was the fee. The ledger still receives
+  // the whole 500: the fee is income netted into the drawer's movement, not a
+  // subtraction from what lands, so the two fee modes are indistinguishable
+  // to the ledger and only the tender record differs.
   const record = transactionRecord({ fee_added_to_balance: false });
   const result = plan('transaction', record, [creditRow()], { amount: 500 });
 
-  assert.equal(result.columns.net_amount, 480);
-  assert.deepEqual(result.amounts, { a1: 505 });
+  assert.equal(result.columns.net_amount, 500);
+  assert.deepEqual(result.amounts, { a1: 525 });
 });
 
-test('a fee larger than the amount it is deducted from is refused', () => {
+test('a fee larger than the amount it was taken inside is refused', () => {
   const record = transactionRecord({ fee_added_to_balance: false });
   throwsStatus(
     () => plan('transaction', record, [creditRow()], { amount: 10, fee: 20 }),
@@ -83,13 +87,14 @@ test('a fee larger than the amount it is deducted from is refused', () => {
   );
 });
 
-test('a deducted fee never shrinks what a debit removes', () => {
+test('a fee inside the amount never shrinks what a debit removes', () => {
   const record = transactionRecord({ fee_added_to_balance: false });
   const result = plan('transaction', record, [debitRow()], { amount: 500 });
 
-  // The whole amount leaves the balance. Shrinking it as well would have taken
-  // the fee from nobody: the balance would drop by 480 and 480 would be handed
-  // over, so the fee was recorded as income and never physically collected.
+  // The whole amount leaves the balance in both fee modes (D40). Shrinking it
+  // would have taken the fee from nobody: the balance would drop by 480 and
+  // 480 would be handed over, so the fee was recorded as income and never
+  // physically collected.
   assert.equal(result.columns.net_amount, 500);
   assert.deepEqual(result.amounts, { a1: 525 });
 });

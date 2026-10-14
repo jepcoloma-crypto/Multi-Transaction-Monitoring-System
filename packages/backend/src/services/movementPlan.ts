@@ -37,12 +37,20 @@ export function entryTypeFor(direction: string): 'debit' | 'credit' {
 }
 
 /**
- * The D13 rule: whether a fee is deducted from the amount, and what a credit
- * then lands on. A deducted fee shrinks what a credit lands on, never what a
- * debit removes — taking it from a debit as well collected it from nobody: the
- * balance would drop by amount − fee and the customer would be handed
- * amount − fee, so the fee was booked as income and physically never taken.
- * On a debit the whole amount leaves and the drawer is what retains the fee.
+ * What the balance moves, whichever way the fee was taken (D40).
+ *
+ * The fee never touches the balance figure. A fee taken inside the amount —
+ * the customer sent 510 of which 10 is the fee — still posts the whole 510 on
+ * the account's row: the fee is recognized as income and netted into the
+ * drawer's movement, not subtracted from what lands. On a debit likewise the
+ * whole amount leaves. So the credit and the debit both carry the amount as
+ * typed, and the two fee modes post identically; `feeAddedToBalance` survives
+ * only as the record of whether the customer paid the fee on top of the
+ * amount or inside it.
+ *
+ * A fee inside the amount cannot exceed it — the fee is a cut of what was
+ * sent, and a larger cut would book income the money never carried — so that
+ * is refused rather than silently absorbed.
  *
  * Shared by the entry route, the entry preview and the edit route: editing
  * must reproduce what creation would have written, or correcting an amount
@@ -53,14 +61,10 @@ export function netAmountOf(input: {
   amount: number;
   fee: number;
   feeAddedToBalance: boolean;
-}): { deductFee: boolean; exceeds: boolean; netAmount: number } {
-  const deductFee = input.feeAddedToBalance === false && input.fee > 0;
-  const exceeds = deductFee && input.amount < input.fee;
-  const netAmount =
-    deductFee && entryTypeFor(input.direction) === 'credit'
-      ? round2(input.amount - input.fee)
-      : input.amount;
-  return { deductFee, exceeds, netAmount };
+}): { feeInside: boolean; exceeds: boolean; netAmount: number } {
+  const feeInside = input.feeAddedToBalance === false && input.fee > 0;
+  const exceeds = feeInside && input.amount < input.fee;
+  return { feeInside, exceeds, netAmount: input.amount };
 }
 
 /**
@@ -111,7 +115,8 @@ export interface PaymentPlan {
   /** After the cash-account rule has forced or accepted it. */
   paymentMethod: string | null;
   entryType: 'debit' | 'credit';
-  deductFee: boolean;
+  /** Whether the fee was taken inside the amount (a record, not a posting rule). */
+  feeInside: boolean;
   netAmount: number;
   totalCharges: number;
   totalAmount: number;
@@ -185,9 +190,9 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
     feeAddedToBalance: input.feeAddedToBalance,
   });
   if (net.exceeds) {
-    problems.push('Fee cannot exceed the transaction amount when deducted from transaction amount');
+    problems.push('Fee cannot exceed the transaction amount when the fee is taken inside the amount');
   }
-  const deductFee = net.deductFee;
+  const feeInside = net.feeInside;
   const netAmount = net.netAmount;
   const totalCharges = (input.additionalCharges || []).reduce(
     (sum, c) => sum + (parseFloat(String(c?.amount)) || 0),
@@ -214,6 +219,11 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
     problems.push('A provider charge can only be recorded on a transaction that completes now');
   }
 
+  // Signed for `drawerLeg`: positive when the account's leg is a credit. It is
+  // the account's whole row — amount plus charges, the amount as typed in both
+  // fee modes (D40) — because the drawer has to move opposite to exactly what
+  // the account moved, or the identity `signed + drawer_delta = fee` breaks on
+  // any movement that carries charges.
   const drawerSignedAmount = entryType === 'credit' ? totalAmount : -totalAmount;
   const drawerLegRow = method === 'cash' ? drawerLeg(drawerSignedAmount, input.fee) : null;
 
@@ -231,7 +241,7 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
   return {
     paymentMethod: method,
     entryType,
-    deductFee,
+    feeInside,
     netAmount,
     totalCharges,
     totalAmount,

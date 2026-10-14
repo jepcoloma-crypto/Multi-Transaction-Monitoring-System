@@ -22,10 +22,11 @@ interface CashRow {
   isReversed: boolean;
   amount: number;
   fee: number;
-  // Separate (true), deducted (false) or never stated (null). The mode records
-  // how the fee was taken and no longer changes a total: a reversed row is
-  // totalled wholly as refunded, so the badge explains the row rather than
-  // excusing its place in income.
+  // Fee on top (true), fee inside the amount sent (false) or never stated
+  // (null). The flag records how the customer paid the fee and changes no
+  // total: both modes post identically, and a reversed row is totalled wholly
+  // as refunded, so the badge explains the row rather than excusing its place
+  // in income.
   feeAddedToBalance: boolean | null;
   charges: number;
   feeCharges: number;
@@ -171,8 +172,8 @@ const CashTable = ({ rows, summary, parent }: { rows: CashRow[]; summary: Detail
               <td className={tdRight}>
                 {formatCurrency(r.fee)}
                 {r.fee > 0 && r.feeAddedToBalance !== null && (
-                  <span className={`ml-1.5 inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium ${r.feeAddedToBalance ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
-                    {r.feeAddedToBalance ? 'Separate' : 'Deducted'}
+                  <span title={r.feeAddedToBalance ? 'The customer paid the fee on top of the amount' : 'The fee was included in the amount the customer sent'} className={`ml-1.5 inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium ${r.feeAddedToBalance ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'}`}>
+                    {r.feeAddedToBalance ? 'Fee on top' : 'Fee inside'}
                   </span>
                 )}
               </td>

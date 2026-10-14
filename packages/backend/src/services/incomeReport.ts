@@ -225,8 +225,10 @@ export interface CashDetailSource {
   status?: string | null;
   amount?: number | string | null;
   fee?: number | string | null;
-  // Separate (true) or deducted (false) — the mode that decides whether a
-  // reversal hands the fee back. NULL is the column default and reads as
+  // Separate (true) or deducted (false) — the record of whether the customer
+  // paid the fee on top of the amount or inside it. It decorates the badge on
+  // each row and decides nothing about totals: postings and reversals treat
+  // both modes the same (D40). NULL is the column default and reads as
   // separate, matching how the rest of the codebase treats the flag.
   fee_added_to_balance?: boolean | null;
   charges?: number | string | null;

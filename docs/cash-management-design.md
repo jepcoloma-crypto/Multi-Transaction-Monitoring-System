@@ -501,6 +501,10 @@ drawer_delta = wallet_delta + fee
 
 ### D13 — Deducted mode must not shrink a debit
 
+> **Superseded by D40** (both halves): the fee no longer changes what the balance moves in
+> *either* direction — a credit lands the whole amount too. The debit rule below was the half
+> that was right; it is now the rule for both.
+
 Today `netAmount = amount − fee` is posted for **both** directions. For a cash-out that
 means the wallet drops ₱490 and ₱490 is handed over: **the ₱10 fee is collected from
 nobody**, while the Income report books it as earned. A recorded income that was never
@@ -1723,9 +1727,12 @@ null`, `charges_total: 0` and no type code, so the Fee/Charges cells and the foo
 the ₱20 once — in the movement row, which keeps it — and the Type cell reads `Service fee`. The
 movement row keeps its Fee 20, so the statement renders the complete three-line entry.
 
-**Reversals are untouched on purpose.** `unwindDrawerLeg` sums the recorded rows, which is the
-same net it always read, and posts one net row against whoever holds it — the split changes
-what was written, not what unwinding means. The fee stays where the fee mode says it belongs.
+**Reversals are untouched on purpose** *(updated by D40)*. `unwindDrawerLeg` sums the recorded
+rows, which is the same net it always read, and posts one net row against whoever holds it — the
+split changes what was written, not what unwinding means. D40 then removed the fee-mode branch
+the sentence below used to carry: the fee comes back with the movement whichever way it was
+taken, because both fee modes post identically and the income report refunds a reversed row's
+fee in both.
 
 **Superseded:** D24's "one net row, not two" — its argument was that two rows gain no
 information over one, and on balances that was true; the gain turned out to be in the reading.
@@ -1816,3 +1823,52 @@ cascaded to the ledger rows under it (§21), so the eight transactions recorded 
 hours of Oct 14 under an Oct-13 shift were re-dated to Oct 13 through that same cascade when
 this shipped. The form's default is what made the correction necessary; the correction is what
 made the dashboard, the register and the closing count agree again.
+
+## 32. The fee never moves the balance
+
+For as long as there were two fee modes there were two postings, and the difference landed on
+a credit: with the fee deducted from the amount, a ₱510 cash-in posted ₱500 to the account and
+₱490 out of the drawer (D13's credit half). The owner's own flows settle the other way — he
+e-money-sends ₱510 *of which ₱10 is the fee*, the balance lands the whole ₱510, the drawer
+hands over ₱500 — and the books must record what happened, not a convention about where the fee
+was cut from.
+
+### D40 — both fee modes post identically; the fee is income netted into the drawer's movement
+
+The account's row is the amount as typed, in both directions and both fee modes:
+
+| Leg | In (customer → e-money) | Out (e-money → customer) |
+|---|---|---|
+| Account | credit `amount` | debit `amount` |
+| Drawer — fee | credit `fee` | credit `fee` |
+| Drawer — movement | debit `amount` | credit `amount` |
+| Drawer net | `fee − amount` | `fee + amount` |
+
+The ₱510/₱10 example: balance **+510**, drawer rows **+10** `Service fee` and **−510**
+movement → drawer net **−500**. The ₱490/₱10 example: balance **−490**, drawer **+10** and
+**+490** → net **+500**. Both rows satisfy D24's identity `signed + drawer_delta = fee`, so the
+books grow by exactly the fee in every cell, and the physical drawer ties to the net to the
+centavo. The four cells of the old matrix collapse to two: the only thing the fee mode ever
+changed on a credit is gone.
+
+**What survives is a record, not a rule.** `fee_added_to_balance` still answers *how the
+customer paid*: on top of the amount (handed ₱520) or inside it (handed ₱510). It decorates
+the fee badge on every surface — the register, the income detail — and decides nothing about
+postings, reversals or totals. The entry toggle stays for the same reason a receipt says how
+the money was tendered.
+
+**Reversals refund the fee with the movement, in both modes.** `unwindDrawerLeg` dropped its
+fee-mode branch: the recorded rows are the fee credited to the till and the movement settling
+against it, so the mirror of their sum hands back the net the drawer actually moved and the
+fee's income is refunded alongside it — which is what the income report has already been
+saying, that a reversed row is totalled wholly as refunded whichever mode it carries. A
+reversal now undoes the transaction completely, to the centavo, on both surfaces.
+
+**A fee inside the amount cannot exceed it** (`Fee cannot exceed the transaction amount when
+the fee is taken inside the amount`). The fee is a cut of what the customer sent; a larger cut
+would book income the money never carried. The refusal is the old guard with its reason
+restated — it never subtracted anything else, and D40 retires only the subtraction.
+
+**Superseded:** D13's credit half ("`amount − fee` — already correct"). Its debit half — a
+debit is never narrowed by the fee — was right, and is now simply the rule for both
+directions. §27's gross amounts are unaffected: gross was already the amount as typed.

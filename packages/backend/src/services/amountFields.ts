@@ -145,17 +145,18 @@ function planTransaction(
   const amount = readMoney(read('amount'), 'Amount', 0);
   const fee = readMoney(read('fee'), 'Fee', 0);
 
-  const deductFee = record.fee_added_to_balance === false && fee > 0;
-  if (deductFee && amount < fee) {
-    throw createError(400, 'Fee cannot exceed the transaction amount when deducted from the transaction amount');
+  // The fee never changes what the balance moves (design D40): the amount as
+  // typed is what the ledger row posts, whichever way the fee was taken — the
+  // fee is income netted into the drawer's movement, not a subtraction from
+  // what lands or leaves. A fee taken inside the amount still cannot exceed
+  // it, because it is a cut of the amount the customer sent and a larger cut
+  // would book income that money never carried. Reproducing exactly what
+  // creation would have written, instead of quietly re-pricing the movement.
+  const feeInside = record.fee_added_to_balance === false && fee > 0;
+  if (feeInside && amount < fee) {
+    throw createError(400, 'Fee cannot exceed the transaction amount when the fee is taken inside the amount');
   }
-
-  // A deducted fee shrinks what a credit lands on, never what a debit removes
-  // (design D13). The direction comes from the same row the plan already takes
-  // the account from, so a correction reproduces exactly what creation would
-  // have written instead of quietly re-pricing the movement.
-  const isCredit = rows[0]?.entry_type === 'credit';
-  const netAmount = deductFee && isCredit ? round2(amount - fee) : amount;
+  const netAmount = amount;
   const charges = sumCharges(record.additional_charges);
 
   return {

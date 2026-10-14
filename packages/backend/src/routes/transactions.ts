@@ -11,7 +11,6 @@ import { drawerLeg, drawerLegs, unwindDrawerLeg, chargeDrawerLeg, resolveCashAcc
 import type { RecordedLedgerRow } from '../services/cashManagement';
 import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf } from '../services/movementPlan';
 import { resolveMovementFee } from '../services/movementFee';
-import { toCents } from '../services/ledgerAudit';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
 import { withTransaction } from '../services/withTransaction';
@@ -534,7 +533,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     const providerChargeNum = plan.providerCharge;
     const finalStatus = plan.finalStatus;
 
-    // The provider-charge rules, the D13 deducted-fee arithmetic and the
+    // The provider-charge rules, the D40 fee arithmetic and the
     // approval decision all moved into `paymentPlan` above — the same sequence
     // the preview runs — so the figures destructured there are what this row
     // writes. What remains here is the writing itself.
@@ -596,7 +595,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       ({ newBalance } = await processTransaction(
         accountId, resolvedTypeId, totalAmount, feeNum, entryType as 'debit' | 'credit',
         transaction!.id, referenceNumber, description, effectiveDate, client,
-        feeAddedToBalance !== false, counterparties
+        counterparties
       ));
     }
 
@@ -631,7 +630,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
 
       ({ newBalance } = await processTransaction(
         accountId, expenseType.id, providerChargeNum, 0, 'debit',
-        chargeRow.id, null, chargeDescription, effectiveDate, client, true
+        chargeRow.id, null, chargeDescription, effectiveDate, client
       ));
     }
 
@@ -1061,11 +1060,12 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
 
     const feeAddedToBalance = provided('feeAddedToBalance') ? body.feeAddedToBalance !== false : row.fee_added_to_balance !== false;
 
-    // The same rule as creation, read from the same planner: a deducted fee
-    // shrinks what a credit lands on, never what a debit removes (design D13).
-    // Editing must reproduce what the create path would have written, or
-    // correcting an amount would quietly re-price the movement — so both ask
-    // `netAmountOf`, and the preview quotes it too.
+    // The same rule as creation, read from the same planner: the balance moves
+    // by the amount as typed, whichever way the fee was taken (design D40) —
+    // the fee is income netted into the drawer's movement, never a subtraction
+    // from what lands or leaves. Editing must reproduce what the create path
+    // would have written, or correcting an amount would quietly re-price the
+    // movement — so both ask `netAmountOf`, and the preview quotes it too.
     const net = netAmountOf({
       direction: row.direction,
       amount: amountInput,
@@ -1073,7 +1073,7 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
       feeAddedToBalance,
     });
     if (net.exceeds) {
-      throw createError(400, 'Fee cannot exceed the transaction amount when deducted from transaction amount');
+      throw createError(400, 'Fee cannot exceed the transaction amount when the fee is taken inside the amount');
     }
     const netAmount = net.netAmount;
 
@@ -1163,13 +1163,12 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
         // movement like any other — D17 gates it as one — so the cash the
         // original moved between the account and the till has to move back.
         // Read from the rows the original actually wrote rather than
-        // recomputed, and carrying the original's fee only when that fee was
-        // separate: a fee the drawer earned does not come back with the
-        // movement (details on unwindDrawerLeg). Resolved before anything is
+        // recomputed: the fee comes back with the movement whichever way it
+        // was taken, so the mirror of the recorded rows is the whole answer
+        // (details on unwindDrawerLeg). Resolved before anything is
         // written, so a leg that cannot be posted leaves the original untouched.
         const drawerSide = unwindDrawerLeg(
-          await recordedLedgerRows(client, original.id, original.account_id),
-          { cents: toCents(original.fee), separate: original.fee_added_to_balance !== false }
+          await recordedLedgerRows(client, original.id, original.account_id)
         );
         await assertDrawerCanFund(drawerSide);
 
@@ -1205,7 +1204,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
           reverseEntryType as 'debit' | 'credit', created.id,
           `REV-${original.transaction_number}`, `Reversal: ${reason || 'Transaction reversal'}`,
           new Date(), client,
-          true, drawerSide ? [drawerSide] : []
+          drawerSide ? [drawerSide] : []
         );
 
         return created;
@@ -1362,7 +1361,7 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     const { newBalance } = await processTransaction(
       row.account_id, row.transaction_type_id, totalAmount, parseFloat(row.fee || 0), entryType,
       row.id, row.reference_number, row.description, new Date(row.transaction_date), client,
-      row.fee_added_to_balance !== false, counterparties
+      counterparties
     );
 
     const updated = (await client.query(
@@ -1509,12 +1508,11 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
 
     // The drawer's side of the original, unwound with it — the same leg the
     // immediate path posts, read from the rows the original wrote so the
-    // movement comes back to the centavo, and carrying the original's fee only
-    // when that fee was separate (unwindDrawerLeg). Resolved before anything is
-    // written, so a leg that cannot be posted leaves both records alone.
+    // movement comes back to the centavo, whichever way the fee was taken
+    // (unwindDrawerLeg). Resolved before anything is written, so a leg that
+    // cannot be posted leaves both records alone.
     const drawerSide = unwindDrawerLeg(
-      await recordedLedgerRows(client, original.id, original.account_id),
-      { cents: toCents(original.fee), separate: original.fee_added_to_balance !== false }
+      await recordedLedgerRows(client, original.id, original.account_id)
     );
     await assertDrawerCanFund(drawerSide);
 
@@ -1551,7 +1549,7 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
         reverseEntryType as 'debit' | 'credit', reverseTx!.id,
         `REV-${original.transaction_number}`, `Reversal: ${pending.reason || 'Admin approved reversal'}`,
         new Date(), client,
-        true, drawerSide ? [drawerSide] : []
+        drawerSide ? [drawerSide] : []
       );
     } catch (err: any) {
       if (err?.message !== 'Insufficient balance') throw err;
@@ -1638,7 +1636,7 @@ router.delete('/:id', authorize('transactions.delete'), async (req: Request, res
     await client.query('BEGIN');
 
     const original = await client.query(
-      `SELECT t.id, t.transaction_number, t.amount, t.fee, t.status, t.account_id, t.created_by,
+      `SELECT t.id, t.transaction_number, t.amount, t.net_amount, t.fee, t.status, t.account_id, t.created_by,
               t.fee_added_to_balance, t.additional_charges, tt.direction
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
@@ -1655,12 +1653,14 @@ router.delete('/:id', authorize('transactions.delete'), async (req: Request, res
 
     // Restore account balance for completed transactions
     if (transaction.status === 'completed') {
-      const amount = parseFloat(transaction.amount);
-      const fee = parseFloat(transaction.fee || 0);
+      const amount = parseFloat(transaction.net_amount || transaction.amount);
       const charges = (transaction.additional_charges || [])
         .reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
-      const netAmount = transaction.fee_added_to_balance ? amount : amount - fee;
-      const totalImpact = netAmount + charges;
+      // Read back the figure the row actually posted rather than recomputing
+      // one: `net_amount` is the amount as typed for anything written since
+      // D40, and the shrunk figure for a legacy deducted-fee row — so the
+      // undo matches the post exactly either way.
+      const totalImpact = amount + charges;
       const balanceDelta = transaction.direction === 'in' ? totalImpact : -totalImpact;
 
       await client.query(

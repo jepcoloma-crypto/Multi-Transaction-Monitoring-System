@@ -43,22 +43,24 @@ test('e-money received → cash paid out: the drawer loses the amount less the f
 
   assert.deepEqual(plan.problems, []);
   assert.equal(plan.entryType, 'credit', "Sheryll's e-wallet is credited");
-  assert.equal(plan.netAmount, 24800, 'a separate fee does not shrink the credit');
+  assert.equal(plan.netAmount, 24800, 'the fee never shrinks the credit (D40)');
   assert.deepEqual(plan.drawerLeg, { amount: 24550, entryType: 'debit' }, 'Cash on Hand −24,550');
   assert.equal(plan.cashBehavior, 'out', 'the badge reads: cash leaves the drawer');
 });
 
-test('a deducted fee shrinks what a credit lands on, and the drawer keeps it (D13)', () => {
-  // cash-in, deducted: account +490, drawer −480 — the pin the drawer-leg
-  // tests already hold, now read back through the planner.
+test('a fee inside the amount posts exactly like a fee paid on top (D40)', () => {
+  // The customer e-money-sends ₱510 of which ₱10 is the fee: the balance
+  // lands the whole ₱510, the drawer nets ₱10 − ₱510 = −₱500, and the fee is
+  // income. Identical postings to the fee-on-top row above — only the tender
+  // record differs.
   const plan = walletPlan({ feeAddedToBalance: false });
 
-  assert.equal(plan.deductFee, true);
-  assert.equal(plan.netAmount, 490, 'the fee comes out of what the credit lands on');
-  assert.deepEqual(plan.drawerLeg, { amount: 480, entryType: 'debit' });
+  assert.equal(plan.feeInside, true, 'the tender record survives as a record');
+  assert.equal(plan.netAmount, 500, 'the fee never shrinks what the credit lands on');
+  assert.deepEqual(plan.drawerLeg, { amount: 490, entryType: 'debit' }, 'the drawer nets fee − amount');
 });
 
-test('a deducted fee never shrinks what a debit removes', () => {
+test('a fee inside the amount never shrinks what a debit removes', () => {
   const plan = walletPlan({ direction: 'out', code: 'cash_out', feeAddedToBalance: false });
 
   assert.equal(plan.netAmount, 500, 'the whole amount leaves the channel');
@@ -160,11 +162,11 @@ test('additional charges ride on the account leg without touching the drawer leg
   );
 });
 
-test('a deducted fee larger than the amount is refused, not silently swallowed', () => {
+test('a fee inside the amount larger than the amount is refused, not silently swallowed', () => {
   const plan = walletPlan({ amount: 50, fee: 100, feeAddedToBalance: false });
 
   assert.ok(plan.problems.includes(
-    'Fee cannot exceed the transaction amount when deducted from transaction amount'
+    'Fee cannot exceed the transaction amount when the fee is taken inside the amount'
   ));
 });
 

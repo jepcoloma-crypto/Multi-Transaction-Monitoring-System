@@ -203,7 +203,7 @@ test('the cash tab totals exactly what the account row prints beside it', () => 
   assert.equal(detail.summary.cashReversedCount, 1);
 });
 
-test('a deducted fee on a reversed transaction is totalled as refunded', () => {
+test('a fee inside the amount on a reversed transaction is totalled as refunded', () => {
   const { cash, summary } = buildIncomeDetail({
     cash: [
       { id: 'c1', status: 'completed', fee: '10.00', charges: '5.00' },
@@ -211,8 +211,9 @@ test('a deducted fee on a reversed transaction is totalled as refunded', () => {
     ],
   });
 
-  // A deducted fee shrank what the customer received, so undoing the
-  // transaction hands it back.
+  // A reversal hands the whole transaction back, so nothing it carried is
+  // income — the fee inside the amount is refunded like any other, since both
+  // fee modes post identically (D40).
   assert.equal(summary.earnedFee, 10);
   assert.equal(summary.earnedCharges, 5);
   assert.equal(summary.earned, 15);
@@ -226,13 +227,13 @@ test('a deducted fee on a reversed transaction is totalled as refunded', () => {
   assert.equal(cash[1].feeAddedToBalance, false);
 });
 
-test('a separate fee on a reversed transaction is totalled as refunded', () => {
+test('a fee paid on top on a reversed transaction is totalled as refunded', () => {
   const { cash, summary } = buildIncomeDetail({
     cash: [
       { id: 'c1', status: 'completed', fee: '10.00', charges: '5.00' },
       // The mode every fee-bearing row in the database carries. A reversal
-      // credits the drawer the full amount as well as the movement, so the fee
-      // left with it and income cannot go on claiming it.
+      // refunds the fee with the movement — it comes back inside the drawer's
+      // mirror — so income cannot go on claiming it.
       { id: 'c2', status: 'reversed', fee: '25.00', charges: '15.00', fee_added_to_balance: true },
     ],
   });

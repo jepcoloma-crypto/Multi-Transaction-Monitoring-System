@@ -162,9 +162,12 @@ export async function processTransaction(
   description: string | null,
   transactionDate: Date,
   client: any,
-  feeAddedToBalance: boolean = true,
   counterparties: CounterpartyLeg[] = []
 ): Promise<{ newBalance: number; netAmount: number; counterpartyBalance: number | null }> {
+  // The account's row is the amount as typed, whichever way the fee was paid
+  // (D40): the fee is income netted into the drawer's counterparties below,
+  // never a subtraction from what lands or leaves. `fee_added_to_balance`
+  // stays on the transaction as the tender record only.
   const netAmount = amount;
   const postings = planPostings(accountId, entryType, netAmount, counterparties);
 
