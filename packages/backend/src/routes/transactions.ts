@@ -769,9 +769,12 @@ router.post('/preview', authorize('transactions.write'), async (req: Request, re
     let drawerBalance: number | null = null;
     if (plan.finalStatus === 'completed') {
       try {
-        // The same rows the save posts, in the same order — the fee first,
-        // then the movement (D37) — so what the operator reads here is what
-        // the statement will show.
+        // The save posts two drawer rows — the fee landing in the till, then
+        // the movement settling against it (D37) — but the preview lists the
+        // drawer as their net, because an operator checks it against the cash
+        // tin: ₱10 in and ₱510 out is a −₱500 drawer, not −₱510. One line
+        // here; the statement keeps both rows, where the running balance
+        // explains the pair.
         const drawerRows = await resolveDrawerLeg(
           accountId, plan.paymentMethod, plan.drawerSignedAmount, feeNum
         );
@@ -779,15 +782,17 @@ router.post('/preview', authorize('transactions.write'), async (req: Request, re
           const drawerAcct = await queryOne<{ name: string; current_balance: string }>(
             'SELECT name, current_balance FROM accounts WHERE id = $1', [drawerRows[0].accountId]
           );
-          for (const row of drawerRows) {
-            legs.push({
-              role: row.role === 'fee' ? 'fee' : 'drawer',
-              accountId: row.accountId,
-              accountName: drawerAcct?.name || 'Cash on hand',
-              entryType: row.entryType,
-              amount: row.amount,
-            });
-          }
+          const netCents = drawerRows.reduce(
+            (sum, row) => sum + (row.entryType === 'credit' ? 1 : -1) * Math.round(row.amount * 100),
+            0
+          );
+          legs.push({
+            role: 'drawer',
+            accountId: drawerRows[0].accountId,
+            accountName: drawerAcct?.name || 'Cash on hand',
+            entryType: netCents >= 0 ? 'credit' : 'debit',
+            amount: Math.abs(netCents) / 100,
+          });
           drawerBalance = parseFloat(drawerAcct?.current_balance || '0');
         }
       } catch (err: any) {

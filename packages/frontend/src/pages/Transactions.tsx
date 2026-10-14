@@ -1176,7 +1176,7 @@ export default function Transactions() {
                         {preview.legs.map((leg, i) => (
                           <li key={i} className="flex items-center justify-between gap-3 px-3 py-2">
                             <span className="text-gray-600">
-                              {leg.role === 'drawer' ? 'Cash drawer' : leg.role === 'fee' ? 'Service fee' : leg.role === 'charge' ? 'Provider charge' : 'Account'}
+                              {leg.role === 'drawer' ? 'Cash drawer' : leg.role === 'charge' ? 'Provider charge' : 'Account'}
                               {' \u00b7 '}{leg.accountName}
                             </span>
                             <span className={`font-medium tabular-nums whitespace-nowrap ${leg.entryType === 'credit' ? 'text-green-600' : 'text-red-600'}`}>

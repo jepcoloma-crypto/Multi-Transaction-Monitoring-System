@@ -1872,3 +1872,15 @@ restated — it never subtracted anything else, and D40 retires only the subtrac
 **Superseded:** D13's credit half ("`amount − fee` — already correct"). Its debit half — a
 debit is never narrowed by the fee — was right, and is now simply the rule for both
 directions. §27's gross amounts are unaffected: gross was already the amount as typed.
+
+### D41 — the entry preview shows the drawer as its net
+
+The save posts two drawer rows (D37), but the entry preview lists one: the net of the pair.
+Read as a list, the split misleads — after ₱510/₱10 it showed *Service fee +10* and
+*Cash drawer −510*, and the second line reads like the drawer's whole movement, when the tin
+actually hands out ₱500. The preview is what an operator checks against that tin, so the
+preview says −500: the route nets the two rows into a single `Cash drawer` leg
+(`fee − amount` in, `fee + amount` out — D40's drawer net), and the footer still states the
+fee, so `+510 − 500 = 10` ties out on sight. Only the display moved: what saves, the
+statement's rows, and every balance are untouched, and the arithmetic stays the server's —
+the form keeps rendering the preview's answer verbatim.
