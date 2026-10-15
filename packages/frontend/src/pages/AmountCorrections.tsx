@@ -16,8 +16,20 @@ type SourceType = 'transaction' | 'transfer' | 'loading';
 interface AmountField {
   key: string;
   label: string;
-  kind: 'money' | 'qty';
+  kind: 'money' | 'qty' | 'id';
   min: number | null;
+}
+
+// The products a loading correction may re-point a sale at. The picker fills
+// the figures from these, the way the New Sale form derives them.
+interface LoadingProduct {
+  id: string;
+  name: string;
+  provider_name: string;
+  cost_price: number;
+  selling_price: number;
+  provider_convenience_fee: number;
+  company_additional_charge: number;
 }
 
 type MetadataKind = 'text' | 'timestamp';
@@ -167,6 +179,7 @@ export default function AmountCorrections() {
   const [metaApplying, setMetaApplying] = useState(false);
   const [metaApplied, setMetaApplied] = useState<string | null>(null);
   const [metaError, setMetaError] = useState<string | null>(null);
+  const [products, setProducts] = useState<LoadingProduct[]>([]);
 
   const load = useCallback(
     async (page = 1) => {
@@ -196,8 +209,20 @@ export default function AmountCorrections() {
     load(1);
   }, [load]);
 
+  // The product picker on the Loading tab fills a sale's figures from the
+  // product's own prices, so the list lives here as well as on the Loading
+  // page. Loaded once per tab switch; an empty list still renders the picker,
+  // just with the current product as its only option.
+  useEffect(() => {
+    if (tab !== 'loading') return;
+    api
+      .get<LoadingProduct[]>('/loading/products')
+      .then(setProducts)
+      .catch((err) => console.error('Loading products load error:', err));
+  }, [tab]);
+
   const runPreview = useCallback(
-    async (type: SourceType, id: string, fieldValues: Record<string, number>) => {
+    async (type: SourceType, id: string, fieldValues: Record<string, number | string>) => {
       setPreviewing(true);
       setPreviewError(null);
       try {
@@ -222,10 +247,16 @@ export default function AmountCorrections() {
   );
 
   const buildPayload = useCallback(() => {
-    const out: Record<string, number> = {};
-    for (const key of touched) out[key] = parseFloat(values[key] ?? '');
+    const out: Record<string, number | string> = {};
+    for (const key of touched) {
+      const raw = values[key] ?? '';
+      // An id field carries an identifier, not a figure: parseFloat would
+      // turn a uuid into NaN and JSON would send null.
+      const kind = fieldSpecs.find((f) => f.key === key)?.kind;
+      out[key] = kind === 'id' ? raw : parseFloat(raw);
+    }
     return out;
-  }, [touched, values]);
+  }, [touched, values, fieldSpecs]);
 
   const openRecord = async (row: ListedRow) => {
     setSelected(row);
@@ -290,7 +321,7 @@ export default function AmountCorrections() {
     }
     setApplying(true);
     try {
-      const res = await api.post<{ applied: CorrectionRow[]; changed: Record<string, number> | null }>(
+      const res = await api.post<{ applied: CorrectionRow[]; changed: Record<string, number | string> | null }>(
         `/corrections/${tab}/${selected.id}/apply`,
         { fields: buildPayload(), reason: reason.trim() }
       );
@@ -573,24 +604,79 @@ export default function AmountCorrections() {
               <section>
                 <h3 className="text-xs font-semibold uppercase text-gray-500 mb-2">Figures</h3>
                 <div className="grid grid-cols-2 gap-3">
-                  {fieldSpecs.map((field) => (
-                    <label key={field.key} className="block">
-                      <span className="text-xs text-gray-600">{field.label}</span>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={values[field.key] ?? ''}
-                        onChange={(e) => {
-                          const next = e.target.value;
-                          setValues((v) => ({ ...v, [field.key]: next }));
-                          setTouched((t) => (t.includes(field.key) ? t : [...t, field.key]));
-                          setStale(true);
-                          setApplied(null);
-                        }}
-                        className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
-                      />
-                    </label>
-                  ))}
+                  {fieldSpecs.map((field) => {
+                    const controlClass =
+                      'mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500';
+                    if (field.kind === 'id') {
+                      // Re-pointing the product: the pick fills the figures
+                      // from the product's own prices for the sale's current
+                      // quantity — the same derivation the New Sale form
+                      // shows — and every field it touches is marked touched
+                      // so the preview and the save carry the whole change.
+                      const current = values[field.key] ?? '';
+                      return (
+                        <label key={field.key} className="block col-span-2">
+                          <span className="text-xs text-gray-600">{field.label}</span>
+                          <select
+                            value={current}
+                            onChange={(e) => {
+                              const productId = e.target.value;
+                              const product = products.find((p) => p.id === productId);
+                              const quantity = parseInt(values.quantity || '1', 10) || 1;
+                              const perUnitFee = Number(product?.provider_convenience_fee) || 0;
+                              setValues((v) => ({
+                                ...v,
+                                [field.key]: productId,
+                                ...(product
+                                  ? {
+                                      unit_cost: String(product.cost_price),
+                                      unit_price: String(product.selling_price),
+                                      provider_convenience_fee: String(Math.round(perUnitFee * quantity * 100) / 100),
+                                      company_additional_charge: String(product.company_additional_charge ?? 0),
+                                    }
+                                  : {}),
+                              }));
+                              const filled = ['unit_cost', 'unit_price', 'provider_convenience_fee', 'company_additional_charge'];
+                              setTouched((t) => (t.includes(field.key) ? t : [...t, field.key, ...filled]));
+                              setStale(true);
+                              setApplied(null);
+                            }}
+                            className={`${controlClass} bg-white`}
+                          >
+                            <option value="">Select product</option>
+                            {current !== '' && !products.some((p) => p.id === current) && (
+                              <option value={current}>
+                                {String(selected?.product_name ?? current)} (not listed)
+                              </option>
+                            )}
+                            {products.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({p.provider_name}) — {formatCurrency(p.selling_price)}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      );
+                    }
+                    return (
+                      <label key={field.key} className="block">
+                        <span className="text-xs text-gray-600">{field.label}</span>
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={values[field.key] ?? ''}
+                          onChange={(e) => {
+                            const next = e.target.value;
+                            setValues((v) => ({ ...v, [field.key]: next }));
+                            setTouched((t) => (t.includes(field.key) ? t : [...t, field.key]));
+                            setStale(true);
+                            setApplied(null);
+                          }}
+                          className={controlClass}
+                        />
+                      </label>
+                    );
+                  })}
                 </div>
               </section>
 

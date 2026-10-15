@@ -6,6 +6,7 @@ import {
   isAmountable,
   AMOUNT_FIELDS,
 } from '../services/amountFields';
+import { planFeeRepost } from '../services/feeAudit';
 import type { AmountPlan } from '../services/amountFields';
 
 interface RowLike {
@@ -17,6 +18,7 @@ const creditRow = (id = 'a1'): RowLike => ({ account_id: id, entry_type: 'credit
 const debitRow = (id = 'a1'): RowLike => ({ account_id: id, entry_type: 'debit' });
 
 const transactionRecord = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  account_id: 'a1',
   amount: '400.00',
   fee: '20.00',
   net_amount: '400.00',
@@ -35,6 +37,8 @@ const transferRecord = (overrides: Record<string, unknown> = {}): Record<string,
 });
 
 const loadingRecord = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+  account_id: 'a1',
+  payment_method: 'cash',
   quantity: 10,
   unit_cost: '5.00',
   unit_price: '8.00',
@@ -131,6 +135,9 @@ test('a transfer splits the amount across the source deduction and the destinati
     destination_amount: 1500,
   });
   assert.deepEqual(result.amounts, { src: 1525, dst: 1500 });
+  // The source's rows open with a debit, the destination's with a credit —
+  // declared by the plan rather than read off that write order.
+  assert.deepEqual(result.signs, { src: -1, dst: 1 });
 });
 
 test('a transfer finds each side by the first row written on that account', () => {
@@ -247,7 +254,7 @@ test('every editable field is declared with a label and a bound', () => {
     assert.ok(fields.length > 0, `${sourceType} has no editable fields`);
     for (const field of fields) {
       assert.ok(field.key && field.label, `${sourceType}.${field.key} is incompletely specified`);
-      assert.ok(field.kind === 'money' || field.kind === 'qty');
+      assert.ok(field.kind === 'money' || field.kind === 'qty' || field.kind === 'id');
     }
   }
 });
@@ -305,4 +312,116 @@ test('a missing record reports not found instead of failing on undefined', () =>
 test('a provider fee keeps its stored total when the old quantity cannot be read', () => {
   const result = plan('loading', loadingRecord({ quantity: null }), [debitRow()], { quantity: 3 });
   assert.equal(result.columns.provider_convenience_fee, 20);
+});
+
+test('a corrected cash movement plans the till beside the account, as creation wrote it (D42)', () => {
+  // Cash-in settled in cash: the record's account lands the figure and the
+  // till carries the net that physically crossed it. Correcting only the
+  // account would leave the till contradicting the record forever — which is
+  // what the fee audit judges both legs against.
+  const rows = [creditRow('a1'), debitRow('till')];
+  const result = plan('transaction', transactionRecord(), rows, { amount: 500 });
+
+  // in-ON: the account lands 500 + 20 fee + 25 charges = 545; the till's net
+  // is fee − accountTotal = 20 − 545 = −525 (drawerLeg) — a debit of 525.
+  assert.deepEqual(result.amounts, { a1: 545, till: 525 });
+  assert.deepEqual(result.signs, { a1: 1, till: -1 });
+});
+
+test('a cash-out whose fee rode on top moves the till the way the entry route wrote it', () => {
+  const record = transactionRecord({
+    direction: 'out',
+    fee_added_to_balance: true,
+    additional_charges: null,
+  });
+  const rows = [debitRow('a1'), creditRow('till')];
+  const result = plan('transaction', record, rows, { amount: 500 });
+
+  // out-ON: the account hands out 500, and the till's net is
+  // fee − accountTotal = 20 − (−500) = +520 — the cell D42's table pins down.
+  assert.deepEqual(result.amounts, { a1: 500, till: 520 });
+  assert.deepEqual(result.signs, { a1: -1, till: 1 });
+});
+
+test('the drawer plan agrees with the fee re-post cell for cell', () => {
+  // The amount form and the fee re-post both derive the pair from the same
+  // figures; drift between them would move the till two different ways for
+  // one movement.
+  const record = transactionRecord();
+  const rows = [creditRow('a1'), debitRow('till')];
+  const mine = plan('transaction', record, rows, { amount: 500 });
+  const theirs = planFeeRepost({
+    direction: 'in',
+    recordAmount: 500,
+    recordFee: 20,
+    recordFeeAddedToBalance: true,
+    additionalCharges: record.additional_charges,
+    primaryAccountId: 'a1',
+    drawerAccountId: 'till',
+    target: { amount: 500, fee: 20, feeAddedToBalance: true },
+  });
+  assert.deepEqual(mine.amounts, theirs.amounts);
+  assert.deepEqual(mine.signs, theirs.signs);
+});
+
+test('a cash loading sale plans the drawer at the corrected selling price', () => {
+  const rows = [debitRow('a1'), creditRow('till')];
+  const result = plan('loading', loadingRecord(), rows, { quantity: 5 });
+
+  // Channel: 5 × ₱5 cost plus the provider's fee scaled with the quantity
+  // (₱20 for 10 units → ₱10 for 5) = ₱35. Drawer: the selling price, whole —
+  // ₱8 × 5 = ₱40 — because the drawer is spared cost and fees alike.
+  assert.deepEqual(result.amounts, { a1: 35, till: 40 });
+  assert.deepEqual(result.signs, { a1: -1, till: 1 });
+});
+
+test('a sale settled any other way unwinds a till row that should not stand', () => {
+  // The record now declares a non-cash settlement while its rows still carry
+  // a drawer leg. The till's target is zero: no physical cash changed hands,
+  // so the row that says otherwise is what this correction removes.
+  const record = loadingRecord({ payment_method: 'e_wallet' });
+  const rows = [debitRow('a1'), creditRow('till')];
+  const result = plan('loading', record, rows, { unit_price: 9 });
+
+  assert.equal(result.amounts.till, 0);
+  assert.deepEqual(result.signs, { a1: -1, till: 1 });
+  assert.equal(result.columns.unit_price, 9);
+});
+
+test('a product re-point writes the id and leaves the figures to the proposal', () => {
+  const id = '3f2c0f8e-6f9c-4f1f-9c3f-2c0f8e6f9c4f';
+  const result = plan('loading', loadingRecord(), [debitRow()], { product_id: ` ${id} ` });
+
+  assert.equal(result.columns.product_id, id);
+  // The figures still come from the record's own values when none are
+  // proposed; the client fills them from the product it lets the operator pick.
+  assert.equal(result.columns.quantity, 10);
+  assert.equal(result.columns.unit_cost, 5);
+});
+
+test('an empty product selection is refused rather than written', () => {
+  throwsStatus(() => plan('loading', loadingRecord(), [debitRow()], { product_id: '   ' }), 400, /Product must be selected/);
+  throwsStatus(() => plan('loading', loadingRecord(), [debitRow()], { product_id: 123 }), 400, /Product must be selected/);
+});
+
+test('columnsChanged treats a product id as changed only when the id differs', () => {
+  const record = loadingRecord({ product_id: 'p-old' });
+  assert.equal(columnsChanged(record, { product_id: 'p-old' }), false);
+  assert.equal(columnsChanged(record, { product_id: 'p-new' }), true);
+});
+
+test('a record whose rows spread past its own account and one drawer is refused', () => {
+  throwsStatus(
+    () => plan('transaction', transactionRecord(), [creditRow('a1'), debitRow('till'), creditRow('other')], {}),
+    400,
+    /spans more accounts/
+  );
+});
+
+test('a record that does not name an account cannot be planned against', () => {
+  throwsStatus(
+    () => plan('transaction', transactionRecord({ account_id: null }), [creditRow()], {}),
+    400,
+    /does not name an account/
+  );
 });

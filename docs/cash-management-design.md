@@ -1944,9 +1944,9 @@ pair at their full figure on both sides now, in both directions.
 rows (D40's rule, kept), so an unwind hands back whatever the rows moved — the till gives back
 the ₱24,800 it actually took, the account gives back the ₱25,050 it actually received — and the
 pending-reversal approval passes the same mirror. Corrections ask the same `netAmountOf`, so
-editing an amount reproduces creation to the centavo; a cash movement's correction is refused
-on its two-account shape as it was before — the fee re-post of §34 (D43) is the separate,
-fee-only path that owns both accounts, and it plans through `netAmountOf` as well. The shift's expected closing, the register, the
+editing an amount reproduces creation to the centavo; a cash movement's correction plans the
+till beside the account through the same `drawerLeg` (§36, D45), and the fee re-post of §34
+(D43) remains the flag-specific path that owns both accounts the same way. The shift's expected closing, the register, the
 Sources and Uses statement and the chain audit read the same rows they always read — the fee
 row changed account, not sign, so the statement's buckets and its tie-out to every balance do
 not move. D41's netted preview stands, quoting the new nets; the form still renders the
@@ -2100,3 +2100,50 @@ explain the balance change. Delete now serves drafts that never posted (and refu
 rows as it always did); every settled sale is undone by cancellation, mirrored and
 audit-logged. The old "restore the balances by deleting the rows" branch left with it: there is
 no longer a completed row the delete will touch.
+
+## 36. Amount corrections meet the drawer, and a loading sale can change product
+
+The Amount Corrections page changed a record's figures and reconciled the ledger to match — but
+its shape guard counted accounts against a static strategy: a transaction or loading record was
+declared to own rows on exactly one account. A cash transaction and a cash-settled loading sale
+own rows on their own account **and the till they settled against** (D12/D24), so opening
+either in the form failed on sight with `expected 1 account(s) … but found 2`. The movements
+most likely to be keyed wrong were exactly the ones the form refused (owner's ask, 2026-10-15).
+
+### D45 — a correction plans both legs, with the arithmetic creation writes with
+
+**The shape is judged against the record, not a count.** For transactions and loading the gate
+is the fee re-post's own rule (`movementShape`): the record's own account, plus at most one
+drawer beside it, and anything more refused by name. A transfer keeps the strategy's exact
+two-sided check; the record is now read up front in both the preview and the apply, because
+only the record can name the accounts.
+
+**The planner owns the drawer's target.** Both legs derive from the corrected figures through
+the same functions creation posts with — `drawerLeg` for a cash movement's till net and
+`loadingSaleLegs` for a load sale's drawer increase (the selling price, whole) — so the amount
+form, the entry route and the fee re-post cannot drift cell from cell; a unit test pins the
+amount form's figures and directions to the fee re-post's for the same inputs. The plan also
+declares each account's target direction (`signs`), read off its own arithmetic rather than off
+row history: a till's first row may be the fee row, which faces the other way from the till's
+net (§34's defect). A sale that now declares a non-cash settlement while a till row still
+stands targets zero — the correction removes the row that should never have been written.
+
+**Everything else is unchanged.** Corrections still append one delta row per account; the
+record's columns are written in the same transaction; every affected account is locked in
+sorted order, must be open (D17), and must still reconcile inside the commit (`auditInside`) or
+nothing lands. The Ledger impact panel already rendered two accounts, so the till appears there
+by name with its before → after like any other affected balance. Statements and the Sources and
+Uses tie-out read the corrected pair because they already read every row by source (the till's
+delta files under the movement's own bucket, as an account-side correction always has); the
+income reports follow the record's rewritten `net_amount` / `profit` columns, which the plan
+has always updated — so no report needed adjusting, and the fee audit now finds the record and
+both its legs telling one story after an amount fix instead of flagging the pair as `neither`.
+
+**A loading sale may be re-pointed to another product.** `product_id` joins the loading form's
+editable figures — a picker at the top fills unit cost, selling price, the provider fee (scaled
+to the sale's quantity) and the company charge from the product chosen, and the record's
+`product_id` is corrected in the same audited step, so reports that group by product never see
+a sale whose prices and product name disagree. The id is checked against `loading_products`
+before anything is planned — an id that names nothing is refused; a deactivated product is
+allowed, because corrections fix history and history may legitimately name one — and an empty
+selection is refused rather than written.

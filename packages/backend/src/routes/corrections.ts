@@ -106,12 +106,13 @@ router.get('/audit', authorize('reports.read'), async (req: Request, res: Respon
 
 // --------------------------------------------------------- fee audit -----
 // The ON/OFF fee flag decides what posts in two of the four cells (D42), and
-// it is written once, at the counter: amount corrections refuse a cash
-// movement outright, and the flag itself was never editable, so a row written
-// backwards stayed backwards silently. This lists every completed fee-bearing
-// movement beside what its declared mode says should have posted and what the
-// opposite mode would, judged by the same netAmountOf/drawerLeg the entry
-// route writes with (D43). Read-only — the fix is the re-post below.
+// it is written once, at the counter: the amount form corrected one account
+// only, so it refused a cash movement outright, and the flag itself was never
+// editable, so a row written backwards stayed backwards silently. This lists
+// every completed fee-bearing movement beside what its declared mode says
+// should have posted and what the opposite mode would, judged by the same
+// netAmountOf/drawerLeg the entry route writes with (D43). Read-only — the fix
+// is the re-post below.
 //
 // "actual" sums every row the movement owns, corrections appended included:
 // it is what the account and the till really moved, not what the record's
@@ -270,6 +271,33 @@ function movementShape(record: Record<string, any>, rows: LedgerRowRef[]) {
     drawerAccountId: others.length === 1 ? others[0] : null,
     problems,
   };
+}
+
+// The shape an amount correction may be planned against: the record's own
+// account, plus at most one drawer beside it — the pair creation wrote when
+// the movement settled in cash (D12/D24) and the pair the fee re-post already
+// understands. The static strategy only counts accounts, so the record itself
+// names them; a transfer keeps the strategy's exact two-sided check.
+function correctionShape(sourceType: string, record: Record<string, any>, rows: LedgerRowRef[]) {
+  if (sourceType !== 'transaction' && sourceType !== 'loading') {
+    return verifyShape(strategyFor(sourceType)!, observedShape(rows));
+  }
+  const { problems } = movementShape(record, rows);
+  return { ok: problems.length === 0, problems };
+}
+
+// A product change names a real product. The id is written to the record and
+// the figures beside it are read off that product by the client, so a typo'd
+// or deleted id would relabel a sale the books no longer describe. An empty
+// selection is refused by the planner with its own message; only a non-empty
+// id is checked here, beside the other early reads and before any transaction
+// opens. A deactivated product is allowed — corrections fix history, and
+// history may legitimately name one.
+async function requireProduct(productId: unknown): Promise<void> {
+  if (typeof productId !== 'string' || !productId.trim()) return;
+  const id = requireUuid(productId.trim(), 'product_id');
+  const found = await queryOne('SELECT 1 AS present FROM loading_products WHERE id = $1', [id]);
+  if (!found) throw createError(400, 'Product not found');
 }
 
 router.post('/fee-repost/preview', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
@@ -741,13 +769,17 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
     if (!sourceType || !sourceId) throw createError(400, 'sourceType and sourceId are required');
 
     const table = requireSource(sourceType, sourceId);
-    const exists = await queryOne(`SELECT 1 AS present FROM ${table} WHERE id = $1`, [sourceId]);
-    if (!exists) throw createError(404, `No ${sourceType} found with that id`);
+    // The record is read up front, not just its presence: the shape a
+    // correction may be planned against is the record's own account plus at
+    // most one drawer, and only the record can name them — a cash movement
+    // and a cash load sale own rows on both, the pair creation wrote.
+    const record = await queryOne(recordSql(table), [sourceId]);
+    if (!record) throw createError(404, `No ${sourceType} found with that id`);
 
     const rows = await loadLedgerRowsBySource(sourceType, sourceId);
     const strategy = strategyFor(sourceType)!;
     const observed = observedShape(rows);
-    const shape = verifyShape(strategy, observed);
+    const shape = correctionShape(sourceType, record, rows);
 
     const { accounts, entries } = await loadAccountsAndEntries(observed.accountIds);
     const before = auditLedger(accounts, entries);
@@ -762,18 +794,28 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
 
     let simulation: Simulation | null = null;
     let plan: AmountPlan | null = null;
-    let record: Record<string, unknown> | null = null;
 
     if (wantsAmounts || wantsFields) {
       if (!shape.ok) throw createError(409, `Cannot preview: ${shape.problems.join('; ')}`);
       let proposed = amounts;
       if (wantsFields) {
-        record = await queryOne(recordSql(table), [sourceId]);
-        if (!record) throw createError(404, `No ${sourceType} found with that id`);
+        if (sourceType === 'loading' && fields && typeof fields === 'object' && !Array.isArray(fields)) {
+          await requireProduct((fields as Record<string, unknown>).product_id);
+        }
         plan = planAmountCorrection(sourceType, record, rows, fields);
         proposed = plan.amounts;
       }
-      simulation = simulateCorrection(accounts, entries, rows, proposed);
+      // With a proposal the plan declares which way each target faces. Without
+      // one (raw amounts) the signs still come from the record as it stands:
+      // which way a target faces follows from the movement's direction and
+      // structure, not from the magnitudes being proposed (§34 — a till's
+      // first row may face the other way from its net).
+      const signs = plan
+        ? plan.signs
+        : isAmountable(sourceType)
+          ? planAmountCorrection(sourceType, record, rows, {}).signs
+          : undefined;
+      simulation = simulateCorrection(accounts, entries, rows, proposed, signs);
     }
 
     // Selling price and company charges never reach the ledger, so a proposal
@@ -932,12 +974,16 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     if (!wantsFields && (rawAmounts === undefined || rawAmounts === null)) {
       throw createError(400, 'fields or amounts is required');
     }
+    if (wantsFields && sourceType === 'loading' && fields && typeof fields === 'object' && !Array.isArray(fields)) {
+      await requireProduct((fields as Record<string, unknown>).product_id);
+    }
 
-    const exists = await queryOne(`SELECT 1 AS present FROM ${table} WHERE id = $1`, [sourceId]);
-    if (!exists) throw createError(404, `No ${sourceType} found with that id`);
-    await requireCompleted(sourceType, sourceId, table);
+    // The record is read once, up front: it 404s a missing source, refuses a
+    // record that never completed, and names the accounts the shape check
+    // inside the transaction judges against. Its figures are re-read after the
+    // accounts are locked, below.
+    const recordEarly = await requireCompleted(sourceType, sourceId, table);
 
-    const strategy = strategyFor(sourceType)!;
     await client.query('BEGIN');
     started = true;
 
@@ -950,7 +996,7 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     )).rows;
 
     const observed = observedShape(rows);
-    const shape = verifyShape(strategy, observed);
+    const shape = correctionShape(sourceType, recordEarly, rows);
     if (!shape.ok) throw createError(409, `Cannot correct: ${shape.problems.join('; ')}`);
 
     const accountIds = observed.accountIds;
@@ -975,18 +1021,28 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     // so the figures it is corrected from are the ones the ledger will be
     // reconciled against rather than a snapshot taken before other work landed.
     let amounts = rawAmounts;
-    let columns: Record<string, number> | null = null;
+    let columns: Record<string, number | string> | null = null;
     let recordBefore: Record<string, unknown> | null = null;
+    let plan: AmountPlan | null = null;
     if (wantsFields) {
       const loaded = await client.query(recordSql(table), [sourceId]);
       recordBefore = loaded.rows[0] ?? null;
       if (!recordBefore) throw createError(404, `No ${sourceType} found with that id`);
-      const plan = planAmountCorrection(sourceType, recordBefore, rows, fields);
+      plan = planAmountCorrection(sourceType, recordBefore, rows, fields);
       columns = plan.columns;
       amounts = plan.amounts;
     }
 
-    const simulation = simulateCorrection(accounts, entries, rows, amounts);
+    // With a proposal the plan declares which way each target faces. Without
+    // one (raw amounts) the signs still come from the record as it stands:
+    // which way a target faces follows from the movement's direction and
+    // structure, not from the magnitudes being proposed (§34).
+    const signs = plan
+      ? plan.signs
+      : isAmountable(sourceType)
+        ? planAmountCorrection(sourceType, recordEarly, rows, {}).signs
+        : undefined;
+    const simulation = simulateCorrection(accounts, entries, rows, amounts, signs);
     const recordChanged = columns !== null && recordBefore !== null && columnsChanged(recordBefore, columns);
     const changedColumns = recordChanged && columns !== null ? columns : null;
 

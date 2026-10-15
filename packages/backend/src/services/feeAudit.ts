@@ -1,13 +1,5 @@
 // The fee audit and its re-post planner (design D43).
 //
-// The ON/OFF fee flag decides what posts in two of the four cells (D42), and
-// it is written once, at entry, by whoever was at the counter. When a row was
-// flagged backwards — or its amount was typed as the tender total instead of
-// the figure the rule expects — the account and the till are both off by the
-// fee, and nothing after entry could see it, name it, or fix it: amount
-// corrections refuse a cash movement outright, and the flag itself was not
-// editable anywhere.
-//
 // This module answers both halves without touching the database. It reads a
 // movement's recorded rows and says what actually posted, what its declared
 // mode says should have posted, and what the opposite mode would post — the
@@ -17,6 +9,10 @@
 // appends delta rows exactly as an amount correction does. Nothing is
 // rewritten; the record's own columns are updated in the same transaction that
 // appends the rows.
+//
+// Before this existed, nothing after entry could see such a row, name it, or
+// fix it: the amount form corrected one account only, so it refused a cash
+// movement outright, and the flag itself was not editable anywhere.
 import { createError } from '../middleware/error';
 import { netAmountOf, entryTypeFor } from './movementPlan';
 import { drawerLeg } from './cashManagement';
