@@ -601,6 +601,17 @@ export default function Reports() {
                   <div><p className="text-gray-500">Entries</p><p className="font-bold">{reportData.summary?.entryCount || 0}</p></div>
                   <div><p className="text-gray-500">Account</p><p className="font-bold">{reportData.account?.masked_account_number || reportData.account?.account_reference || '—'}</p></div>
                 </div>
+                {(reportData.summary?.reversedCount || 0) > 0 && (
+                  <p className="text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded px-2 py-1.5 mt-3">
+                    Of which reversed:{' '}
+                    <span className="font-medium">{formatCurrency(reportData.summary.reversedIn || 0)}</span> in /{' '}
+                    <span className="font-medium">{formatCurrency(reportData.summary.reversedOut || 0)}</span> out{' '}
+                    ({reportData.summary.reversedCount} movement{reportData.summary.reversedCount === 1 ? '' : 's'}) —
+                    both sides are counted in Total In / Total Out above, so they net{' '}
+                    <span className="font-medium">{formatCurrency((reportData.summary.reversedIn || 0) - (reportData.summary.reversedOut || 0))}</span> and
+                    do not change the balance. The rows stay listed for the audit trail.
+                  </p>
+                )}
               </div>
               <div className="card overflow-hidden">
                 <div className="overflow-x-auto">
@@ -642,10 +653,10 @@ export default function Reports() {
                           <td className="px-4 py-3.5 text-sm font-mono whitespace-nowrap">{e.reference_display || '—'}</td>
                           <td className="px-4 py-3.5 whitespace-nowrap">
                             <span
-                              title={isCompensating ? `${transactionTypeLabel(e.type_code, e.type_name) || 'Adjustment'} #${e.transaction_number}` : undefined}
+                              title={isCompensating ? `Reversal of ${transactionTypeLabel(e.reverses_type_code, e.reverses_type_name) || 'Transaction'} #${e.reverses_number}` : undefined}
                               className={`text-xs font-medium ${e.entry_type === 'credit' ? 'text-green-600' : 'text-red-600'}`}
                             >
-                              {transactionTypeLabel(e.type_code, e.type_name) || e.type_display || e.entry_type}
+                              {isCompensating ? 'Reversal' : (transactionTypeLabel(e.type_code, e.type_name) || e.type_display || e.entry_type)}
                             </span>
                           </td>
                           <td className="px-4 py-3.5 text-sm">

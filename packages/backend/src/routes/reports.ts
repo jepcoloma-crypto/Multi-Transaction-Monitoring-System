@@ -127,6 +127,19 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
     const moneyIn = entries.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0);
     const moneyOut = entries.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0);
 
+    // The totals stay gross on purpose: a reversal and the row that cancels it
+    // are both movements that really happened, and dropping either would stop
+    // the statement from tying to its own balance column. The memo says how
+    // much of the gross is that self-cancelling pair, so a reader auditing the
+    // statement doesn't have to subtract it by hand. Pair = the original rows
+    // of every reversed movement plus the REV- rows that answered them, on this
+    // account only; the count is movements, not rows.
+    const reversedOriginals = entries.filter((e: any) => e.transaction_status === 'reversed');
+    const reversedRows = entries.filter((e: any) => e.transaction_status === 'reversed' || e.reverses_number != null);
+    const reversedIn = reversedRows.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0);
+    const reversedOut = reversedRows.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0);
+    const reversedCount = new Set(reversedOriginals.map((e: any) => e.transaction_id)).size;
+
     let running = entries.length > 0
       ? parseFloat(entries[0].balance_after) - (entries[0].entry_type === 'credit' ? parseFloat(entries[0].amount) : -parseFloat(entries[0].amount))
       : parseFloat(account.opening_balance || '0');
@@ -236,6 +249,9 @@ router.get('/account-statement', authorize('reports.read'), async (req: Request,
           openingBalance,
           closingBalance: lastBalance ?? currentBalance,
           currentBalance,
+          reversedIn,
+          reversedOut,
+          reversedCount,
         },
       }
     });
