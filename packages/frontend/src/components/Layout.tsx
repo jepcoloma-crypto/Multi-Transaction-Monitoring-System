@@ -24,6 +24,7 @@ import {
   Database,
   Pencil,
   Building2,
+  Receipt,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { api, unwrapRows } from '../lib/api';
@@ -50,6 +51,7 @@ const adminSection: MenuItem[] = [
   { name: 'Additional Charges', href: '/additional-charges', icon: DollarSign },
   { name: 'Provider Charges', href: '/provider-charges', icon: DollarSign },
   { name: 'Amount Corrections', href: '/amount-corrections', icon: Pencil, adminOnly: true },
+  { name: 'Fee Audit', href: '/fee-audit', icon: Receipt, adminOnly: true },
   { name: 'Approvals', href: '/transfer-approvals', icon: CheckSquare, approverOnly: true },
   { name: 'Import', href: '/import', icon: Upload },
   { name: 'Settings', href: '/settings', icon: Settings },

@@ -12,7 +12,8 @@ import { simulateCorrection, appendPlannedRows } from '../services/correctionPre
 import { validateTierA, TIER_A_FIELDS, planDateCascade } from '../services/correctionFields';
 import { planReEntry, RE_ENTERABLE } from '../services/reEntryPlan';
 import { planGapFix, isGapFixDirection, GAP_FIX_DIRECTIONS, GAP_FIX_LABELS } from '../services/gapFixPlan';
-import { planAmountCorrection, columnsChanged, AMOUNT_FIELDS, isAmountable } from '../services/amountFields';
+import { classifyFeeMovement, planFeeRepost, currentFeeColumns, changedFeeColumns } from '../services/feeAudit';
+import { planAmountCorrection, columnsChanged, AMOUNT_FIELDS, isAmountable, sumCharges } from '../services/amountFields';
 import type { AmountPlan } from '../services/amountFields';
 import { updateAccountBalance } from '../services/balance';
 import { createAuditLog } from '../services/audit';
@@ -104,6 +105,432 @@ router.get('/audit', authorize('reports.read'), async (req: Request, res: Respon
     const { accounts, entries } = await loadScopedLedger(scope);
     res.json({ success: true, data: auditLedger(accounts, entries) });
   } catch (error) { next(error); }
+});
+
+// --------------------------------------------------------- fee audit -----
+// The ON/OFF fee flag decides what posts in two of the four cells (D42), and
+// it is written once, at the counter: amount corrections refuse a cash
+// movement outright, and the flag itself was never editable, so a row written
+// backwards stayed backwards silently. This lists every completed fee-bearing
+// movement beside what its declared mode says should have posted and what the
+// opposite mode would, judged by the same netAmountOf/drawerLeg the entry
+// route writes with (D43). Read-only — the fix is the re-post below.
+//
+// "actual" sums every row the movement owns, corrections appended included:
+// it is what the account and the till really moved, not what the record's
+// columns claim to have moved.
+
+const ledgerSignedSum = (
+  rows: Array<{ account_id: string; entry_type: string; amount: string }>,
+  accountId: string
+): number =>
+  Math.round(
+    rows
+      .filter((r) => r.account_id === accountId)
+      .reduce((sum, r) => sum + (r.entry_type === 'credit' ? 1 : -1) * parseFloat(r.amount), 0) * 100
+  ) / 100;
+
+router.get('/fee-audit', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rawDirection = typeof req.query.direction === 'string' ? req.query.direction : '';
+    const direction = ['in', 'out', 'adjustment'].includes(rawDirection) ? rawDirection : null;
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? '200'), 10) || 200, 1), 500);
+
+    const movements: any[] = await query(
+      `SELECT t.id, t.transaction_number, t.amount, t.fee, t.net_amount, t.fee_added_to_balance,
+              t.additional_charges, t.transaction_date, t.payment_method, t.description,
+              t.reference_number,
+              a.id AS account_id, a.name AS account_name,
+              tt.direction, tt.code AS type_code, tt.name AS type_name
+         FROM transactions t
+         JOIN transaction_types tt ON tt.id = t.transaction_type_id
+         JOIN accounts a ON a.id = t.account_id
+        WHERE t.status = 'completed' AND t.fee > 0
+          AND ($1::text IS NULL OR tt.direction = $1)
+        ORDER BY t.transaction_date DESC, t.id DESC
+        LIMIT $2`,
+      [direction, limit]
+    );
+
+    const ids = movements.map((m) => m.id);
+    const ledgerRows: any[] =
+      ids.length > 0
+        ? await query(
+            `SELECT source_id, account_id, entry_type, amount
+               FROM ledger_entries
+              WHERE source_type = 'transaction' AND source_id = ANY($1)`,
+            [ids]
+          )
+        : [];
+
+    const rowsByMovement = new Map<string, any[]>();
+    for (const row of ledgerRows) {
+      const bucket = rowsByMovement.get(row.source_id);
+      if (bucket) bucket.push(row);
+      else rowsByMovement.set(row.source_id, [row]);
+    }
+
+    const drawerIds = new Set<string>();
+    const audited: any[] = [];
+
+    for (const movement of movements) {
+      const rows = rowsByMovement.get(movement.id);
+      // A completed movement owns rows; one that does not — or that has
+      // spread past its own account and a drawer — is not something this tool
+      // can judge or re-post, so it is left out rather than shown as zero.
+      if (!rows || rows.length === 0) continue;
+      const accountIds = [...new Set(rows.map((r) => r.account_id))];
+      if (!accountIds.includes(movement.account_id)) continue;
+      const others = accountIds.filter((id) => id !== movement.account_id);
+      if (others.length > 1) continue;
+      const drawerId = others[0] ?? null;
+      if (drawerId) drawerIds.add(drawerId);
+
+      // Charges that cannot be read cannot be judged either; skip the row
+      // rather than return a verdict computed on invented figures.
+      let charges: number;
+      try {
+        charges = sumCharges(movement.additional_charges);
+      } catch {
+        continue;
+      }
+
+      const verdict = classifyFeeMovement({
+        direction: movement.direction,
+        amount: parseFloat(movement.amount),
+        fee: parseFloat(movement.fee),
+        feeAddedToBalance: movement.fee_added_to_balance !== false,
+        charges,
+        actualAccountTotal: ledgerSignedSum(rows, movement.account_id),
+        actualDrawerNet: drawerId ? ledgerSignedSum(rows, drawerId) : null,
+        hasDrawer: drawerId !== null,
+      });
+
+      audited.push({
+        id: movement.id,
+        transaction_number: movement.transaction_number,
+        transaction_date: movement.transaction_date,
+        reference_number: movement.reference_number,
+        description: movement.description,
+        payment_method: movement.payment_method,
+        direction: movement.direction,
+        type_code: movement.type_code,
+        type_name: movement.type_name,
+        account_id: movement.account_id,
+        account_name: movement.account_name,
+        drawer_account_id: drawerId,
+        amount: parseFloat(movement.amount),
+        fee: parseFloat(movement.fee),
+        net_amount: parseFloat(String(movement.net_amount ?? 0)),
+        fee_added_to_balance: movement.fee_added_to_balance !== false,
+        status: verdict.status,
+        actual: verdict.actual,
+        declared: verdict.declared,
+        opposite: verdict.opposite,
+      });
+    }
+
+    const names: any[] =
+      drawerIds.size > 0
+        ? await query('SELECT id, name FROM accounts WHERE id = ANY($1)', [[...drawerIds]])
+        : [];
+    const nameOf = new Map<string, string>(names.map((n) => [n.id, n.name]));
+
+    res.json({
+      success: true,
+      data: audited.map((row) => ({
+        ...row,
+        drawer_account_name: row.drawer_account_id ? nameOf.get(row.drawer_account_id) ?? null : null,
+      })),
+    });
+  } catch (error) { next(error); }
+});
+
+// -------------------------------------------------------- fee re-post -----
+// The fix the audit points at: the admin names the target — the correct fee
+// mode, and the amount/fee if those are what got typed backwards — and the
+// same planner the preview showed plans the figures creation would have
+// written. Apply appends delta rows on the account and on the drawer exactly
+// as an amount correction appends, updates only the record's four fee
+// columns, and commits only when every account reconciles afterwards. Nothing
+// is rewritten; a reversal after a re-post mirrors the rows as they now stand,
+// corrections appended included.
+
+// The shape a movement may be re-posted against: rows on the account it
+// names, plus at most one drawer beside it. Anything else is a record this
+// tool does not understand, and it is named rather than guessed at.
+function movementShape(record: Record<string, any>, rows: LedgerRowRef[]) {
+  const accountIds = [...new Set(rows.map((r) => r.account_id))];
+  const others = accountIds.filter((id) => id !== record.account_id);
+  const problems: string[] = [];
+  if (rows.length === 0) problems.push('the movement owns no ledger rows');
+  else if (!accountIds.includes(record.account_id)) {
+    problems.push('no rows sit on the account the movement names');
+  }
+  if (others.length > 1) problems.push('the movement spans more accounts than its own and one drawer');
+  return {
+    accountIds,
+    drawerAccountId: others.length === 1 ? others[0] : null,
+    problems,
+  };
+}
+
+// What an account will sum to once the deltas land: the target magnitude
+// carried by that account's own first row — the sign a correction measures
+// the target in, and for a movement the sign its direction wrote.
+function signedTarget(rows: LedgerRowRef[], accountId: string, magnitude: number): number {
+  const first = rows.find((r) => r.account_id === accountId);
+  const sign = first?.entry_type === 'credit' ? 1 : -1;
+  return Math.round(sign * magnitude * 100) / 100;
+}
+
+router.post('/fee-repost/preview', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const sourceId = requireUuid(req.body?.sourceId, 'sourceId');
+
+    const record = await queryOne(recordSql('transactions'), [sourceId]);
+    if (!record) throw createError(404, 'No transaction found with that id');
+    if (record.status !== 'completed') {
+      throw createError(409, `A transaction with status ${record.status} cannot be re-posted`);
+    }
+
+    const rows = await loadLedgerRowsBySource('transaction', sourceId);
+    const shape = movementShape(record, rows);
+    if (shape.problems.length > 0) {
+      throw createError(409, `Cannot re-post: ${shape.problems.join('; ')}`);
+    }
+
+    const { accounts, entries } = await loadAccountsAndEntries(shape.accountIds);
+    // A preview that called a closed account safe would be lying about what
+    // its commit does (closed is closed — the cutover's frozen line).
+    const frozen = closedAccountNames(accounts);
+
+    const before = currentFeeColumns(record);
+    const plan = planFeeRepost({
+      direction: record.direction,
+      recordAmount: record.amount,
+      recordFee: record.fee,
+      recordFeeAddedToBalance: record.fee_added_to_balance,
+      additionalCharges: record.additional_charges,
+      primaryAccountId: record.account_id,
+      drawerAccountId: shape.drawerAccountId,
+      target: req.body?.target ?? {},
+    });
+    const simulation = simulateCorrection(accounts, entries, rows, plan.amounts);
+    const changed = changedFeeColumns(before, plan.columns);
+    const nothingToDo = simulation.corrections.length === 0 && !changed;
+
+    const safeToApply =
+      frozen.length === 0 &&
+      !nothingToDo &&
+      simulation.problems.length === 0 &&
+      simulation.affectedAccountsAfter.every((a) => a.reconciled);
+
+    res.json({
+      success: true,
+      data: {
+        source: { type: 'transaction', id: sourceId },
+        before,
+        target: plan.columns,
+        changed,
+        posted: {
+          accountTotal: ledgerSignedSum(rows, record.account_id),
+          drawerNet: shape.drawerAccountId ? ledgerSignedSum(rows, shape.drawerAccountId) : null,
+        },
+        targetPosted: {
+          accountTotal: signedTarget(rows, record.account_id, plan.amounts[record.account_id]),
+          drawerNet: shape.drawerAccountId
+            ? signedTarget(rows, shape.drawerAccountId, plan.amounts[shape.drawerAccountId])
+            : null,
+        },
+        drawerAccountId: shape.drawerAccountId,
+        ledgerRows: rows,
+        simulation,
+        nothingToDo,
+        safeToApply,
+        closedAccounts: frozen,
+      },
+    });
+  } catch (error) { next(error); }
+});
+
+router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
+  const sourceId = req.params.sourceId;
+  let started = false;
+  const client = await getClient();
+
+  try {
+    requireUuid(sourceId, 'sourceId');
+    const reason = requireReason(req.body?.reason);
+    const target = req.body?.target ?? {};
+
+    // Read once before anything is written so a movement that is not
+    // completed is refused by name rather than discovered mid-transaction.
+    const early = await queryOne(`SELECT status FROM transactions WHERE id = $1`, [sourceId]);
+    if (!early) throw createError(404, 'No transaction found with that id');
+    if (early.status !== 'completed') {
+      throw createError(409, `A transaction with status ${early.status} cannot be re-posted`);
+    }
+
+    await client.query('BEGIN');
+    started = true;
+
+    const rows: LedgerRowRef[] = (await client.query(
+      `SELECT le.id, le.account_id, le.entry_type, le.amount, le.balance_after, le.created_at
+         FROM ledger_entries le
+        WHERE le.source_type = 'transaction' AND le.source_id = $1
+        ORDER BY le.created_at, le.id`,
+      [sourceId]
+    )).rows;
+
+    const accountIds = [...new Set(rows.map((r) => r.account_id))];
+    // Every account this writes must be open — a re-post is one atomic
+    // movement across the account and the till, so partial availability would
+    // leave it half landed (the rule a correction follows, D17).
+    for (const id of accountIds) await assertOpenShift(id);
+    await client.query('SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE', [accountIds]);
+
+    const { accounts, entries } = await loadAccountsAndEntries(accountIds, client);
+
+    // Closed accounts refuse corrections like they refuse every other writer
+    // (owner's rule: closed is closed).
+    const frozen = closedAccountNames(accounts);
+    if (frozen.length > 0) {
+      throw createError(409, `Refusing to re-post — ${frozen.join(', ')} ${frozen.length === 1 ? 'is' : 'are'} closed`);
+    }
+
+    // The record is read inside the transaction, after the accounts are
+    // locked, so the figures the deltas derive from are the ones the ledger
+    // will be reconciled against rather than a snapshot taken before other
+    // work landed.
+    const loaded = await client.query(recordSql('transactions'), [sourceId]);
+    const recordBefore = loaded.rows[0] ?? null;
+    if (!recordBefore) throw createError(404, 'No transaction found with that id');
+
+    const shape = movementShape(recordBefore, rows);
+    if (shape.problems.length > 0) {
+      throw createError(409, `Cannot re-post: ${shape.problems.join('; ')}`);
+    }
+
+    const before = currentFeeColumns(recordBefore);
+    const plan = planFeeRepost({
+      direction: recordBefore.direction,
+      recordAmount: recordBefore.amount,
+      recordFee: recordBefore.fee,
+      recordFeeAddedToBalance: recordBefore.fee_added_to_balance,
+      additionalCharges: recordBefore.additional_charges,
+      primaryAccountId: recordBefore.account_id,
+      drawerAccountId: shape.drawerAccountId,
+      target,
+    });
+    const simulation: Simulation = simulateCorrection(accounts, entries, rows, plan.amounts);
+    const changed = changedFeeColumns(before, plan.columns);
+
+    if (simulation.problems.length > 0) {
+      throw createError(409, `Refusing to re-post: ${simulation.problems.join('; ')}`);
+    }
+    if (simulation.corrections.length === 0 && !changed) {
+      throw createError(400, 'Those values do not change anything');
+    }
+    if (!simulation.affectedAccountsAfter.every((a) => a.reconciled)) {
+      const bad = simulation.affectedAccountsAfter.filter((a) => !a.reconciled).map((a) => a.name);
+      throw createError(409, `Refusing to re-post — ${bad.join(', ')} would not reconcile`);
+    }
+
+    const postedBefore = {
+      accountTotal: ledgerSignedSum(rows, recordBefore.account_id),
+      drawerNet: shape.drawerAccountId ? ledgerSignedSum(rows, shape.drawerAccountId) : null,
+    };
+
+    for (const correction of simulation.corrections) {
+      const newBalance = await updateAccountBalance(
+        correction.accountId, correction.amount, correction.entryType, client
+      );
+      await client.query(
+        `INSERT INTO ledger_entries
+           (account_id, transaction_id, transfer_id, source_type, source_id,
+            entry_type, amount, balance_after, reference_number, description, entry_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW())`,
+        [
+          correction.accountId,
+          sourceId,
+          null,
+          'transaction',
+          sourceId,
+          correction.entryType,
+          correction.amount,
+          newBalance,
+          `Fee correction: ${reason}`,
+        ]
+      );
+    }
+
+    // The record is written in the same transaction as the rows above and
+    // before the gate that re-audits them, so a re-post the gate refuses rolls
+    // back both halves together — the record never ends up describing ledger
+    // rows that were not committed.
+    if (changed) {
+      const keys = Object.keys(changed);
+      const assignments = keys.map((column, i) => `${column} = $${i + 1}`);
+      if (TABLES_WITH_UPDATED_AT.has('transactions')) assignments.push('updated_at = NOW()');
+      await client.query(
+        `UPDATE transactions SET ${assignments.join(', ')} WHERE id = $${keys.length + 1}`,
+        [...keys.map((key) => (changed as Record<string, unknown>)[key]), sourceId]
+      );
+    }
+
+    const verdict = await auditInside(client, accountIds);
+    if (!verdict.accounts.every((a) => a.reconciled)) {
+      const bad = verdict.accounts.filter((a) => !a.reconciled).map((a) => `${a.name} (gap ${a.gap})`);
+      throw createError(409, `Refusing to commit — ${bad.join(', ')} did not reconcile after re-post`);
+    }
+
+    await client.query('COMMIT');
+    started = false;
+
+    const targetPosted = {
+      accountTotal: signedTarget(rows, recordBefore.account_id, plan.amounts[recordBefore.account_id]),
+      drawerNet: shape.drawerAccountId
+        ? signedTarget(rows, shape.drawerAccountId, plan.amounts[shape.drawerAccountId])
+        : null,
+    };
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'transaction.fee_reposted',
+      entity: 'transaction',
+      entityId: sourceId,
+      ipAddress: req.ip,
+      reason,
+      oldData: {
+        ...(changed ? { fields: pick(before, Object.keys(changed)) } : {}),
+        posted: postedBefore,
+      },
+      newData: {
+        ...(changed ? { fields: changed } : {}),
+        posted: targetPosted,
+      },
+    });
+
+    res.json({
+      success: true,
+      data: {
+        source: { type: 'transaction', id: sourceId },
+        applied: simulation.corrections,
+        balances: simulation.balances,
+        after: verdict.accounts,
+        changed,
+        target: plan.columns,
+        postedBefore,
+        targetPosted,
+      },
+    });
+  } catch (error) {
+    if (started) await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
 });
 
 // ------------------------------------------------------------ gap fixes -----

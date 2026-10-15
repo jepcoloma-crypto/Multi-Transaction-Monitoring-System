@@ -84,7 +84,7 @@ function readQuantity(raw: unknown): number {
 // sums them. An unreadable array is refused rather than treated as zero: the
 // ledger amount is about to be derived from this figure, and guessing it
 // would move money on invented data.
-function sumCharges(raw: unknown): number {
+export function sumCharges(raw: unknown): number {
   let list: unknown[] = [];
   if (raw === null || raw === undefined || raw === '') {
     list = [];

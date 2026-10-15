@@ -1945,7 +1945,8 @@ rows (D40's rule, kept), so an unwind hands back whatever the rows moved — the
 the ₱24,800 it actually took, the account gives back the ₱25,050 it actually received — and the
 pending-reversal approval passes the same mirror. Corrections ask the same `netAmountOf`, so
 editing an amount reproduces creation to the centavo; a cash movement's correction is refused
-on its two-account shape as it was before. The shift's expected closing, the register, the
+on its two-account shape as it was before — the fee re-post of §34 (D43) is the separate,
+fee-only path that owns both accounts, and it plans through `netAmountOf` as well. The shift's expected closing, the register, the
 Sources and Uses statement and the chain audit read the same rows they always read — the fee
 row changed account, not sign, so the statement's buckets and its tie-out to every balance do
 not move. D41's netted preview stands, quoting the new nets; the form still renders the
@@ -1964,3 +1965,59 @@ the two debit-side cells it left correct are unchanged, and its guard and revers
 stand. D37's fee-row placement for cash-ins: the split moves from the till to the receiving
 account, because the till never received it. D41 is unaffected — its nets simply quote D42's
 figures.
+
+## 34. Finding and fixing a fee that went in backwards
+
+The entry toggle was the only place the ON/OFF flag was ever written, and after D42 it decides
+what posts in two of the four cells. So an operator who toggled it backwards — or typed the
+tender-inclusive figure as the amount with the fee also counted on top — left a row whose account
+and till are both off by the fee, and nothing after entry could see it, name it, or fix it: amount
+corrections refuse a cash movement on its two-account shape, the flag itself was never editable,
+and no report listed which rows disagreed with themselves. The only fix was reverse-and-re-enter —
+two records, the original's identity lost.
+
+### D43 — the fee audit reads both modes; the fix appends, per row, on the administrator's word
+
+The admin section **Fee Audit** (`/fee-audit`, nav beside Amount Corrections, gated on
+`transactions.correct` and shown to administrators) answers both halves.
+
+**The audit** (`GET /corrections/fee-audit`) lists every completed movement with a fee and, per
+row, three readings computed by the same `netAmountOf`/`drawerLeg` creation writes with: what the
+rows actually sum to — every row the movement owns, corrections appended included, the account's
+signed sum and the till's — what the declared mode says should have posted (D42), and what the
+opposite mode would. Each row carries one of three labels:
+
+- **Posted as declared** — the actual matches the declared leg for leg.
+- **Opposite mode** — the actual matches only the other mode's figures: a backwards toggle, or a
+  row predating D42, whose two changed cells sit exactly one fee away from its declaration. The
+  till count the movement really produced is what tells the two apart, and it is the
+  administrator's to apply — postings alone cannot say which way the tender ran.
+- **Matches neither** — both readings are off, so the amount or the fee itself was most likely
+  mistyped.
+
+A toggle that was backwards but arithmetic-consistent under the wrong mode reads *declared* — the
+rows agree with the flag, just not with the money. The tool does not guess at that: it shows both
+candidate postings beside the actual for every row, and the verdict on what really happened stays
+with the person who can ask the counter.
+
+**The re-post** (`POST /corrections/fee-repost/preview`, then
+`POST /corrections/fee-repost/:id/apply`) takes the target — the correct mode, and the amount and
+fee when those are wrong too — and plans it through the one planner both routes share. Preview and
+commit are the same arithmetic amount corrections already trust: per-account target magnitudes fed
+to the same simulation, so apply appends delta rows on the account and on the till (description
+`Fee correction: <reason>`), updates only the record's four fee columns — `amount`, `fee`,
+`net_amount`, `fee_added_to_balance` — inside the same transaction, and commits only when every
+account reconciles afterwards. The gates are the corrections' gates in the corrections' voice:
+reason required, completed rows only, open shift, no closed accounts, accounts locked `FOR UPDATE`,
+the chain re-audited before COMMIT, and `transaction.fee_reposted` written to the audit log with
+the columns and the posted figures before and after.
+
+Nothing is rewritten. D42's rule stands — historical rows are not rewritten *by rule*; a row moves
+because an administrator decided this row, never because a migration did, and the audit only names
+them. A reversal afterwards mirrors the rows as they now stand, deltas included, so the unwind
+hands back exactly what the re-posted movement moved. The fee-inside guard rides along with
+creation's message: a re-post may not set a fee inside the amount larger than the amount, because
+a cut larger than what was sent books income the money never carried. A drawer delta posts with
+today's instant, so it enters the register and the shift's expected closing on the day of the fix,
+exactly as every other correction does. Non-cash movements are audited and re-postable in the same
+tool — for them only the account leg and `net_amount` move, with no drawer row to append.
