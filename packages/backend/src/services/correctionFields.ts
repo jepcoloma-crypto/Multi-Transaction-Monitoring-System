@@ -29,6 +29,10 @@ export const TIER_A_FIELDS: Record<string, Record<string, FieldSpec>> = {
     customer_number: 'text',
     notes: 'text',
     payment_method: 'text',
+    // A loading sale's business day is this column, stamped with the booking
+    // time at the counter (D25) — the name is overloaded, not a posting
+    // instant, and the form labels it "Sale date" for that reason.
+    created_at: 'timestamp',
   },
 };
 
@@ -77,6 +81,12 @@ export function validateTierA(sourceType: string, fields: unknown): ValidatedUpd
 
     const value = input[key];
     if (value === null) {
+      // A blank text field is a clearing; a blank date would file the record
+      // under no day at all (and trip the column's NOT NULL at the database),
+      // so it is refused here rather than surfacing as a fault.
+      if (spec === 'timestamp') {
+        throw createError(400, `${key} cannot be cleared — a record must keep its date`);
+      }
       columns.push(key);
       values.push(null);
       continue;
@@ -107,6 +117,10 @@ export function validateTierA(sourceType: string, fields: unknown): ValidatedUpd
 export const DATE_COLUMN_BY_SOURCE: Record<string, string> = {
   transaction: 'transaction_date',
   transfer: 'transfer_date',
+  // Creation posted the loading ledger rows with entry_date = created_at
+  // (loading.ts), so the same column mirrors into the ledger and both move
+  // together — the record under its sale day, every row filing it the same.
+  loading: 'created_at',
 };
 
 export interface DateCascade {

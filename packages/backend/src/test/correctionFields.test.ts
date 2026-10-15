@@ -146,9 +146,36 @@ test('a metadata-only correction does not cascade', () => {
   assert.equal(planDateCascade('transaction', columns, values), null);
 });
 
-test('a source with no date mirror never cascades', () => {
+test('a loading correction that does not touch the sale day does not cascade', () => {
   const { columns, values } = validateTierA('loading', { notes: 'Corrected a note' });
   assert.equal(planDateCascade('loading', columns, values), null);
+});
+
+test("a loading sale's day is editable and cascades to the ledger copy", () => {
+  const { columns, values } = validateTierA('loading', {
+    created_at: '2026-10-14T08:30:00.000Z',
+  });
+  assert.deepEqual(columns, ['created_at']);
+  assert.ok(values[0] instanceof Date);
+
+  const cascade = planDateCascade('loading', columns, values);
+  assert.ok(cascade, 'a sale-day correction must cascade');
+  assert.equal(cascade.column, 'created_at');
+  assert.equal((cascade.value as Date).toISOString(), '2026-10-14T08:30:00.000Z');
+});
+
+test('a date cannot be cleared — a record must keep its day', () => {
+  for (const [source, field] of [
+    ['transaction', 'transaction_date'],
+    ['transfer', 'transfer_date'],
+    ['loading', 'created_at'],
+  ] as const) {
+    assert.throws(
+      () => validateTierA(source, { [field]: null }),
+      (e: any) => e.statusCode === 400 && /cannot be cleared/.test(e.message),
+      `cleared ${source}.${field}`
+    );
+  }
 });
 
 test('the cascade carries the value at the date column, not the first value', () => {

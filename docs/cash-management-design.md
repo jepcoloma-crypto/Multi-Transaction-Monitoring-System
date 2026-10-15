@@ -2147,3 +2147,16 @@ a sale whose prices and product name disagree. The id is checked against `loadin
 before anything is planned — an id that names nothing is refused; a deactivated product is
 allowed, because corrections fix history and history may legitimately name one — and an empty
 selection is refused rather than written.
+
+**A loading sale's day is corrected beside its figures.** Transactions and transfers have always
+carried their business day as an editable Details field (`transaction_date`, `transfer_date`);
+a loading sale's day is its `created_at` — stamped with the booking time at the counter (D25) —
+and until now it named itself "Created at" and was reachable by no correction, so a sale keyed
+to the wrong day could only be fixed by cancelling and re-entering it. The column joins the
+Tier A whitelist and the ledger's date cascade (§21): the record's day and the `entry_date` of
+both its ledger rows move together, mirroring the column creation itself posts with
+(`loading.ts` writes `entry_date = created_at`), and clearing a date is refused rather than
+written, so a record can never file under no day at all. Zero pesos move — the balance chain,
+the shift windows (D28) and every posting instant are read from `ledger_entries.created_at`,
+never from this column. The form labels it "Sale date (Manila)": the whitelist still decides
+what renders, the label only names the day the operator means.

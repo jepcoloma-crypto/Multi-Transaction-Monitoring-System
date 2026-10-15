@@ -95,6 +95,17 @@ const money = (value: unknown): string => {
 const humanize = (key: string) =>
   key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 
+// A column name is not always the name of the thing the operator means. Loading
+// stores its sale day in `created_at` — the column is overloaded by design — so
+// this maps the key to the day itself. The server whitelist still decides what
+// is editable; this only decides what it is called.
+const FIELD_LABEL_OVERRIDES: Record<string, Record<string, string>> = {
+  loading: { created_at: 'Sale date' },
+};
+
+const fieldLabel = (source: SourceType, key: string) =>
+  FIELD_LABEL_OVERRIDES[source]?.[key] ?? humanize(key);
+
 // These are free-text notes an operator writes in sentences, so they get a
 // box rather than a single line. It is a presentational choice only — the
 // server whitelist, not this set, decides what may be written.
@@ -364,7 +375,7 @@ export default function AmountCorrections() {
       if (spec.kind === 'timestamp') {
         const iso = manilaInputToIso(value);
         if (!iso) {
-          setMetaError(`${humanize(key)} is not a valid date and time.`);
+          setMetaError(`${fieldLabel(tab, key)} is not a valid date and time.`);
           return;
         }
         fields[key] = iso;
@@ -762,7 +773,7 @@ export default function AmountCorrections() {
                       return (
                         <label key={spec.key} className={`block ${isLongText ? 'col-span-2' : ''}`}>
                           <span className="text-xs text-gray-600">
-                            {humanize(spec.key)}
+                            {fieldLabel(tab, spec.key)}
                             {spec.kind === 'timestamp' ? ' (Manila)' : ''}
                           </span>
                           {spec.kind === 'timestamp' ? (
