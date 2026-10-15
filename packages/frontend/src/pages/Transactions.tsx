@@ -695,7 +695,21 @@ export default function Transactions() {
                     <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' || tx.status === 'rejected' ? 'red' : 'yellow'}`}>{tx.status}</span>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_username || <span className="text-gray-400">-</span>}</td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {/* Same two-door rule as the detail modal and the Loading
+                        page: an administrator cancels on the spot, everyone
+                        else files a request that waits in the Approvals queue.
+                        Adjustments are excluded because the server refuses to
+                        reverse them. */}
+                    {tx.status === 'completed' && tx.type_code !== 'adjustment_in' && tx.type_code !== 'adjustment_out' && (
+                      <button
+                        onClick={() => handleReverse(tx.id)}
+                        title={isAdmin ? 'Cancel this transaction now' : 'Request cancellation — an administrator must approve'}
+                        className="px-2 py-1 mr-1 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
+                      >
+                        {isAdmin ? 'Cancel' : 'Request Cancel'}
+                      </button>
+                    )}
                     <button onClick={() => setShowDetail(tx)} className="p-1 text-gray-400 hover:text-primary-600"><Eye className="w-4 h-4" /></button>
                     {canEdit(tx) && (
                       <button onClick={() => openEdit(tx)} title="Edit transaction" className="p-1 text-gray-400 hover:text-primary-600"><Pencil className="w-4 h-4" /></button>
