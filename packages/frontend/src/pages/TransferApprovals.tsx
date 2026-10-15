@@ -28,7 +28,32 @@ interface Reversal {
   id: string; transaction_number: number; original_amount: string; original_status: string;
   reversal_amount: string; reason: string | null; status: string; created_at: string;
   updated_at: string; requested_by_username: string; decided_by_username: string | null;
-  account_name: string; type_name: string; type_code?: string | null; direction: string; description: string | null;
+  account_name: string; type_name: string; type_code?: string | null; direction?: string | null;
+  description: string | null; entity_type?: string | null;
+}
+
+// The approval's impact preview: every account the decision touches, where its
+// balance stands now, what approval does to it, and every guard that would
+// refuse — the same plan the approval commits through, so what the dialog
+// shows is what the button will post.
+interface PreviewImpact { accountId: string; name: string; before: number; delta: number; after: number; }
+interface PreviewData {
+  record: {
+    kind: 'transaction' | 'loading';
+    number: number; status: string; typeCode: string | null; typeName: string;
+    accountName: string; description: string | null; date: string | null;
+  };
+  affected: PreviewImpact[];
+  rowsToAppend: Array<{ name: string; entryType: string; amount: number }>;
+  notes: string[];
+  problems: string[];
+  shift: { open: boolean; message: string | null };
+  safeToApply: boolean;
+  request: {
+    id: string; entityType: string; status: string; reason: string | null;
+    requestedBy: string; requestedByUsername: string; reversalAmount: number;
+    createdAt: string; isOwnRequest: boolean;
+  };
 }
 
 const paymentLabel = (m: string) =>
@@ -51,6 +76,10 @@ export default function TransferApprovals() {
   const [rejecting, setRejecting] = useState<{ kind: Source; record: Transfer | OwnerFund | Reversal } | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
+  const [previewing, setPreviewing] = useState<Reversal | null>(null);
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
 
   const loadData = useCallback(async () => {
     if (!isApprover) return;
@@ -128,17 +157,46 @@ export default function TransferApprovals() {
     }
   };
 
-  const approveReversal = async (r: Reversal) => {
-    if (!window.confirm(
-      `Approve the reversal of transaction #${r.transaction_number} (${transactionTypeLabel(r.type_code, r.type_name)} on ${r.account_name})? ` +
-      `${formatCurrency(parseFloat(String(r.reversal_amount)))} will be reversed and the original record becomes Reversed.`
-    )) return;
+  // Approve opens the impact preview first — what the approval will touch is
+  // read before money moves, not confirmed with a sentence in a popup.
+  const openPreview = async (r: Reversal) => {
+    setPreviewing(r);
+    setPreview(null);
+    setPreviewError('');
+    setPreviewLoading(true);
+    try {
+      const body = (await api.get<unknown>(`/transactions/reversals/${r.id}/preview`)) as any;
+      setPreview(body?.data ?? body);
+    } catch (err: any) {
+      setPreviewError(err.message || 'Could not load the impact preview');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const closePreview = () => {
+    setPreviewing(null);
+    setPreview(null);
+    setPreviewError('');
+  };
+
+  const approveFromPreview = async () => {
+    if (!previewing) return;
     setBusy(true);
     try {
-      await api.post(`/transactions/reversals/${r.id}/approve`);
+      const body = (await api.post(`/transactions/reversals/${previewing.id}/approve`)) as any;
+      // The server reports the balances it actually committed — shown back so
+      // the approval is checked after the fact as well as before it.
+      const affected = body?.data?.affected as Array<{ name: string; balance?: number | string; after?: number }> | undefined;
+      closePreview();
       await loadData();
+      if (affected && affected.length > 0) {
+        alert('Approved. Affected balances: ' + affected
+          .map((a) => `${a.name}: ${formatCurrency(Number(a.balance ?? a.after))}`)
+          .join(', '));
+      }
     } catch (err: any) {
-      alert(err.message || 'Failed to approve reversal');
+      alert(err.message || 'Failed to approve');
     } finally {
       setBusy(false);
     }
@@ -189,7 +247,9 @@ export default function TransferApprovals() {
     ? rejecting.kind === 'transfers'
       ? `Reject transfer ${(rejecting.record as Transfer).transfer_reference}`
       : rejecting.kind === 'reversals'
-        ? `Reject reversal request #${(rejecting.record as Reversal).transaction_number}`
+        ? (rejecting.record as Reversal).entity_type === 'loading'
+          ? `Reject cancellation request #${(rejecting.record as Reversal).transaction_number}`
+          : `Reject reversal request #${(rejecting.record as Reversal).transaction_number}`
         : `Reject ${transactionTypeLabel((rejecting.record as OwnerFund).type_code, (rejecting.record as OwnerFund).type_name)} #${(rejecting.record as OwnerFund).transaction_number}`
     : '';
 
@@ -282,7 +342,7 @@ export default function TransferApprovals() {
               rows={reversals}
               busy={busy}
               canDecide={isAdmin}
-              onApprove={approveReversal}
+              onApprove={openPreview}
               onReject={(r) => { setRejecting({ kind: 'reversals', record: r }); setReason(''); }}
             />
           )
@@ -316,11 +376,19 @@ export default function TransferApprovals() {
                     <strong>{(rejecting.record as Transfer).destination_name}</strong>. The money will not move.
                   </>
                 ) : rejecting.kind === 'reversals' ? (
-                  <>
-                    Reversal of transaction <strong>#{(rejecting.record as Reversal).transaction_number}</strong> on{' '}
-                    <strong>{(rejecting.record as Reversal).account_name}</strong>. The original record stays{' '}
-                    <strong>{(rejecting.record as Reversal).original_status}</strong> and no balance changes.
-                  </>
+                  (rejecting.record as Reversal).entity_type === 'loading' ? (
+                    <>
+                      Cancellation of loading sale <strong>#{(rejecting.record as Reversal).transaction_number}</strong> on{' '}
+                      <strong>{(rejecting.record as Reversal).account_name}</strong>. The original record stays{' '}
+                      <strong>{(rejecting.record as Reversal).original_status}</strong> and no balance changes.
+                    </>
+                  ) : (
+                    <>
+                      Reversal of transaction <strong>#{(rejecting.record as Reversal).transaction_number}</strong> on{' '}
+                      <strong>{(rejecting.record as Reversal).account_name}</strong>. The original record stays{' '}
+                      <strong>{(rejecting.record as Reversal).original_status}</strong> and no balance changes.
+                    </>
+                  )
                 ) : (
                   <>
                     {formatCurrency(parseFloat(String((rejecting.record as OwnerFund).amount)))} for{' '}
@@ -356,6 +424,144 @@ export default function TransferApprovals() {
                 className="px-4 py-2 rounded-lg text-sm font-medium bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
               >
                 {busy ? 'Rejecting...' : 'Reject'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {previewing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center gap-2">
+              <ShieldAlert className="w-5 h-5 text-amber-500" />
+              <h2 className="text-lg font-semibold text-gray-900">
+                {previewing.entity_type === 'loading' ? 'Cancel loading sale' : 'Reverse transaction'} #{previewing.transaction_number}
+              </h2>
+            </div>
+
+            <div className="px-6 py-4 space-y-4 text-sm">
+              {previewLoading ? (
+                <p className="text-gray-500 py-8 text-center">Checking every affected account...</p>
+              ) : previewError ? (
+                <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3">{previewError}</div>
+              ) : preview ? (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-xs text-gray-500">Requested by</p>
+                      <p className="text-gray-900">{preview.request.requestedByUsername}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Requested</p>
+                      <p className="text-gray-900">{manilaDateTimeLabel(preview.request.createdAt)}</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs text-gray-500 mb-1">Reason</p>
+                    <p className="text-gray-900 bg-gray-50 rounded-lg px-3 py-2">{preview.request.reason || '—'}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <p className="text-xs text-gray-500">Record</p>
+                      <p className="text-gray-900">
+                        {transactionTypeLabel(preview.record.typeCode, preview.record.typeName)} #{preview.record.number}{' '}
+                        <span className="text-gray-400">({preview.record.status})</span>
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-500">Account</p>
+                      <p className="text-gray-900">{preview.record.accountName}</p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-medium text-gray-700 mb-1">Affected balances — what approval will change</p>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-gray-50 text-gray-500">
+                          <tr>
+                            <th className="px-3 py-2 text-left font-medium">Account</th>
+                            <th className="px-3 py-2 text-right font-medium">Now</th>
+                            <th className="px-3 py-2 text-right font-medium">Change</th>
+                            <th className="px-3 py-2 text-right font-medium">After</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {preview.affected.map((a) => (
+                            <tr key={a.accountId}>
+                              <td className="px-3 py-2 text-gray-900">{a.name}</td>
+                              <td className="px-3 py-2 text-right text-gray-700">{formatCurrency(a.before)}</td>
+                              <td className={`px-3 py-2 text-right font-medium ${a.delta >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                {a.delta >= 0 ? '+' : '\u2212'}{formatCurrency(Math.abs(a.delta))}
+                              </td>
+                              <td className="px-3 py-2 text-right font-semibold text-gray-900">{formatCurrency(a.after)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs font-medium text-gray-700 mb-1">
+                      Rows to append ({preview.rowsToAppend.length}) — nothing existing is rewritten
+                    </p>
+                    <ul className="space-y-1">
+                      {preview.rowsToAppend.map((r, i) => (
+                        <li key={i} className="flex justify-between bg-gray-50 rounded px-3 py-1.5">
+                          <span className="text-gray-700">{r.name}</span>
+                          <span className={`font-medium ${r.entryType === 'credit' ? 'text-green-600' : 'text-red-600'}`}>
+                            {r.entryType === 'credit' ? '+' : '\u2212'}{formatCurrency(r.amount)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {preview.notes.map((n, i) => (
+                    <div key={i} className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2">{n}</div>
+                  ))}
+
+                  <div className={`rounded-lg px-3 py-2 ${preview.safeToApply
+                    ? 'bg-green-50 border border-green-200 text-green-800'
+                    : 'bg-red-50 border border-red-200 text-red-700'}`}>
+                    <p className="font-medium mb-1">
+                      {preview.safeToApply ? 'All checks passed' : 'This approval would be refused:'}
+                    </p>
+                    {preview.safeToApply ? (
+                      <p className="text-xs">
+                        Money moves only on approval — and the commit re-audits every affected account,
+                        rolling the whole thing back if any of them does not reconcile.
+                      </p>
+                    ) : (
+                      <ul className="list-disc list-inside space-y-0.5">
+                        {!preview.shift.open && <li>{preview.shift.message}</li>}
+                        {preview.problems.map((p, i) => <li key={i}>{p}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                </>
+              ) : null}
+            </div>
+
+            <div className="px-6 py-4 border-t border-gray-200 flex justify-end gap-3">
+              <button
+                onClick={closePreview}
+                disabled={busy}
+                className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+              >
+                Close
+              </button>
+              <button
+                onClick={approveFromPreview}
+                disabled={busy || previewLoading || !preview?.safeToApply}
+                title={!preview?.safeToApply ? 'The approval would be refused — see the reasons above' : undefined}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+              >
+                {busy ? 'Approving...' : previewing.entity_type === 'loading' ? 'Approve cancellation' : 'Approve reversal'}
               </button>
             </div>
           </div>

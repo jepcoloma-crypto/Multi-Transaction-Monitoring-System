@@ -5,6 +5,7 @@ import { branchClause, assertBranch } from '../middleware/scope';
 import { assertOpenShift } from '../middleware/shiftGate';
 import { updateAccountBalance, lockAccounts } from '../services/balance';
 import { loadingSaleLegs } from '../services/loadingPosting';
+import { executeLoadingCancel } from '../services/loadingReversal';
 import { manilaDayAtCurrentTime } from '../services/manilaTime';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
@@ -298,6 +299,95 @@ router.delete('/products/:id', authorize('loading.write'), async (req: Request, 
   } catch (error) { next(error); }
 });
 
+// Cancel a completed sale: an administrator executes it, everyone else files a
+// request that lands in the same approval queue as reversals — the
+// pending_reversals table was designed for entity_type='loading' (migration
+// 023), this is where it gets used. No money moves on a request (D5); an
+// administrator's own click posts the mirrors immediately, everyone else's
+// waits for an administrator to approve it there.
+router.post('/:id/reverse', authorize('loading.write'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { reason } = req.body;
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      throw createError(400, 'reason is required');
+    }
+
+    const record = await queryOne('SELECT * FROM loading_transactions WHERE id = $1', [req.params.id]);
+    if (!record) throw createError(404, 'Loading transaction not found');
+    await assertBranch(req, record.account_id, 'loading.write_all', 'Loading transaction not found');
+    if (record.status === 'reversed') throw createError(400, 'This loading sale is already cancelled');
+    if (record.status !== 'completed') {
+      throw createError(400, 'Only completed loading sales can be cancelled — unfinished sales can be deleted');
+    }
+
+    // Unwinding moves money back, so it is gated like the movement it undoes —
+    // a request or an approval made under a closed branch waits for the next
+    // open shift (D17), the same rule the transaction reversal path holds.
+    await assertOpenShift(record.account_id, undefined);
+
+    if (req.user!.roles.includes('administrator')) {
+      // Administrator: execute immediately — mirrors, status flip and audit
+      // inside one transaction, or none of them at all.
+      const client = await getClient();
+      try {
+        await client.query('BEGIN');
+        const result = await executeLoadingCancel(client, { loadingId: req.params.id, reason: reason.trim() });
+        await client.query('COMMIT');
+
+        await createAuditLog({
+          userId: req.user!.userId, action: 'loading.reversed', entity: 'loading_transaction',
+          entityId: req.params.id, ipAddress: req.ip,
+          newData: { transactionNumber: result.transactionNumber, reason: reason.trim(), affected: result.affected },
+        });
+
+        res.json({ success: true, data: { status: 'reversed', affected: result.affected } });
+      } catch (error) {
+        await client.query('ROLLBACK');
+        next(error);
+      } finally {
+        client.release();
+      }
+      return;
+    }
+
+    // Non-admin: file the request. One open request per record — two requests
+    // for the same sale would race their approvers, and migration 047 enforces
+    // it; the check here turns that constraint into a plain sentence.
+    const open = await queryOne(
+      `SELECT id FROM pending_reversals WHERE entity_type = 'loading' AND entity_id = $1 AND status = 'pending'`,
+      [req.params.id]
+    );
+    if (open) throw createError(409, 'A cancellation request for this sale is already awaiting approval');
+
+    // What the account gains back: the cost plus the provider's fee — the
+    // deduction the channel leg wrote (the same figure the delete used to
+    // restore, now appended instead).
+    const reversalAmount = parseFloat(record.total_cost) + parseFloat(record.provider_convenience_fee || '0');
+    let pending;
+    try {
+      pending = await queryOne(
+        `INSERT INTO pending_reversals (entity_type, entity_id, account_id, requested_by, reversal_amount, reason)
+         VALUES ('loading', $1, $2, $3, $4, $5)
+         RETURNING *`,
+        [req.params.id, record.account_id, req.user!.userId, reversalAmount, reason.trim()]
+      );
+    } catch (err: any) {
+      if (err?.code === '23505') throw createError(409, 'A cancellation request for this sale is already awaiting approval');
+      throw err;
+    }
+
+    await createAuditLog({
+      userId: req.user!.userId, action: 'loading.reverse_requested', entity: 'loading_transaction',
+      entityId: req.params.id, ipAddress: req.ip,
+      newData: { transactionNumber: record.transaction_number, reason: reason.trim(), pendingReversalId: pending!.id },
+    });
+
+    res.json({ success: true, data: pending });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.delete('/:id', authorize('loading.delete'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
@@ -306,7 +396,17 @@ router.delete('/:id', authorize('loading.delete'), async (req: Request, res: Res
     const loadingTx = (await client.query('SELECT * FROM loading_transactions WHERE id = $1', [req.params.id])).rows[0];
     if (!loadingTx) throw createError(404, 'Loading transaction not found');
     await assertBranch(req, loadingTx?.account_id, 'loading.write_all', 'Loading transaction not found');
-    if (loadingTx.status === 'reversed') throw createError(400, 'Reversed loading transactions cannot be deleted');
+    if (loadingTx.status === 'reversed') {
+      throw createError(400, 'Cancelled loading transactions cannot be deleted — the cancellation is already recorded');
+    }
+    // Completed is exactly the state cancellations exist for: the sale wrote
+    // ledger rows, and erasing them would take history out from under the audit
+    // trail (owner's decision, 2026-10-15). Delete stays for drafts that never
+    // posted; everything settled is undone by request + approval — mirrored,
+    // never erased.
+    if (loadingTx.status === 'completed') {
+      throw createError(400, 'Completed loading transactions cannot be deleted — request a cancellation instead');
+    }
 
     const entryAmount = parseFloat(loadingTx.total_cost) + parseFloat(loadingTx.provider_convenience_fee || '0');
 
@@ -318,30 +418,6 @@ router.delete('/:id', authorize('loading.delete'), async (req: Request, res: Res
        WHERE source_type = 'loading' AND source_id = $1 AND entry_type = 'credit'`,
       [req.params.id]
     )).rows[0];
-
-    // Restore account balance for completed loading transactions
-    if (loadingTx.status === 'completed') {
-      // Unwinding a settled loading transaction puts money back, so it is
-      // gated like the sale it undoes; a draft restores nothing (D17).
-      //
-      // Held to the date the sale carries, because the ledger row removed
-      // below is stamped with it — a shift open for another day would never
-      // see that removal in its expected closing.
-      await assertOpenShift(loadingTx.account_id, undefined, { eventDate: loadingTx.created_at });
-      await client.query(
-        `UPDATE accounts SET current_balance = current_balance + $1, updated_at = NOW() WHERE id = $2`,
-        [entryAmount, loadingTx.account_id]
-      );
-      // The selling price goes back out of the till it went into. Left behind,
-      // a deleted cash sale would strand its drawer leg and count the drawer
-      // short by the retail value of a sale the books no longer show.
-      if (drawerRow) {
-        await client.query(
-          `UPDATE accounts SET current_balance = current_balance - $1, updated_at = NOW() WHERE id = $2`,
-          [drawerRow.amount, drawerRow.account_id]
-        );
-      }
-    }
 
     await client.query(
       `DELETE FROM ledger_entries WHERE account_id = $1 AND entry_type = 'debit' AND amount = $2 AND entry_date = $3`,

@@ -5,6 +5,7 @@ import { branchClause } from '../middleware/scope';
 import { assertOpenShift } from '../middleware/shiftGate';
 import { createError } from '../middleware/error';
 import { auditLedger } from '../services/ledgerAudit';
+import { auditInside, closedAccountNames, loadAccountsAndEntries } from '../services/ledgerGates';
 import { loadScopedLedger, loadLedgerRowsBySource } from '../services/ledgerQuery';
 import { strategyFor, verifyShape } from '../services/correctionStrategy';
 import { randomUUID } from 'crypto';
@@ -34,10 +35,6 @@ const SOURCE_TABLES: Record<string, string> = {
 };
 
 const TABLES_WITH_UPDATED_AT = new Set(['transactions', 'transfers', 'loading_transactions']);
-
-const ENTRY_COLUMNS =
-  'le.account_id, le.id, le.entry_type, le.amount, le.balance_after, le.source_id, le.created_at';
-const ACCOUNT_COLUMNS = 'a.id, a.name, a.status, a.opening_balance, a.current_balance';
 
 function requireReason(reason: unknown): string {
   if (typeof reason !== 'string' || !reason.trim()) throw createError(400, 'reason is required');
@@ -1438,45 +1435,8 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
   }
 });
 
-// Closed accounts refuse every writer the same way — the cutover freezes the
-// legacy fund by closing it, and a correction, re-entry or gap fix landing
-// afterwards would move the frozen line the runbook just set. Owner's rule,
-// recorded with the cutover: closed is closed. Returns the offending names so
-// each path can refuse in its own voice ("Refusing to correct —",
-// "Cannot apply:"), while both previews use the same list to take back their
-// safe verdict: a preview that called a closed account safe would be lying
-// about what its commit does.
-function closedAccountNames(accounts: Array<{ name: string; status?: string }>): string[] {
-  return accounts.filter((a) => a.status === 'closed').map((a) => a.name);
-}
-
-const ACCOUNTS_SQL = `SELECT ${ACCOUNT_COLUMNS} FROM accounts a WHERE a.id = ANY($1) ORDER BY a.name, a.id`;
-const ACCOUNT_ENTRIES_SQL = `SELECT ${ENTRY_COLUMNS} FROM ledger_entries le WHERE le.account_id = ANY($1) ORDER BY le.created_at, le.id`;
-
-interface LoadedLedger {
-  accounts: any[];
-  entries: any[];
-}
-
-// Reads through the transaction client when one is supplied, so the gate checks
-// the same uncommitted state the correction is about to write.
-async function loadAccountsAndEntries(accountIds: string[], client?: any): Promise<LoadedLedger> {
-  if (accountIds.length === 0) return { accounts: [], entries: [] };
-
-  if (client) {
-    const accounts = await client.query(ACCOUNTS_SQL, [accountIds]);
-    const entries = await client.query(ACCOUNT_ENTRIES_SQL, [accountIds]);
-    return { accounts: accounts.rows, entries: entries.rows };
-  }
-
-  const accounts = await query(ACCOUNTS_SQL, [accountIds]);
-  const entries = await query(ACCOUNT_ENTRIES_SQL, [accountIds]);
-  return { accounts, entries };
-}
-
-async function auditInside(client: any, accountIds: string[]) {
-  const { accounts, entries } = await loadAccountsAndEntries(accountIds, client);
-  return auditLedger(accounts, entries);
-}
+// The reconciliation gate moved to services/ledgerGates.ts — shared with the
+// cancellation approval, which audits inside its own transaction the same way
+// every correction here does.
 
 export default router;

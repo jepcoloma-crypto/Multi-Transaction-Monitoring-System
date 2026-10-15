@@ -655,7 +655,7 @@ const loadReversalReport = async (req: Request, filters: ReversalFilters) => {
               requester.username AS requested_by, approver.username AS approved_by,
               pr.created_at, pr.updated_at
        FROM pending_reversals pr
-       JOIN transactions t ON t.id = pr.entity_id
+       JOIN transactions t ON t.id = pr.entity_id AND pr.entity_type = 'transaction'
        JOIN accounts a ON a.id = pr.account_id
        LEFT JOIN branches b ON b.id = a.branch_id
        LEFT JOIN users requester ON requester.id = pr.requested_by

@@ -95,7 +95,7 @@ exists to catch.
 | From other branch | `transfers` (`transfer_in` / `transfer_out`), cross-branch allowed | ✅ built |
 | Income from transactions | fee on every transaction | ✅ built |
 | Income from load | load margin | ✅ built |
-| Reversal of a completed row | `pending_reversals` on `entity_type='transaction'` (11 rows today) | ✅ built |
+| Reversal of a completed row | `pending_reversals` on `entity_type='transaction'` and `'loading'`, one queue (§35) | ✅ built |
 | **Expense from cash on hand** | — | ❌ **no entry path** |
 
 **One flow is missing, not five.**
@@ -2038,3 +2038,65 @@ measures each declared account there, and preview and the audit record quote `ta
 append-only too). Repair runs through the fixed tool itself: re-post each of the eight with its
 same target, and one restoring debit per movement brings the till back — gated and audit-logged
 like any other re-post.
+
+## 35. Cancelling a settled row: the user asks, the admin decides
+
+Operators need to undo things that already landed — a cash transaction keyed wrong, a loading
+sale rung up for the wrong customer — and they must not be able to move money by themselves.
+The answer was mostly standing in the queue already: `pending_reversals` (migration 023) was
+designed with `entity_type` covering `'transaction'`, `'loading'` and `'transfer'`, and cash
+transactions had used the transaction half — request → Approvals → approve or reject — all
+along. What §35 adds is the loading half, and the step the old queue never had: an administrator
+now opens an impact preview and sees every affected balance before deciding.
+
+### D44 — one queue, one planner, money only at approval
+
+**The workflow**, identical for both record kinds:
+
+1. **Request.** The record's own page, a reason (required — the queue's whole decision rests on
+   it), `loading.write` / `transactions.write` plus the branch assert. Only completed rows may be
+   requested; one open request per record (migration 047's half-open unique index turns a race
+   into a plain 409). The request moves nothing (D5) and is gated by an open shift like the
+   movement it undoes (D17). Administrators skip the queue and execute immediately — the
+   two-person rule exists to separate two people, not to deadlock a single administrator.
+2. **Queue.** The existing Approvals → Reversals tab, its list and the nav badge widened to
+   `entity_type IN ('transaction', 'loading')` — a loading request reads like any other row
+   (record, account, amount, requester, reason).
+3. **Preview** (`GET /transactions/reversals/:id/preview`, read-only): the request and its
+   reason, the record, then per affected account *now → change → after*, the exact rows that
+   will be appended, every refusal the approval would hit (shift closed, would go below zero,
+   closed account, already reversed, unsettled, self-request), and the columns-versus-rows note
+   when a transaction's record and its rows disagree — because approval posts the record's
+   figure and the preview will not pretend otherwise.
+4. **Approve** (administrator, `FOR UPDATE` on the request, self-approval refused — D6) or
+   **reject** (reason, no money). The approval re-runs the same planner it previewed with —
+   preview and commit are one arithmetic, §34's rule — then, before COMMIT, `auditInside`
+   re-audits every affected account on the same connection: the commit happens only if chain,
+   balance and last row all still hold, which is the "check all the affected accounts" step
+   performed inside the very transaction that would post them. The response carries the
+   balances it actually committed, so the queue shows after-the-fact what moved.
+5. **Execution.** Loading mirrors the sale's recorded rows one for one (channel deduction
+   returns to the account that paid, retail price walks out of the till), flips
+   `loading_transactions.status` to `reversed` with a race-checked update, and describes each
+   mirror `Cancellation of loading sale #<n>: <reason>`. Transactions keep their established
+   shape: the account leg from the record's total (`movementTotalOf`, the figure every reversal
+   path has always moved) and the till's leg from the rows as they now stand
+   (`unwindDrawerLeg`, corrections included), posted through a `REV-` transaction as before.
+   Nothing is rewritten — mirrors are appended, statements show the pair, closed shifts are
+   untouched.
+6. **Audit.** `loading.reverse_requested`, `loading.reversed` (direct), `loading.reversal_approved`,
+   and `<entity_type>.reversal_rejected` — a transaction's rejection keeps writing
+   `transaction.reversal_rejected` exactly as it always has.
+
+**The gates, both kinds:** reason required at request; completed rows only; open shift at
+request *and* at approval (D17); closed is closed, on every affected account; one open request
+per record; accounts locked in sorted order; the plan's own refusals (below zero, closed,
+already reversed); the pending row's `rowCount` race check; `auditInside` before COMMIT; and the
+approve response quoting the committed balances.
+
+**Delete, restricted (owner's decision, 2026-10-15).** A completed loading sale can no longer
+be `DELETE`d — deletion erased the ledger rows outright, history gone with no audit trail to
+explain the balance change. Delete now serves drafts that never posted (and refuses reversed
+rows as it always did); every settled sale is undone by cancellation, mirrored and
+audit-logged. The old "restore the balances by deleting the rows" branch left with it: there is
+no longer a completed row the delete will touch.

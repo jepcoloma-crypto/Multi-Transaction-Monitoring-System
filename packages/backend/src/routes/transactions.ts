@@ -14,6 +14,9 @@ import { resolveMovementFee } from '../services/movementFee';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
 import { withTransaction } from '../services/withTransaction';
+import { movementTotalOf, planLoadingCancel, planTransactionCancel } from '../services/cancelPlan';
+import { executeLoadingCancel } from '../services/loadingReversal';
+import { auditInside, closedAccountNames } from '../services/ledgerGates';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -1173,8 +1176,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
       // so none of them can land without the others — the difference between a
       // reversal that did not happen and one that has been recorded twice.
       const reverseTx = await withTransaction(async (client) => {
-        const originalCharges = original.additional_charges || [];
-        const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+        const totalOriginalAmount = movementTotalOf(original);
 
         // The drawer's side of the original, unwound with it. Unwinding is a
         // movement like any other — D17 gates it as one — so the cash the
@@ -1238,16 +1240,35 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
 
       res.json({ success: true, data: reverseTx });
     } else {
-      // Non-admin: create pending reversal for admin approval
-      const originalCharges = original.additional_charges || [];
-      const reversalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
-
-      const pending = await queryOne(
-        `INSERT INTO pending_reversals (entity_type, entity_id, account_id, requested_by, reversal_amount, reason)
-         VALUES ('transaction', $1, $2, $3, $4, $5)
-         RETURNING *`,
-        [req.params.id, original.account_id, req.user!.userId, reversalAmount, reason || null]
+      // Non-admin: create pending reversal for admin approval. The reason is
+      // required, not optional — the queue's whole decision rests on it, and
+      // "no reason given" is not something an administrator can act on.
+      if (!reason || typeof reason !== 'string' || !reason.trim()) {
+        throw createError(400, 'reason is required');
+      }
+      // One open request per record — two requests for the same movement would
+      // race their approvers; migration 047 enforces it, this turns the
+      // constraint into a plain sentence.
+      const open = await queryOne(
+        `SELECT id FROM pending_reversals WHERE entity_type = 'transaction' AND entity_id = $1 AND status = 'pending'`,
+        [req.params.id]
       );
+      if (open) throw createError(409, 'A reversal request for this transaction is already awaiting approval');
+
+      const reversalAmount = movementTotalOf(original);
+
+      let pending;
+      try {
+        pending = await queryOne(
+          `INSERT INTO pending_reversals (entity_type, entity_id, account_id, requested_by, reversal_amount, reason)
+           VALUES ('transaction', $1, $2, $3, $4, $5)
+           RETURNING *`,
+          [req.params.id, original.account_id, req.user!.userId, reversalAmount, reason.trim()]
+        );
+      } catch (err: any) {
+        if (err?.code === '23505') throw createError(409, 'A reversal request for this transaction is already awaiting approval');
+        throw err;
+      }
 
       await createAuditLog({
         userId: req.user!.userId,
@@ -1255,7 +1276,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
         entity: 'transaction',
         entityId: req.params.id,
         ipAddress: req.ip,
-        newData: { originalNumber: original.transaction_number, reason, pendingReversalId: pending!.id },
+        newData: { originalNumber: original.transaction_number, reason: reason.trim(), pendingReversalId: pending!.id },
       });
 
       res.json({ success: true, data: pending });
@@ -1473,20 +1494,204 @@ router.get('/reversals/pending', authorize('transactions.approve'), async (req: 
   try {
     const status = req.query.status === 'rejected' ? 'rejected' : 'pending';
     const rows = await query(
-      `SELECT pr.*, t.transaction_number, t.amount AS original_amount, t.status AS original_status,
-              t.description, tt.name AS type_name, tt.code AS type_code, tt.direction, a.name AS account_name,
+      `SELECT pr.*,
+              CASE WHEN pr.entity_type = 'transaction' THEN t.transaction_number ELSE lt.transaction_number END AS transaction_number,
+              CASE WHEN pr.entity_type = 'transaction' THEN t.amount ELSE lt.total_cost END AS original_amount,
+              CASE WHEN pr.entity_type = 'transaction' THEN t.status ELSE lt.status END AS original_status,
+              CASE WHEN pr.entity_type = 'transaction' THEN t.description
+                   ELSE 'Loading sale #' || lt.transaction_number END AS description,
+              COALESCE(tt.name, 'Loading sale') AS type_name,
+              tt.code AS type_code,
+              CASE WHEN pr.entity_type = 'loading' THEN 'out' ELSE tt.direction END AS direction,
+              a.name AS account_name,
               u.username AS requested_by_username, ru.username AS decided_by_username
        FROM pending_reversals pr
-       JOIN transactions t ON pr.entity_id = t.id
-       JOIN transaction_types tt ON t.transaction_type_id = tt.id
-       JOIN accounts a ON t.account_id = a.id
+       LEFT JOIN transactions t ON pr.entity_type = 'transaction' AND pr.entity_id = t.id
+       LEFT JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       LEFT JOIN loading_transactions lt ON pr.entity_type = 'loading' AND pr.entity_id = lt.id
+       LEFT JOIN accounts a ON a.id = COALESCE(t.account_id, lt.account_id, pr.account_id)
        JOIN users u ON pr.requested_by = u.id
        LEFT JOIN users ru ON pr.approved_by = ru.id
-       WHERE pr.entity_type = 'transaction' AND pr.status = $1
+       WHERE pr.entity_type IN ('transaction', 'loading') AND pr.status = $1
        ORDER BY pr.created_at ASC`,
       [status]
     );
     res.json({ success: true, data: { data: rows } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The shift verdict as data rather than an exception: a preview must be able
+// to say "the branch is shut, approval would be refused" instead of failing to
+// load — the same question the approval path asks, answered without writing
+// anything.
+async function shiftVerdict(accountId: string, typeCode?: string | null) {
+  try {
+    await assertOpenShift(accountId, typeCode ?? undefined);
+    return { open: true, message: null as string | null };
+  } catch (err: any) {
+    return { open: false, message: err?.message || 'No open shift — approval would be refused' };
+  }
+}
+
+interface PreviewBody {
+  record: {
+    kind: 'transaction' | 'loading';
+    number: number;
+    status: string;
+    typeCode: string | null;
+    typeName: string;
+    accountName: string;
+    description: string | null;
+    date: string | null;
+  };
+  affected: Array<{ accountId: string; name: string; before: number; delta: number; after: number }>;
+  rowsToAppend: Array<{ name: string; entryType: string; amount: number }>;
+  notes: string[];
+  problems: string[];
+  shift: { open: boolean; message: string | null };
+}
+
+async function previewLoadingCancel(pending: any): Promise<PreviewBody> {
+  const record = await queryOne(
+    `SELECT lt.*, a.name AS account_name
+       FROM loading_transactions lt JOIN accounts a ON a.id = lt.account_id
+      WHERE lt.id = $1`,
+    [pending.entity_id]
+  );
+  if (!record) throw createError(404, 'Loading transaction not found');
+
+  const rows = await query(
+    `SELECT id, account_id, entry_type, amount FROM ledger_entries
+      WHERE source_type = 'loading' AND source_id = $1 ORDER BY created_at, id`,
+    [pending.entity_id]
+  );
+  const ids = [...new Set<string>([record.account_id, ...rows.map((r: any) => r.account_id)])];
+  const accounts = await query(`SELECT id, name, status, current_balance FROM accounts WHERE id = ANY($1)`, [ids]);
+  const plan = planLoadingCancel(record, rows, accounts);
+  const names = new Map<string, string>(accounts.map((a: any) => [a.id, a.name]));
+
+  return {
+    record: {
+      kind: 'loading',
+      number: record.transaction_number,
+      status: record.status,
+      typeCode: null,
+      typeName: 'Loading sale',
+      accountName: record.account_name,
+      description: `Loading sale #${record.transaction_number} to ${record.customer_number}`,
+      date: record.created_at,
+    },
+    affected: plan.affected,
+    rowsToAppend: plan.mirrors.map((m) => ({
+      name: names.get(m.accountId) || m.accountId,
+      entryType: m.entryType,
+      amount: m.amount,
+    })),
+    notes: [],
+    problems: plan.problems,
+    shift: await shiftVerdict(record.account_id, null),
+  };
+}
+
+async function previewTransactionCancel(pending: any): Promise<PreviewBody> {
+  const record = await queryOne(
+    `SELECT t.*, tt.code, tt.name AS type_name, tt.direction, a.name AS account_name
+       FROM transactions t
+       JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       JOIN accounts a ON a.id = t.account_id
+      WHERE t.id = $1`,
+    [pending.entity_id]
+  );
+  if (!record) throw createError(404, 'Transaction not found');
+
+  const rows = await query(
+    `SELECT id, account_id, entry_type, amount FROM ledger_entries
+      WHERE source_type = 'transaction' AND source_id = $1 ORDER BY created_at, id`,
+    [pending.entity_id]
+  );
+  const accountRows = rows.filter((r: any) => r.account_id === record.account_id);
+  const otherRows = rows.filter((r: any) => r.account_id !== record.account_id);
+  const ids = [...new Set<string>([record.account_id, ...rows.map((r: any) => r.account_id)])];
+  const accounts = await query(`SELECT id, name, status, current_balance FROM accounts WHERE id = ANY($1)`, [ids]);
+  const plan = planTransactionCancel(record, accountRows, otherRows, accounts);
+  const names = new Map<string, string>(accounts.map((a: any) => [a.id, a.name]));
+
+  const rowsToAppend = [{
+    name: names.get(plan.accountLeg.accountId) || record.account_name,
+    entryType: plan.accountLeg.entryType,
+    amount: plan.accountLeg.amount,
+  }];
+  if (plan.drawerLeg) {
+    rowsToAppend.push({
+      name: names.get(plan.drawerLeg.accountId) || 'the till',
+      entryType: plan.drawerLeg.entryType,
+      amount: plan.drawerLeg.amount,
+    });
+  }
+
+  return {
+    record: {
+      kind: 'transaction',
+      number: record.transaction_number,
+      status: record.status,
+      typeCode: record.code,
+      typeName: record.type_name,
+      accountName: record.account_name,
+      description: record.description,
+      date: record.transaction_date,
+    },
+    affected: plan.affected,
+    rowsToAppend,
+    notes: plan.notes,
+    problems: plan.problems,
+    shift: await shiftVerdict(record.account_id, record.code),
+  };
+}
+
+// What approving this request will do — every account it touches, the rows it
+// appends, and every guard that would refuse it — read-only, so an
+// administrator sees the affected balances before money moves: the "check all
+// affected" step of the cancellation workflow (D44). The plans come from the
+// same service the approval path commits through, so the preview cannot
+// disagree with the approval (§34's rule).
+router.get('/reversals/:reversalId/preview', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const pending = await queryOne(
+      `SELECT pr.*, u.username AS requested_by_username
+         FROM pending_reversals pr JOIN users u ON u.id = pr.requested_by
+        WHERE pr.id = $1`,
+      [req.params.reversalId]
+    );
+    if (!pending) throw createError(404, 'Reversal request not found');
+
+    const request = {
+      id: pending.id,
+      entityType: pending.entity_type,
+      status: pending.status,
+      reason: pending.reason,
+      requestedBy: pending.requested_by,
+      requestedByUsername: pending.requested_by_username,
+      reversalAmount: parseFloat(pending.reversal_amount),
+      createdAt: pending.created_at,
+      isOwnRequest: pending.requested_by === req.user!.userId,
+    };
+
+    let base: PreviewBody;
+    if (pending.entity_type === 'loading') base = await previewLoadingCancel(pending);
+    else if (pending.entity_type === 'transaction') base = await previewTransactionCancel(pending);
+    else throw createError(400, 'This request type cannot be previewed');
+
+    // Everything that would stop the approval, gathered where the approval
+    // checks it: the plan's problems, the shift verdict, the two-person rule
+    // and a request nobody may decide twice.
+    const problems = [...base.problems];
+    if (pending.status !== 'pending') problems.push(`This request is already ${pending.status}`);
+    if (request.isOwnRequest) problems.push('You raised this request — another administrator has to decide it');
+    const safeToApply = problems.length === 0 && base.shift.open;
+
+    res.json({ success: true, data: { ...base, problems, safeToApply, request } });
   } catch (error) {
     next(error);
   }
@@ -1511,6 +1716,51 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
       throw createError(403, 'You cannot approve your own reversal request');
     }
 
+    // Loading cancellations ride the same queue — the request row says which
+    // record it is deciding, and each branch executes its own kind.
+    if (pending.entity_type === 'loading') {
+      const meta = (await client.query(
+        `SELECT account_id, transaction_number FROM loading_transactions WHERE id = $1`,
+        [pending.entity_id]
+      )).rows[0];
+      if (!meta) throw createError(404, 'Loading transaction not found');
+      // Approving a cancellation executes it, so the branch has to be open for
+      // it — the request may have been raised under one shift and approved
+      // under a closed branch (D17).
+      await assertOpenShift(meta.account_id, undefined);
+
+      const result = await executeLoadingCancel(client, {
+        loadingId: pending.entity_id,
+        reason: pending.reason || 'Admin approved cancellation',
+      });
+
+      const approvedLoading = await client.query(
+        `UPDATE pending_reversals SET status = 'approved', approved_by = $1, updated_at = NOW()
+          WHERE id = $2 AND status = 'pending'`,
+        [req.user!.userId, req.params.reversalId]
+      );
+      if (approvedLoading.rowCount !== 1) throw createError(409, 'This cancellation request was already processed');
+
+      await client.query('COMMIT');
+
+      await createAuditLog({
+        userId: req.user!.userId,
+        action: 'loading.reversal_approved',
+        entity: 'loading_transaction',
+        entityId: pending.entity_id,
+        ipAddress: req.ip,
+        newData: {
+          transactionNumber: meta.transaction_number,
+          reason: pending.reason,
+          affected: result.affected,
+          approvedBy: req.user!.userId,
+        },
+      });
+
+      res.json({ success: true, data: { status: 'reversed', affected: result.affected } });
+      return;
+    }
+
     const original = (await client.query(
       `SELECT t.*, tt.direction, tt.code FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
@@ -1519,6 +1769,7 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     )).rows[0];
     if (!original) throw createError(404, 'Original transaction not found');
     if (original.status === 'reversed') throw createError(400, 'Transaction already reversed');
+    if (original.status !== 'completed') throw createError(400, 'Only completed transactions can be reversed');
 
     // Approving a reversal executes it, so the branch has to be open for it —
     // the request may have been raised under one shift and approved under a
@@ -1526,8 +1777,7 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     await assertOpenShift(original.account_id, original.code);
 
     // Execute the reversal
-    const originalCharges = original.additional_charges || [];
-    const totalOriginalAmount = parseFloat(original.net_amount || original.amount) + originalCharges.reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+    const totalOriginalAmount = movementTotalOf(original);
 
     // The drawer's side of the original, unwound with it — the same leg the
     // immediate path posts, read from the rows the original wrote so the
@@ -1538,6 +1788,19 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
       await recordedLedgerRows(client, original.id, original.account_id)
     );
     await assertDrawerCanFund(drawerSide);
+
+    // Closed is closed, on both legs of the reversal — the account the movement
+    // returns to and the till it returns from (the same refusal corrections
+    // give, in the approval's voice).
+    const closingIds = [original.account_id, ...(drawerSide ? [drawerSide.accountId] : [])];
+    const closingAccounts = (await client.query(
+      `SELECT id, name, status FROM accounts WHERE id = ANY($1)`,
+      [closingIds]
+    )).rows;
+    const closedNames = closedAccountNames(closingAccounts);
+    if (closedNames.length > 0) {
+      throw createError(409, `Refusing to approve — closed accounts cannot move: ${closedNames.join(', ')}`);
+    }
 
     await client.query(
       `UPDATE transactions SET status = 'reversed', updated_at = NOW() WHERE id = $1`,
@@ -1593,6 +1856,17 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     );
     if (approved.rowCount !== 1) throw createError(409, 'This reversal request was already processed');
 
+    // The belt on the suspenders: commit only when every affected account
+    // still reconciles after the mirror landed — chain, balance and last row
+    // (the gate every correction commits behind, now on approvals too: the
+    // answer to "check all the affected accounts" happens inside the very
+    // transaction that would post them).
+    const verdict = await auditInside(client, closingIds);
+    if (!verdict.accounts.every((a) => a.reconciled)) {
+      const bad = verdict.accounts.filter((a) => !a.reconciled).map((a) => `${a.name} (gap ${a.gap})`);
+      throw createError(409, `Refusing to commit — ${bad.join(', ')} did not reconcile after reversal`);
+    }
+
     await client.query('COMMIT');
 
     await createAuditLog({
@@ -1604,7 +1878,15 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
       newData: { originalNumber: original.transaction_number, approvedBy: req.user!.userId },
     });
 
-    res.json({ success: true, data: reverseTx });
+    // The affected balances as they stand once the transaction committed — the
+    // approve response carries them so the queue can show what actually moved,
+    // not only what the preview promised.
+    const affected = await query(
+      `SELECT id, name, current_balance AS balance FROM accounts WHERE id = ANY($1)`,
+      [closingIds]
+    );
+
+    res.json({ success: true, data: { reversal: reverseTx, affected } });
   } catch (error) {
     await client.query('ROLLBACK');
     next(error);
@@ -1640,8 +1922,11 @@ router.post('/reversals/:reversalId/reject', authorize('transactions.write'), as
 
     await createAuditLog({
       userId: req.user!.userId,
-      action: 'transaction.reversal_rejected',
-      entity: 'transaction',
+      // Filed under whichever record kind the request belongs to, so a loading
+      // cancellation lands in the audit log as one and a transaction reversal
+      // keeps the action it has always written.
+      action: `${pending.entity_type}.reversal_rejected`,
+      entity: pending.entity_type === 'loading' ? 'loading_transaction' : 'transaction',
       entityId: pending.entity_id,
       ipAddress: req.ip,
       newData: { reason },

@@ -133,6 +133,28 @@ export default function Loading() {
     } catch (err: any) { alert(err.message); }
   };
 
+  // A completed sale is undone by cancellation: an administrator executes it,
+  // anyone else files a request that lands in the Approvals queue — the same
+  // two-door rule the transaction reversal follows. Reason is required; the
+  // server holds the same line.
+  const handleCancelTx = async (t: LoadingTx) => {
+    const reason = prompt(
+      isAdmin
+        ? 'Reason for cancelling this sale:'
+        : 'Reason for requesting cancellation of this sale (an administrator must approve):'
+    );
+    if (!reason || !reason.trim()) return;
+    try {
+      await api.post(`/loading/${t.id}/reverse`, { reason: reason.trim() });
+      alert(
+        isAdmin
+          ? 'Loading sale cancelled — the mirrors are appended and every affected account re-audited.'
+          : 'Cancellation request submitted. Waiting for admin approval.'
+      );
+      loadData(pagination.page);
+    } catch (err: any) { alert(err.message); }
+  };
+
   const handleDeleteProduct = async (id: string) => {
     if (!confirm('Delete this product? Products with sales history cannot be deleted.')) return;
     try {
@@ -228,10 +250,19 @@ export default function Loading() {
                         <td className="px-4 py-3 text-sm text-right text-finance-red">{formatCurrency(t.total_cost)}</td>
                         <td className="px-4 py-3 text-sm text-right font-medium">{formatCurrency(t.profit)}</td>
                         <td className="px-4 py-3 text-sm text-gray-600">{t.account_name}</td>
-                        <td className="px-4 py-3 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
+                        <td className="px-4 py-3 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : t.status === 'reversed' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
                         <td className="px-4 py-3 text-sm text-gray-600">{t.created_by_username || '-'}</td>
-                        <td className="px-4 py-3 text-right">
-                          {isAdmin && (
+                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                          {t.status === 'completed' && (
+                            <button
+                              onClick={() => handleCancelTx(t)}
+                              title={isAdmin ? 'Cancel this sale now' : 'Request cancellation — an administrator must approve'}
+                              className="px-2 py-1 mr-1 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
+                            >
+                              {isAdmin ? 'Cancel' : 'Request Cancel'}
+                            </button>
+                          )}
+                          {isAdmin && t.status !== 'completed' && t.status !== 'reversed' && (
                             <button onClick={() => handleDeleteTx(t.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                           )}
                         </td>
