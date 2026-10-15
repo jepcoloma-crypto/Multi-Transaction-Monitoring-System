@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, manilaDateTimeValue, paymentMethodCell, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel, manilaInputToIso, transactionTypeLabel, cashBehaviorLabel } from '../lib/format';
-import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil } from 'lucide-react';
+import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil, Ban } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
 import { ShiftGatedButton } from '../components/ShiftGatedButton';
@@ -695,7 +695,7 @@ export default function Transactions() {
                     <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' || tx.status === 'rejected' ? 'red' : 'yellow'}`}>{tx.status}</span>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_username || <span className="text-gray-400">-</span>}</td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <td className="px-4 py-3 text-right">
                     {/* Same two-door rule as the detail modal and the Loading
                         page: an administrator cancels on the spot, everyone
                         else files a request that waits in the Approvals queue.
@@ -705,9 +705,9 @@ export default function Transactions() {
                       <button
                         onClick={() => handleReverse(tx.id)}
                         title={isAdmin ? 'Cancel this transaction now' : 'Request cancellation — an administrator must approve'}
-                        className="px-2 py-1 mr-1 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
+                        className="p-1 text-gray-400 hover:text-red-600"
                       >
-                        {isAdmin ? 'Cancel' : 'Request Cancel'}
+                        <Ban className="w-4 h-4" />
                       </button>
                     )}
                     <button onClick={() => setShowDetail(tx)} className="p-1 text-gray-400 hover:text-primary-600"><Eye className="w-4 h-4" /></button>

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, manilaDateValue } from '../lib/format';
-import { Smartphone, Plus, Search, Package, X, Edit2, Trash2 } from 'lucide-react';
+import { Smartphone, Plus, Search, Package, X, Edit2, Trash2, Ban } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import Pagination from '../components/Pagination';
 import AccountSelect from '../components/AccountSelect';
@@ -252,14 +252,14 @@ export default function Loading() {
                         <td className="px-4 py-3 text-sm text-gray-600">{t.account_name}</td>
                         <td className="px-4 py-3 text-center"><span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${t.status === 'completed' ? 'bg-green-100 text-green-700' : t.status === 'reversed' ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-700'}`}>{t.status}</span></td>
                         <td className="px-4 py-3 text-sm text-gray-600">{t.created_by_username || '-'}</td>
-                        <td className="px-4 py-3 text-right whitespace-nowrap">
+                        <td className="px-4 py-3 text-right">
                           {t.status === 'completed' && (
                             <button
                               onClick={() => handleCancelTx(t)}
                               title={isAdmin ? 'Cancel this sale now' : 'Request cancellation — an administrator must approve'}
-                              className="px-2 py-1 mr-1 text-xs font-medium text-red-600 hover:text-red-700 hover:bg-red-50 rounded"
+                              className="p-1 text-gray-400 hover:text-red-600"
                             >
-                              {isAdmin ? 'Cancel' : 'Request Cancel'}
+                              <Ban className="w-4 h-4" />
                             </button>
                           )}
                           {isAdmin && t.status !== 'completed' && t.status !== 'reversed' && (
