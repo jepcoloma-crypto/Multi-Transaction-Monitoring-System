@@ -129,7 +129,7 @@ export default function Transactions() {
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
-  const [filters, setFilters] = useState({ search: '', typeId: '', status: '', accountId: '', startDate: '', endDate: '', minAmount: '', maxAmount: '' });
+  const [filters, setFilters] = useState({ search: '', typeId: '', status: '', feeMode: '', accountId: '', startDate: '', endDate: '', minAmount: '', maxAmount: '' });
   const [filterTypes, setFilterTypes] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -167,6 +167,7 @@ export default function Transactions() {
       if (filters.search) params.set('search', filters.search);
       if (filters.typeId) params.set('typeId', filters.typeId);
       if (filters.status) params.set('status', filters.status);
+      if (filters.feeMode) params.set('feeMode', filters.feeMode);
       if (filters.accountId) params.set('accountId', filters.accountId);
       if (filters.startDate) params.set('startDate', filters.startDate);
       if (filters.endDate) params.set('endDate', filters.endDate);
@@ -616,6 +617,15 @@ export default function Transactions() {
           <option value="rejected">Rejected</option>
           <option value="cancelled">Cancelled</option>
         </select>
+        {/* The badge this column shows only exists where a fee was actually
+            charged, so each option names the badge words and the server
+            matches only rows that carry a fee — a zero-fee row has no
+            handling to speak of (D42). */}
+        <select value={filters.feeMode} onChange={(e) => setFilters({ ...filters, feeMode: e.target.value })} className="input w-auto" title="Fee Handling">
+          <option value="">All Fee Handling</option>
+          <option value="added">Fee on top</option>
+          <option value="deducted">Fee inside</option>
+        </select>
         <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
           className="input w-auto" title="Start Date" />
         <input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
@@ -625,7 +635,7 @@ export default function Transactions() {
         <input type="number" placeholder="Max ₱" value={filters.maxAmount} onChange={(e) => setFilters({ ...filters, maxAmount: e.target.value })}
           className="input w-24" />
         <button onClick={() => fetchTransactions(1)} className="btn-secondary">Search</button>
-        <button onClick={() => { setFilters({ search: '', typeId: '', status: '', accountId: '', startDate: '', endDate: '', minAmount: '', maxAmount: '' }); setTimeout(() => fetchTransactions(1), 0); }}
+        <button onClick={() => { setFilters({ search: '', typeId: '', status: '', feeMode: '', accountId: '', startDate: '', endDate: '', minAmount: '', maxAmount: '' }); setTimeout(() => fetchTransactions(1), 0); }}
           className="btn-secondary text-gray-500">Clear</button>
       </div>
 

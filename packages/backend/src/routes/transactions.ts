@@ -31,6 +31,10 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
     const accountId = req.query.accountId as string;
     const typeId = req.query.typeId as string;
     const status = req.query.status as string;
+    // Fee handling (D42): 'added' = the fee rode on top of the amount,
+    // 'deducted' = it was inside the amount the customer sent. Anything else
+    // is refused rather than quietly returning every row.
+    const feeMode = req.query.feeMode as string;
     const startDate = req.query.startDate as string;
     const endDate = req.query.endDate as string;
     const search = req.query.search as string;
@@ -46,6 +50,16 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
     if (endDate) { conditions.push(`t.transaction_date < ($${paramIndex++}::date + INTERVAL '1 day')`); params.push(endDate); }
     if (req.query.minAmount) { conditions.push(`t.amount >= $${paramIndex++}`); params.push(parseFloat(req.query.minAmount as string)); }
     if (req.query.maxAmount) { conditions.push(`t.amount <= $${paramIndex++}`); params.push(parseFloat(req.query.maxAmount as string)); }
+    if (feeMode) {
+      if (feeMode !== 'added' && feeMode !== 'deducted') {
+        throw createError(400, "feeMode must be 'added' or 'deducted'");
+      }
+      // A row with no fee has no handling to speak of — the column itself
+      // shows a dash there — so each option matches only rows that carry one,
+      // exactly the rows the Fee Handling badge names.
+      conditions.push(`t.fee_added_to_balance = $${paramIndex++} AND t.fee > 0`);
+      params.push(feeMode === 'added');
+    }
     if (search) {
       conditions.push(`(t.reference_number ILIKE $${paramIndex} OR t.description ILIKE $${paramIndex} OR t.customer_name ILIKE $${paramIndex} OR CAST(t.transaction_number AS TEXT) ILIKE $${paramIndex})`);
       params.push(`%${search}%`);
