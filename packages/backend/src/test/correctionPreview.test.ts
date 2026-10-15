@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { simulateCorrection, appendPlannedRows } from '../services/correctionPreview';
+import { planFeeRepost } from '../services/feeAudit';
 import { auditLedger } from '../services/ledgerAudit';
 import type { LedgerAuditAccount, LedgerAuditEntry } from '../services/ledgerAudit';
 import type { LedgerRowRef } from '../services/ledgerQuery';
@@ -370,5 +371,46 @@ test('applied is returned in the exact order the rows were written', () => {
   assert.deepEqual(
     applied.applied.map((r) => applied.corrections.find((c) => c.accountId === r.accountId && c.amount === r.amount)!.balanceAfter),
     [1000, 5321]
+  );
+});
+
+// --- declared target directions (D43's defect) ------------------------------
+
+// The fee re-post's till history opens with the `Service fee` credit row —
+// written first, facing the other way from the till's net. Measured by the
+// first row, the till's target reads as a credit and the delta doubles and
+// flips the register; measured by the plan's declared sign, a flag-only flip
+// moves nothing (production txn 70, 2026-10-15).
+test('a plan-declared sign measures the target even when the first row faces away', () => {
+  const plan = planFeeRepost({
+    direction: 'in',
+    recordAmount: '4299.00', recordFee: '50.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: 'wallet', drawerAccountId: 'till',
+    target: { feeAddedToBalance: false },
+  });
+  assert.deepEqual(plan.targets, { accountTotal: 4299, drawerNet: -4249 });
+  assert.deepEqual(plan.signs, { wallet: 1, till: -1 });
+
+  const accounts = [account('wallet', 5000, 9299), account('till', 10000, 5751)];
+  const entries = [
+    entry('e-w', 'wallet', { entry_type: 'credit', amount: '4299.00', balance_after: '9299.00', created_at: at(0) }),
+    entry('e-f', 'till', { entry_type: 'credit', amount: '50.00', balance_after: '10050.00', created_at: at(1) }),
+    entry('e-m', 'till', { entry_type: 'debit', amount: '4299.00', balance_after: '5751.00', created_at: at(2) }),
+  ];
+  const rows = [
+    row('e-w', 'wallet', 'credit', '4299.00'),
+    row('e-f', 'till', 'credit', '50.00'),
+    row('e-m', 'till', 'debit', '4299.00'),
+  ];
+
+  const declared = simulateCorrection(accounts, entries, rows, plan.amounts, plan.signs);
+  assert.deepEqual(declared.corrections, [], 'the flag-only flip appends nothing');
+
+  const byFirstRow = simulateCorrection(accounts, entries, rows, plan.amounts);
+  assert.deepEqual(
+    byFirstRow.corrections,
+    [{ accountId: 'till', entryType: 'credit', amount: 8498, balanceAfter: 14249 }],
+    'without the declared sign the till doubles the wrong way — the defect this fixes'
   );
 });

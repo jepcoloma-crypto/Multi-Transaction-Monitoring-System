@@ -275,15 +275,6 @@ function movementShape(record: Record<string, any>, rows: LedgerRowRef[]) {
   };
 }
 
-// What an account will sum to once the deltas land: the target magnitude
-// carried by that account's own first row — the sign a correction measures
-// the target in, and for a movement the sign its direction wrote.
-function signedTarget(rows: LedgerRowRef[], accountId: string, magnitude: number): number {
-  const first = rows.find((r) => r.account_id === accountId);
-  const sign = first?.entry_type === 'credit' ? 1 : -1;
-  return Math.round(sign * magnitude * 100) / 100;
-}
-
 router.post('/fee-repost/preview', authorize('transactions.correct'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const sourceId = requireUuid(req.body?.sourceId, 'sourceId');
@@ -316,7 +307,7 @@ router.post('/fee-repost/preview', authorize('transactions.correct'), async (req
       drawerAccountId: shape.drawerAccountId,
       target: req.body?.target ?? {},
     });
-    const simulation = simulateCorrection(accounts, entries, rows, plan.amounts);
+    const simulation = simulateCorrection(accounts, entries, rows, plan.amounts, plan.signs);
     const changed = changedFeeColumns(before, plan.columns);
     const nothingToDo = simulation.corrections.length === 0 && !changed;
 
@@ -337,12 +328,7 @@ router.post('/fee-repost/preview', authorize('transactions.correct'), async (req
           accountTotal: ledgerSignedSum(rows, record.account_id),
           drawerNet: shape.drawerAccountId ? ledgerSignedSum(rows, shape.drawerAccountId) : null,
         },
-        targetPosted: {
-          accountTotal: signedTarget(rows, record.account_id, plan.amounts[record.account_id]),
-          drawerNet: shape.drawerAccountId
-            ? signedTarget(rows, shape.drawerAccountId, plan.amounts[shape.drawerAccountId])
-            : null,
-        },
+        targetPosted: plan.targets,
         drawerAccountId: shape.drawerAccountId,
         ledgerRows: rows,
         simulation,
@@ -423,7 +409,7 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
       drawerAccountId: shape.drawerAccountId,
       target,
     });
-    const simulation: Simulation = simulateCorrection(accounts, entries, rows, plan.amounts);
+    const simulation: Simulation = simulateCorrection(accounts, entries, rows, plan.amounts, plan.signs);
     const changed = changedFeeColumns(before, plan.columns);
 
     if (simulation.problems.length > 0) {
@@ -488,12 +474,7 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
     await client.query('COMMIT');
     started = false;
 
-    const targetPosted = {
-      accountTotal: signedTarget(rows, recordBefore.account_id, plan.amounts[recordBefore.account_id]),
-      drawerNet: shape.drawerAccountId
-        ? signedTarget(rows, shape.drawerAccountId, plan.amounts[shape.drawerAccountId])
-        : null,
-    };
+    const targetPosted = plan.targets;
 
     await createAuditLog({
       userId: req.user!.userId,

@@ -67,7 +67,8 @@ export function simulateCorrection(
   accounts: LedgerAuditAccount[],
   entries: LedgerAuditEntry[],
   rows: LedgerRowRef[],
-  amounts: unknown
+  amounts: unknown,
+  signs?: Record<string, number>
 ): Simulation {
   if (typeof amounts !== 'object' || amounts === null || Array.isArray(amounts)) {
     throw createError(400, 'amounts must be an object keyed by account id');
@@ -111,6 +112,13 @@ export function simulateCorrection(
   // than 50. Every row on an account is given the same target, so the first
   // one written decides the direction the target is measured in; later rows
   // carry the opposite sign whenever a previous correction reduced the figure.
+  //
+  // That first-row reading is only a fallback for amount corrections, whose
+  // rows all face the plan's way. A caller that knows its target's direction —
+  // the fee re-post (D43), whose till history may open with a fee row facing
+  // the other way from the till's net — declares it in `signs`, and the
+  // target is measured there instead (the defect that followed when it was
+  // not: §34, 2026-10-15).
   const targetByAccount = new Map<string, number>();
   for (const change of changes) {
     if (!targetByAccount.has(change.accountId)) {
@@ -135,7 +143,8 @@ export function simulateCorrection(
       (sum, row) => sum + signOf(row.entry_type) * toCents(parseFloat(row.amount)),
       0
     );
-    deltaByAccount.set(accountId, signOf(accountRows[0].entry_type) * target - current);
+    const direction = signs?.[accountId] ?? signOf(accountRows[0].entry_type);
+    deltaByAccount.set(accountId, direction * target - current);
   }
 
   const planned: PlannedRow[] = [];

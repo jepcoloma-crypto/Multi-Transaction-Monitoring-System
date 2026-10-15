@@ -146,6 +146,49 @@ test('a fee inside the amount larger than the amount is refused, as at creation'
   );
 });
 
+test('the plan declares signed targets and the direction each is measured in', () => {
+  // The sign a delta is measured in is the plan's own — never the account's
+  // first row, whose history may face the other way (D43's defect, 2026-10-15).
+  const inOff = planFeeRepost({
+    direction: 'in',
+    recordAmount: '500.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { feeAddedToBalance: false },
+  });
+  assert.deepEqual(inOff.targets, { accountTotal: 500, drawerNet: -490 });
+  assert.deepEqual(inOff.signs, { [WALLET]: 1, [DRAWER]: -1 });
+
+  const outOff = planFeeRepost({
+    direction: 'out',
+    recordAmount: '500.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { feeAddedToBalance: false },
+  });
+  assert.deepEqual(outOff.targets, { accountTotal: -490, drawerNet: 500 });
+  assert.deepEqual(outOff.signs, { [WALLET]: -1, [DRAWER]: 1 });
+
+  const solo = planFeeRepost({
+    direction: 'in',
+    recordAmount: '500.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: null,
+    primaryAccountId: WALLET, drawerAccountId: null,
+    target: {},
+  });
+  assert.deepEqual(solo.targets, { accountTotal: 510, drawerNet: null });
+  assert.deepEqual(solo.signs, { [WALLET]: 1 });
+
+  const zeroNet = planFeeRepost({
+    direction: 'in',
+    recordAmount: '10.00', recordFee: '10.00', recordFeeAddedToBalance: false,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: {},
+  });
+  assert.deepEqual(zeroNet.targets, { accountTotal: 10, drawerNet: 0 });
+});
+
 // --- currentFeeColumns / changedFeeColumns --------------------------------
 
 test('the record reads as figures whatever pg hands over', () => {

@@ -127,6 +127,14 @@ export interface FeeRepostPlan {
   columns: FeeRepostColumns;
   /** Target magnitude per account, keyed by account id — `simulateCorrection`'s input. */
   amounts: Record<string, number>;
+  /**
+   * Which way each account's target is measured — read off the plan's own
+   * arithmetic (`entryTypeFor`/`drawerLeg`), never off row history: a till's
+   * first row may be the fee row, which faces the other way from its net.
+   */
+  signs: Record<string, 1 | -1>;
+  /** The signed targets themselves, for the preview and the audit record. */
+  targets: { accountTotal: number; drawerNet: number | null };
 }
 
 // Record columns arrive as pg hands them over: NUMERIC as a string, the flag
@@ -139,10 +147,13 @@ const readMoney = (value: unknown): number => {
 
 /**
  * Plan a re-post: what the movement should have posted under the target, as
- * the record's own columns and the per-account magnitudes the delta rows will
- * land on. The drawer's target is the net — the cash that physically crossed
- * the till — because that is what its recorded rows have always summed to,
- * whichever rows a previous correction appended.
+ * the record's own columns, the per-account magnitudes the delta rows will
+ * land on, and the direction each target is measured in — declared by this
+ * plan, because row history cannot say it: a till's first row may be the fee
+ * row, which faces the other way from the till's net. The drawer's target is
+ * the net — the cash that physically crossed the till — because that is what
+ * its recorded rows have always summed to, whichever rows a previous
+ * correction appended.
  *
  * The fee-inside guard is creation's own, with creation's message: a cut
  * larger than what was sent books income the money never carried, and a
@@ -179,17 +190,30 @@ export function planFeeRepost(input: {
 
   const { netAmount } = netAmountOf({ direction: input.direction, amount, fee, feeAddedToBalance });
   const totalAmount = round2(netAmount + charges);
-  const signedAccount = entryTypeFor(input.direction) === 'credit' ? totalAmount : -totalAmount;
+
+  // The same expectedPostings the audit judges with: the plan says what each
+  // leg must sum to, signed, so the delta engine measures every target in the
+  // direction this plan writes rather than the direction history happens to
+  // show (D43's defect — see §34).
+  const targets = expectedPostings(
+    { direction: input.direction, amount, fee, feeAddedToBalance, charges },
+    input.drawerAccountId !== null
+  );
 
   const amounts: Record<string, number> = { [input.primaryAccountId]: totalAmount };
+  const signs: Record<string, 1 | -1> = {
+    [input.primaryAccountId]: targets.accountTotal < 0 ? -1 : 1,
+  };
   if (input.drawerAccountId) {
-    const drawer = drawerLeg(signedAccount, fee);
-    amounts[input.drawerAccountId] = drawer ? drawer.amount : 0;
+    amounts[input.drawerAccountId] = Math.abs(targets.drawerNet ?? 0);
+    signs[input.drawerAccountId] = (targets.drawerNet ?? 0) < 0 ? -1 : 1;
   }
 
   return {
     columns: { amount, fee, net_amount: netAmount, fee_added_to_balance: feeAddedToBalance },
     amounts,
+    signs,
+    targets,
   };
 }
 

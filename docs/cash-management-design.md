@@ -2004,7 +2004,9 @@ with the person who can ask the counter.
 `POST /corrections/fee-repost/:id/apply`) takes the target — the correct mode, and the amount and
 fee when those are wrong too — and plans it through the one planner both routes share. Preview and
 commit are the same arithmetic amount corrections already trust: per-account target magnitudes fed
-to the same simulation, so apply appends delta rows on the account and on the till (description
+to the same simulation, each target measured in the direction the plan declares — `entryTypeFor` for
+the account, `drawerLeg` for the till — never the direction an account's first row happens to carry,
+so apply appends delta rows on the account and on the till (description
 `Fee correction: <reason>`), updates only the record's four fee columns — `amount`, `fee`,
 `net_amount`, `fee_added_to_balance` — inside the same transaction, and commits only when every
 account reconciles afterwards. The gates are the corrections' gates in the corrections' voice:
@@ -2021,3 +2023,18 @@ a cut larger than what was sent books income the money never carried. A drawer d
 today's instant, so it enters the register and the shift's expected closing on the day of the fix,
 exactly as every other correction does. Non-cash movements are audited and re-postable in the same
 tool — for them only the account leg and `net_amount` move, with no drawer row to append.
+
+**Defect shipped and fixed, 2026-10-15.** The first version let the simulation read each target's
+direction from the account's first row — the amount-correction convention, sound where every row
+faces the plan's way. A pre-D42 cash-in's till history opens with the `Service fee` credit row,
+which faces the other way from the till's net, so eight flag-only flips (txns 12, 13, 18, 19, 21,
+34, 35, 70 — declared ON, already carrying the OFF figures, re-posted to OFF) each measured the
+till's target as a credit against its debit and appended a delta of twice the till's net, the
+wrong way: cash on hand came out ₱32,918 high. The account legs were untouched — their first row
+faces the plan's way — and the flag decisions themselves were right; only the till rows were
+wrong. The planner now returns `signs` and `targets` beside its magnitudes, the simulation
+measures each declared account there, and preview and the audit record quote `targets` directly
+(the incident's audit rows keep the wrong-signed targets they stored — audit history is
+append-only too). Repair runs through the fixed tool itself: re-post each of the eight with its
+same target, and one restoring debit per movement brings the till back — gated and audit-logged
+like any other re-post.
