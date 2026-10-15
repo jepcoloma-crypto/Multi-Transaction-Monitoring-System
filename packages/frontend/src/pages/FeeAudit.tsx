@@ -332,11 +332,12 @@ export default function FeeAudit() {
         </button>
       </div>
 
-      <div className="bg-white rounded-lg border overflow-hidden">
+      <div className="bg-white rounded-lg border overflow-x-auto">
         <table className="min-w-full text-sm">
           <thead className="bg-gray-50 text-left text-xs font-semibold uppercase text-gray-500">
             <tr>
               <th className="px-4 py-3">Record</th>
+              <th className="px-4 py-3">Reference</th>
               <th className="px-4 py-3 text-right">Amount / Fee</th>
               <th className="px-4 py-3 text-center">Mode</th>
               <th className="px-4 py-3">Posted (account · till)</th>
@@ -348,7 +349,7 @@ export default function FeeAudit() {
           <tbody className="divide-y">
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-4 py-8 text-center text-gray-500">
+                <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
                   {loading ? 'Loading…' : 'No completed fee-bearing movements match this filter.'}
                 </td>
               </tr>
@@ -361,6 +362,9 @@ export default function FeeAudit() {
                     {manilaDateTimeLabel(row.transaction_date)} ·{' '}
                     {transactionTypeLabel(row.type_code, row.type_name)} · {row.account_name}
                   </p>
+                </td>
+                <td className="px-4 py-3 text-gray-700 whitespace-nowrap font-mono text-xs">
+                  {row.reference_number || '-'}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <p className="font-medium tabular-nums">{money(row.amount)}</p>
