@@ -52,11 +52,11 @@ interface Statement {
   frozenCashAccounts?: string;
   expenseApprovalThreshold?: number;
   borrowingsOutstanding?: number;
-  // Total income (Reports → Income) split by where the fee lands, served
-  // beside the balance rather than inside it — the statement's `totals` stay a
-  // pure movement identity. `drawerIncome` is fee-on-top (handed over as
-  // separate cash, lands in the till); `nonCashIncome` is fee-inside (rides the
-  // account balance) plus loading margin. They sum back to totalIncome.
+  // Total income (Reports → Income) split by where it lands, served beside
+  // the balance rather than inside it — the statement's `totals` stay a pure
+  // movement identity. `drawerIncome` is fee-on-top plus the loading margin
+  // (both land in the till); `nonCashIncome` is fee-inside (rides the account
+  // balance). They sum back to totalIncome.
   drawerIncome?: number;
   nonCashIncome?: number;
 }
@@ -1455,11 +1455,12 @@ export default function CashManagement() {
               </div>
             )}
 
-            {/* Income split by where the fee lands, all-time like the balance
-                beside it. A fee charged on top of the amount was handed over as
-                separate cash, so it goes to the cash drawer; a fee inside the
-                amount rides the receiving account's balance, and loading margin
-                is earned on the non-cash loading accounts. The two figures sum
+            {/* Income split by where it lands, all-time like the balance beside
+                it. A fee charged on top of the amount was handed over as
+                separate cash and goes to the till; the loading margin sits
+                inside the drawer increase (the owner's rule: cost deducted from
+                the balance, selling price to cash on hand). A fee inside the
+                amount rides the receiving account's balance. The two figures sum
                 back to Reports → Income's totalIncome. Kept out of `totals` for
                 the same reason the statement keeps income out of Sources &
                 Uses — it is not a movement of cash the drawer has to
@@ -1471,7 +1472,7 @@ export default function CashManagement() {
                   <p className="text-xs font-semibold uppercase tracking-wide">Income (cash on hand)</p>
                 </div>
                 <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{formatCurrency(statement.drawerIncome)}</p>
-                <p className="text-sm text-gray-500">Fee-on-top income — separate cash that went to the till</p>
+                <p className="text-sm text-gray-500">Fee-on-top income plus loading margin — landed in the till</p>
               </div>
             )}
 
@@ -1482,7 +1483,7 @@ export default function CashManagement() {
                   <p className="text-xs font-semibold uppercase tracking-wide">Income (non-cash)</p>
                 </div>
                 <p className="text-2xl font-bold mt-2 tabular-nums text-emerald-600">{formatCurrency(statement.nonCashIncome)}</p>
-                <p className="text-sm text-gray-500">Fee-inside income plus loading margin — added to balances</p>
+                <p className="text-sm text-gray-500">Fee-inside income — added to balances</p>
               </div>
             )}
 

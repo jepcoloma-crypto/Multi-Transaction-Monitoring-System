@@ -206,11 +206,15 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     );
 
     // Total income — the same figure Reports → Income totals as `totalIncome` —
-    // split by where the fee lands. A fee charged on top of the amount was
+    // split by where the income lands. A fee charged on top of the amount was
     // handed over as separate cash, so it lands in the till (drawer); a fee
     // inside the amount rides the receiving account's balance (non-cash).
-    // Loading margin is earned on the non-cash loading accounts and rides with
-    // the inside fees, so the two figures sum back to totalIncome.
+    // Loading margin also rides the drawer: the owner's rule is "cost price
+    // will be deducted to my balance, selling price will go to my cash on
+    // hand", and the margin sits inside that drawer increase (see
+    // `loadingSaleLegs.drawerIncrease`), never as a third row — so the profit
+    // is cash-on-hand money while the cost it came out of left the non-cash
+    // channel. The two figures sum back to totalIncome.
     //
     // Kept beside the drawer figures rather than folded into `totals`: fee
     // income is not a separate credit in the ledger, so adding it to the
@@ -267,8 +271,12 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
        WHERE ${incConds.join(' AND ')}`,
       incParams,
     );
-    const drawerIncome = Math.round(num(incRow?.fee_on_top) * 100) / 100;
-    const nonCashIncome = Math.round((num(incRow?.fee_inside) + num(incRow?.load_margin)) * 100) / 100;
+    // The loading margin rides the drawer, not the channel: `loadingSaleLegs`
+    // puts it inside `drawerIncrease`, so the profit is already cash-on-hand
+    // money while the cost it came out of was deducted from the non-cash
+    // channel. Hence margin joins the on-top fees in `drawerIncome`.
+    const drawerIncome = Math.round((num(incRow?.fee_on_top) + num(incRow?.load_margin)) * 100) / 100;
+    const nonCashIncome = Math.round(num(incRow?.fee_inside) * 100) / 100;
 
     res.json({
       success: true,
@@ -300,13 +308,14 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
         // would break the tie-out the statement exists to satisfy.
         borrowingsOutstanding: num(borrowRow?.outstanding),
         // Income that landed in the till: fees charged on top of the amount,
-        // handed over as separate cash. Beside the drawer figure rather than
-        // inside it — this is what was *earned*, not what is *held*.
+        // plus the loading margin (which sits inside the drawer increase).
+        // Beside the drawer figure rather than inside it — this is what was
+        // *earned*, not what is *held*.
         drawerIncome,
         // Income that rode the non-cash accounts' balances: fees inside the
-        // amount, plus loading margin. Beside the balance rather than inside
-        // it, for the same reason. `drawerIncome + nonCashIncome` equals
-        // Reports → Income's totalIncome.
+        // amount. Beside the balance rather than inside it, for the same
+        // reason. `drawerIncome + nonCashIncome` equals Reports → Income's
+        // totalIncome.
         nonCashIncome,
         // Served beside the drawer figure for the same reason: the expense form
         // on this page has to say what the books will do, and the create route
