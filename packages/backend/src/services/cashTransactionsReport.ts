@@ -49,6 +49,13 @@ const asReference = (value: unknown): string | null => {
   return parsed === null ? null : String(parsed);
 };
 
+// The external reference as it prints — kept verbatim, because a code like
+// `389A2` carries meaning a numeric cast would strip. Null when absent.
+const asReferenceNumber = (value: unknown): string | null => {
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : null;
+  return asText(value);
+};
+
 // The Manila calendar day an instant falls on. Every date a report row prints
 // goes through the operating clock, so a transaction recorded at 23:30 Manila
 // files under the day the operator worked, not the UTC day it would otherwise
@@ -64,6 +71,9 @@ const asDay = (value: unknown): string | null => {
 export interface CashSourceRow {
   id: string;
   transaction_number?: number | string | null;
+  // The external reference the customer or provider recognises (a GCash code,
+  // say) — distinct from the system's own `transaction_number`.
+  reference_number?: string | number | null;
   transaction_date?: string | Date | null;
   amount?: number | string | null;
   fee?: number | string | null;
@@ -80,6 +90,7 @@ export interface CashSourceRow {
 export interface LoadingSourceRow {
   id: string;
   transaction_number?: number | string | null;
+  reference_number?: string | number | null;
   created_at?: string | Date | null;
   total_revenue?: number | string | null;
   profit?: number | string | null;
@@ -97,7 +108,11 @@ export interface CashTransactionRow {
   kind: 'cash' | 'loading';
   // Manila day, `YYYY-MM-DD` — the grouping key the report sorts and prints by.
   day: string | null;
-  reference: string | null;
+  // The system's own sequential number, and the external reference beside it —
+  // two different numbers an operator reconciles against, so neither stands in
+  // for the other.
+  transactionNumber: string | null;
+  referenceNumber: string | null;
   accountName: string | null;
   branchName: string | null;
   // The transaction type name for a cash movement, the product name for a
@@ -127,33 +142,21 @@ export interface CashTransactionsReport {
 export function buildCashTransactionsReport(
   cash: CashSourceRow[],
   loading: LoadingSourceRow[],
+  handling?: CashIncomeType | null,
 ): CashTransactionsReport {
-  let onTopCents = 0;
-  let onTopCount = 0;
-  let insideCents = 0;
-  let insideCount = 0;
-  let loadingCents = 0;
-  let loadingCount = 0;
-
-  const rows: CashTransactionRow[] = [
+  const allRows: CashTransactionRow[] = [
     ...cash.map((row) => {
       const feeCents = toCents(row.fee);
       // `false` is inside; true and NULL are on-top. The query only hands over
       // rows with a fee, so a mode here always names a fee that was charged.
       const incomeType: CashIncomeType = row.fee_added_to_balance === false ? 'inside' : 'on-top';
-      if (incomeType === 'on-top') {
-        onTopCents += feeCents;
-        onTopCount += 1;
-      } else {
-        insideCents += feeCents;
-        insideCount += 1;
-      }
 
       return {
         id: row.id,
         kind: 'cash',
         day: asDay(row.transaction_date),
-        reference: asReference(row.transaction_number),
+        transactionNumber: asReference(row.transaction_number),
+        referenceNumber: asReferenceNumber(row.reference_number),
         accountName: asText(row.account_name),
         branchName: asText(row.branch_name),
         description: asText(row.type_name),
@@ -165,14 +168,13 @@ export function buildCashTransactionsReport(
     }),
     ...loading.map((row) => {
       const marginCents = toCents(row.profit);
-      loadingCents += marginCents;
-      loadingCount += 1;
 
       return {
         id: row.id,
         kind: 'loading',
         day: asDay(row.created_at),
-        reference: asReference(row.transaction_number),
+        transactionNumber: asReference(row.transaction_number),
+        referenceNumber: asReferenceNumber(row.reference_number),
         accountName: asText(row.account_name),
         branchName: asText(row.branch_name),
         description: asText(row.product_name),
@@ -184,6 +186,12 @@ export function buildCashTransactionsReport(
     }),
   ];
 
+  // The handling drill-down narrows the list, and the summary below is summed
+  // from whatever survives — so the figures always add up to the rows on screen,
+  // even mid-filter. A summary that kept the unfiltered totals would print a
+  // number a reader cannot reach by adding the rows they can see.
+  const rows = handling ? allRows.filter((row) => row.incomeType === handling) : allRows;
+
   // Newest first across both record types, so a loading sale and the cash
   // movement beside it interleave by the day they happened rather than one
   // block always preceding the other. A row with no date sinks to the bottom
@@ -193,22 +201,39 @@ export function buildCashTransactionsReport(
     if (a.day === null) return 1;
     if (b.day === null) return -1;
     if (a.day !== b.day) return a.day < b.day ? 1 : -1;
-    // Same day: cash before loading, then by reference, so the order is
-    // reproducible between renders rather than depending on query arrival.
+    // Same day: cash before loading, then by the system's own number, so the
+    // order is reproducible between renders rather than depending on query
+    // arrival.
     if (a.kind !== b.kind) return a.kind === 'cash' ? -1 : 1;
-    return (a.reference ?? '').localeCompare(b.reference ?? '');
+    return (a.transactionNumber ?? '').localeCompare(b.transactionNumber ?? '');
   });
 
-  const feeOnTop = money(onTopCents);
-  const feeInside = money(insideCents);
-  const loadingMargin = money(loadingCents);
+  let onTopCents = 0;
+  let onTopCount = 0;
+  let insideCents = 0;
+  let insideCount = 0;
+  let loadingCents = 0;
+  let loadingCount = 0;
+  for (const row of rows) {
+    const cents = toCents(row.income);
+    if (row.incomeType === 'on-top') {
+      onTopCents += cents;
+      onTopCount += 1;
+    } else if (row.incomeType === 'inside') {
+      insideCents += cents;
+      insideCount += 1;
+    } else {
+      loadingCents += cents;
+      loadingCount += 1;
+    }
+  }
 
   return {
     rows,
     summary: {
-      feeOnTop: { total: feeOnTop, count: onTopCount },
-      feeInside: { total: feeInside, count: insideCount },
-      loadingMargin: { total: loadingMargin, count: loadingCount },
+      feeOnTop: { total: money(onTopCents), count: onTopCount },
+      feeInside: { total: money(insideCents), count: insideCount },
+      loadingMargin: { total: money(loadingCents), count: loadingCount },
       // The three income types are disjoint — a fee is either on top or inside,
       // a loading sale is neither — so their sum is the whole of what the period
       // earned and never double-counts a peso. This is the figure the

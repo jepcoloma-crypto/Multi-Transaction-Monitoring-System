@@ -182,14 +182,71 @@ test('a row with no date sinks to the bottom rather than sorting unpredictably',
   assert.deepEqual(rows.map((r) => r.id), ['c-dated', 'c-nodate']);
 });
 
-test('a reference prints as the number and reads null when absent', () => {
+test('the system number prints as a number and reads null when absent', () => {
   const { rows } = buildCashTransactionsReport(
     [cash({ id: 'c1', transaction_number: '49690' }), cash({ id: 'c2', transaction_number: null })],
     [],
   );
 
-  assert.equal(rows.find((r) => r.id === 'c1')?.reference, '49690');
-  assert.equal(rows.find((r) => r.id === 'c2')?.reference, null);
+  assert.equal(rows.find((r) => r.id === 'c1')?.transactionNumber, '49690');
+  assert.equal(rows.find((r) => r.id === 'c2')?.transactionNumber, null);
+});
+
+test('the external reference is carried verbatim, alphanumeric codes included', () => {
+  const { rows } = buildCashTransactionsReport(
+    [cash({ id: 'c1', reference_number: '389A2' }), cash({ id: 'c2', reference_number: '68975' })],
+    [loading({ id: 'l1', reference_number: 'LD-9' })],
+  );
+
+  // A code like `389A2` carries meaning a numeric cast would strip, so it is
+  // kept as it stands — and a purely numeric reference survives the trip too.
+  assert.equal(rows.find((r) => r.id === 'c1')?.referenceNumber, '389A2');
+  assert.equal(rows.find((r) => r.id === 'c2')?.referenceNumber, '68975');
+  assert.equal(rows.find((r) => r.id === 'l1')?.referenceNumber, 'LD-9');
+});
+
+test('an absent external reference reads as null so the cell can show a dash', () => {
+  const { rows } = buildCashTransactionsReport([cash({ reference_number: null })], []);
+
+  assert.equal(rows[0].referenceNumber, null);
+});
+
+test('the handling drill-down narrows the rows and re-sums the summary from them', () => {
+  const cashRows = [
+    cash({ id: 'c1', fee: '60.00', fee_added_to_balance: true }),
+    cash({ id: 'c2', fee: '40.00', fee_added_to_balance: false }),
+  ];
+  const loadingRows = [loading({ id: 'l1', profit: '67.00' })];
+
+  const onTop = buildCashTransactionsReport(cashRows, loadingRows, 'on-top');
+  assert.deepEqual(onTop.rows.map((r) => r.id), ['c1']);
+  assert.equal(onTop.summary.feeOnTop.total, 60);
+  assert.equal(onTop.summary.feeInside.total, 0);
+  assert.equal(onTop.summary.loadingMargin.total, 0);
+  assert.equal(onTop.summary.totalIncome, 60);
+
+  const inside = buildCashTransactionsReport(cashRows, loadingRows, 'inside');
+  assert.deepEqual(inside.rows.map((r) => r.id), ['c2']);
+  assert.equal(inside.summary.totalIncome, 40);
+
+  const loadingOnly = buildCashTransactionsReport(cashRows, loadingRows, 'loading');
+  assert.deepEqual(loadingOnly.rows.map((r) => r.id), ['l1']);
+  assert.equal(loadingOnly.summary.loadingMargin.total, 67);
+  assert.equal(loadingOnly.summary.totalIncome, 67);
+});
+
+test('a filtered summary still adds up to the rows on screen', () => {
+  const { rows, summary } = buildCashTransactionsReport(
+    [cash({ fee: '10.10', fee_added_to_balance: true }), cash({ id: 'c2', fee: '0.05', fee_added_to_balance: true })],
+    [],
+    'on-top',
+  );
+
+  // The invariant the whole report rests on: whatever the filter, the total is
+  // the visible rows added up — never a stale figure from the unfiltered set.
+  assert.equal(rows.length, summary.feeOnTop.count);
+  const summedCents = rows.reduce((acc, r) => acc + Math.round(r.income * 100), 0);
+  assert.equal(summedCents, Math.round(summary.totalIncome * 100));
 });
 
 test('a cash row never counts toward the loading total and vice versa', () => {

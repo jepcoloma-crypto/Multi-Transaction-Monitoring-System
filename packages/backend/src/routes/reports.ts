@@ -6,7 +6,7 @@ import { branchClause, assertBranch, resolveBranchFilter } from '../middleware/s
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
 import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../services/incomeReport';
-import { buildCashTransactionsReport, type CashTransactionsReport } from '../services/cashTransactionsReport';
+import { buildCashTransactionsReport, type CashTransactionsReport, type CashIncomeType } from '../services/cashTransactionsReport';
 import { buildExpenseReport, buildExpenseDetail, type ExpenseReport, type ExpenseDetail } from '../services/expenseReport';
 import { statementReversal } from '../services/statementReversal';
 import { isFeeLedgerRow } from '../services/cashManagement';
@@ -1337,13 +1337,25 @@ router.get('/expense-detail', authorize('reports.read'), async (req: Request, re
 // tables with different date columns and different read scopes, then combined
 // by the pure service that also sums the summary — so the figures above the
 // list are, by construction, that list added up.
-type CashTransactionsFilters = { startDate?: unknown; endDate?: unknown; branchId?: string | null };
+// The handling drill-down: which income bucket a row belongs to. An empty value
+// is "no filter"; anything outside the three is a typo, answered with 400 rather
+// than silently returning every row — a filter that quietly does nothing reads
+// exactly like one that is working.
+const HANDLING_VALUES = new Set<CashIncomeType>(['on-top', 'inside', 'loading']);
+const parseHandling = (value: unknown): { handling: CashIncomeType | null; invalid: boolean } => {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return { handling: null, invalid: false };
+  if (!HANDLING_VALUES.has(raw as CashIncomeType)) return { handling: null, invalid: true };
+  return { handling: raw as CashIncomeType, invalid: false };
+};
+
+type CashTransactionsFilters = { startDate?: unknown; endDate?: unknown; branchId?: string | null; handling?: CashIncomeType | null };
 
 const loadCashTransactionsReport = async (
   req: Request,
   filters: CashTransactionsFilters,
 ): Promise<{ period: { startDate: string | null; endDate: string | null } } & CashTransactionsReport> => {
-  const { startDate, endDate, branchId } = filters;
+  const { startDate, endDate, branchId, handling } = filters;
 
   // Cash movements. `at.code <> 'cash'` mirrors the income report — a movement
   // on the drawer's own account is not income — and every fee-bearing movement
@@ -1364,7 +1376,7 @@ const loadCashTransactionsReport = async (
   if (cashScope.clause) { cashConds.push(cashScope.clause); cashParams.push(...cashScope.params); }
 
   const cashRows = await query(
-    `SELECT t.id, t.transaction_number, t.transaction_date, t.amount, t.fee,
+    `SELECT t.id, t.transaction_number, t.reference_number, t.transaction_date, t.amount, t.fee,
             t.fee_added_to_balance, tt.direction, tt.name AS type_name,
             a.name AS account_name, b.name AS branch_name
      FROM transactions t
@@ -1388,7 +1400,7 @@ const loadCashTransactionsReport = async (
   if (ldScope.clause) { ldConds.push(ldScope.clause); ldParams.push(...ldScope.params); }
 
   const loadingRows = await query(
-    `SELECT lt.id, lt.transaction_number, lt.created_at, lt.total_revenue, lt.profit,
+    `SELECT lt.id, lt.transaction_number, lt.reference_number, lt.created_at, lt.total_revenue, lt.profit,
             lp.name AS product_name, a.name AS account_name, b.name AS branch_name
      FROM loading_transactions lt
      JOIN loading_products lp ON lp.id = lt.product_id
@@ -1400,7 +1412,7 @@ const loadCashTransactionsReport = async (
     ldParams,
   );
 
-  const report = buildCashTransactionsReport(cashRows, loadingRows);
+  const report = buildCashTransactionsReport(cashRows, loadingRows, handling);
 
   // The period an operator picked, read back in Manila. Slicing the instant
   // would print the UTC day — one day early for both ends — so a report filed
@@ -1417,10 +1429,15 @@ const loadCashTransactionsReport = async (
 
 router.get('/cash-transactions', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const { handling, invalid } = parseHandling(req.query.handling);
+    if (invalid) {
+      return res.status(400).json({ success: false, error: { message: 'handling must be one of: on-top, inside, loading' } });
+    }
     const report = await loadCashTransactionsReport(req, {
       startDate: req.query.startDate,
       endDate: req.query.endDate,
       branchId: await resolveBranchFilter(req, req.query.branchId),
+      handling,
     });
     res.json({ success: true, data: report });
   } catch (error) { next(error); }
@@ -1759,10 +1776,15 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         };
       }
     } else if (type === 'cash-transactions' || type === 'cash') {
-      const report = await loadCashTransactionsReport(req, { startDate, endDate, branchId });
+      const { handling, invalid } = parseHandling(req.query.handling);
+      if (invalid) {
+        return res.status(400).json({ success: false, error: { message: 'handling must be one of: on-top, inside, loading' } });
+      }
+      const report = await loadCashTransactionsReport(req, { startDate, endDate, branchId, handling });
       data = report.rows.map((r) => ({
         day: r.day ?? '',
-        reference: r.reference ?? '',
+        transaction_number: r.transactionNumber ?? '',
+        reference_number: r.referenceNumber ?? '',
         account_name: r.accountName ?? '',
         branch_name: r.branchName ?? '',
         kind: r.kind === 'loading' ? 'Loading' : r.direction === 'in' ? 'Cash-in' : 'Cash-out',
@@ -1773,7 +1795,8 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
       }));
       columns = [
         { header: 'Date', key: 'day' },
-        { header: 'Reference', key: 'reference' },
+        { header: 'TX #', key: 'transaction_number' },
+        { header: 'Reference', key: 'reference_number' },
         { header: 'Account', key: 'account_name' },
         { header: 'Branch', key: 'branch_name' },
         { header: 'Kind', key: 'kind' },

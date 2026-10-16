@@ -80,7 +80,7 @@ export default function Reports() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
-  const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '', branchId: '', shiftStatus: '', varianceOnly: false });
+  const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '', branchId: '', shiftStatus: '', varianceOnly: false, handling: '' });
 
   // Stated on the printed sheet, because the header badge that normally says
   // it is inside a print:hidden region. A PDF filed without knowing which
@@ -151,6 +151,7 @@ export default function Reports() {
         if (filters.shiftStatus) params.append('status', filters.shiftStatus);
         if (filters.varianceOnly) params.append('varianceOnly', '1');
       }
+      if (activeReport === 'cash-transactions' && filters.handling) params.append('handling', filters.handling);
       const qs = params.toString();
       // The merged module runs two endpoints rather than one payload split in
       // the browser. Only the side on screen is fetched, so switching tabs
@@ -243,6 +244,7 @@ export default function Reports() {
         if (filters.shiftStatus) params.append('status', filters.shiftStatus);
         if (filters.varianceOnly) params.append('varianceOnly', '1');
       }
+      if (activeReport === 'cash-transactions' && filters.handling) params.append('handling', filters.handling);
       params.append('format', 'csv');
       const res = await fetch(`${API_BASE}/reports/export/${type}?${params.toString()}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
@@ -453,6 +455,17 @@ export default function Reports() {
                     </label>
                   </div>
                 </>
+              )}
+              {activeReport === 'cash-transactions' && (
+                <div>
+                  <label className="text-xs text-gray-500">Handling</label>
+                  <select value={filters.handling} onChange={e => setFilters({ ...filters, handling: e.target.value })} className="input-field text-sm">
+                    <option value="">All</option>
+                    <option value="on-top">On top</option>
+                    <option value="inside">Inside</option>
+                    <option value="loading">Loading margin</option>
+                  </select>
+                </div>
               )}
             </div>
           </div>
@@ -1445,7 +1458,8 @@ export default function Reports() {
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
-                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">TX #</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reference</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Kind</th>
@@ -1457,11 +1471,12 @@ export default function Reports() {
                     </thead>
                     <tbody className="divide-y divide-gray-200">
                       {reportData.rows.length === 0 ? (
-                        <tr><td colSpan={9} className="px-4 py-8 text-center text-sm text-gray-500">No cash movements or loading sales for these filters.</td></tr>
+                        <tr><td colSpan={10} className="px-4 py-8 text-center text-sm text-gray-500">No cash movements or loading sales for these filters.</td></tr>
                       ) : reportData.rows.map((r: any) => (
                         <tr key={`${r.kind}-${r.id}`} className="hover:bg-gray-50">
                           <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.day ? dateKeyLabel(r.day) : '—'}</td>
-                          <td className="px-4 py-3.5 font-mono text-sm whitespace-nowrap">{r.reference || '—'}</td>
+                          <td className="px-4 py-3.5 font-mono text-sm whitespace-nowrap">{r.transactionNumber || '—'}</td>
+                          <td className="px-4 py-3.5 font-mono text-sm text-gray-600 whitespace-nowrap">{r.referenceNumber || '—'}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.accountName || '—'}</td>
                           <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.branchName || '—'}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.kind === 'loading' ? 'Loading' : r.direction === 'in' ? 'Cash-in' : 'Cash-out'}</td>
@@ -1483,7 +1498,7 @@ export default function Reports() {
                     {reportData.rows.length > 0 && (
                       <tfoot className="bg-gray-50 border-t border-gray-200">
                         <tr>
-                          <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap" colSpan={7}>Total income</td>
+                          <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap" colSpan={8}>Total income</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.totalIncome || 0)}</td>
                           <td />
                         </tr>
