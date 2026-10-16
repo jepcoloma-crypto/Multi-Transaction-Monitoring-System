@@ -205,21 +205,25 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
       borrowParams,
     );
 
-    // Income earned on the non-cash accounts — the same figure Reports → Income
-    // totals as `totalIncome`, scoped to accounts whose type is not cash.
+    // Total income — the same figure Reports → Income totals as `totalIncome` —
+    // split by where the fee lands. A fee charged on top of the amount was
+    // handed over as separate cash, so it lands in the till (drawer); a fee
+    // inside the amount rides the receiving account's balance (non-cash).
+    // Loading margin is earned on the non-cash loading accounts and rides with
+    // the inside fees, so the two figures sum back to totalIncome.
     //
     // Kept beside the drawer figures rather than folded into `totals`: fee
     // income is not a separate credit in the ledger, so adding it to the
     // statement's totals would break the opening-plus-sources-minus-uses
     // identity the statement exists to tie out (the same reason it is excluded
-    // above). It answers a different question — how much the wallets, banks and
-    // loading accounts *earned*, not what they *hold* — so it sits beside the
-    // balance like `borrowingsOutstanding` does, not inside it.
+    // above). They answer a different question — how much was *earned*, not
+    // what is *held* — so they sit beside the balance like
+    // `borrowingsOutstanding` does, not inside it.
     //
     // The fee and margin definitions mirror `loadIncomeReport` in
     // routes/reports.ts (completed transaction fees excluding provider
     // expenses, plus completed loading margin). The two must stay in step or
-    // this card and Reports → Income would disagree about the same peso.
+    // these figures and Reports → Income would disagree about the same peso.
     const incParams: any[] = [];
     let incPi = 1;
 
@@ -236,14 +240,19 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     if (incScope.clause) { incConds.push(incScope.clause); incParams.push(...incScope.params); incPi = incScope.paramIndex; }
     if (branchFilter) { incConds.push(`a.branch_id = $${incPi++}`); incParams.push(branchFilter); }
 
-    const incRow = await queryOne<{ txn_fees: string; load_margin: string }>(
-      `SELECT COALESCE(SUM(txn.fees), 0) AS txn_fees,
+    // `fee_added_to_balance IS NOT FALSE` reads as fee-on-top (a null is read
+    // the same way amountFields does — anything but false is on top), so the
+    // two filters partition every fee and the figures sum back to totalIncome.
+    const incRow = await queryOne<{ fee_on_top: string; fee_inside: string; load_margin: string }>(
+      `SELECT COALESCE(SUM(txn.fee_on_top), 0) AS fee_on_top,
+              COALESCE(SUM(txn.fee_inside), 0) AS fee_inside,
               COALESCE(SUM(ld.margin), 0) AS load_margin
        FROM accounts a
        JOIN account_types at ON at.id = a.account_type_id
        LEFT JOIN (
          SELECT t.account_id,
-                COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed'), 0) AS fees
+                COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed' AND t.fee_added_to_balance IS NOT FALSE), 0) AS fee_on_top,
+                COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed' AND t.fee_added_to_balance IS FALSE), 0) AS fee_inside
          FROM transactions t
          JOIN transaction_types tt ON tt.id = t.transaction_type_id
          WHERE ${txnIncConds.join(' AND ')}
@@ -258,7 +267,8 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
        WHERE ${incConds.join(' AND ')}`,
       incParams,
     );
-    const nonCashIncome = Math.round((num(incRow?.txn_fees) + num(incRow?.load_margin)) * 100) / 100;
+    const drawerIncome = Math.round(num(incRow?.fee_on_top) * 100) / 100;
+    const nonCashIncome = Math.round((num(incRow?.fee_inside) + num(incRow?.load_margin)) * 100) / 100;
 
     res.json({
       success: true,
@@ -289,11 +299,14 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
         // of the opening-plus-sources-minus-uses identity, and folding it in
         // would break the tie-out the statement exists to satisfy.
         borrowingsOutstanding: num(borrowRow?.outstanding),
-        // Income earned on the non-cash accounts (wallets, banks, loading),
-        // beside the balance rather than inside it — the statement's `totals`
-        // stay a pure movement identity, and this says how much of what those
-        // accounts hold was earned rather than funded. Same figure as Reports
-        // → Income's totalIncome, scoped to non-cash account types.
+        // Income that landed in the till: fees charged on top of the amount,
+        // handed over as separate cash. Beside the drawer figure rather than
+        // inside it — this is what was *earned*, not what is *held*.
+        drawerIncome,
+        // Income that rode the non-cash accounts' balances: fees inside the
+        // amount, plus loading margin. Beside the balance rather than inside
+        // it, for the same reason. `drawerIncome + nonCashIncome` equals
+        // Reports → Income's totalIncome.
         nonCashIncome,
         // Served beside the drawer figure for the same reason: the expense form
         // on this page has to say what the books will do, and the create route
