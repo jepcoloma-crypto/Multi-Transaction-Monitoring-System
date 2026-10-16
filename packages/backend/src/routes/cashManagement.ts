@@ -205,6 +205,61 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
       borrowParams,
     );
 
+    // Income earned on the non-cash accounts — the same figure Reports → Income
+    // totals as `totalIncome`, scoped to accounts whose type is not cash.
+    //
+    // Kept beside the drawer figures rather than folded into `totals`: fee
+    // income is not a separate credit in the ledger, so adding it to the
+    // statement's totals would break the opening-plus-sources-minus-uses
+    // identity the statement exists to tie out (the same reason it is excluded
+    // above). It answers a different question — how much the wallets, banks and
+    // loading accounts *earned*, not what they *hold* — so it sits beside the
+    // balance like `borrowingsOutstanding` does, not inside it.
+    //
+    // The fee and margin definitions mirror `loadIncomeReport` in
+    // routes/reports.ts (completed transaction fees excluding provider
+    // expenses, plus completed loading margin). The two must stay in step or
+    // this card and Reports → Income would disagree about the same peso.
+    const incParams: any[] = [];
+    let incPi = 1;
+
+    const txnIncConds: string[] = [`t.status IN ('completed', 'reversed')`, `tt.code <> 'expense'`];
+    if (start) { txnIncConds.push(`t.transaction_date >= $${incPi++}`); incParams.push(start); }
+    if (end) { txnIncConds.push(`t.transaction_date < ($${incPi++}::date + INTERVAL '1 day')`); incParams.push(end); }
+
+    const ldIncConds: string[] = [`lt.status = 'completed'`];
+    if (start) { ldIncConds.push(`lt.created_at >= $${incPi++}`); incParams.push(start); }
+    if (end) { ldIncConds.push(`lt.created_at < ($${incPi++}::date + INTERVAL '1 day')`); incParams.push(end); }
+
+    const incConds: string[] = [`at.code <> 'cash'`];
+    const incScope = branchClause(req, 'a', 'accounts.read_all', incPi, 'self');
+    if (incScope.clause) { incConds.push(incScope.clause); incParams.push(...incScope.params); incPi = incScope.paramIndex; }
+    if (branchFilter) { incConds.push(`a.branch_id = $${incPi++}`); incParams.push(branchFilter); }
+
+    const incRow = await queryOne<{ txn_fees: string; load_margin: string }>(
+      `SELECT COALESCE(SUM(txn.fees), 0) AS txn_fees,
+              COALESCE(SUM(ld.margin), 0) AS load_margin
+       FROM accounts a
+       JOIN account_types at ON at.id = a.account_type_id
+       LEFT JOIN (
+         SELECT t.account_id,
+                COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed'), 0) AS fees
+         FROM transactions t
+         JOIN transaction_types tt ON tt.id = t.transaction_type_id
+         WHERE ${txnIncConds.join(' AND ')}
+         GROUP BY t.account_id
+       ) txn ON txn.account_id = a.id
+       LEFT JOIN (
+         SELECT lt.account_id, COALESCE(SUM(lt.profit), 0) AS margin
+         FROM loading_transactions lt
+         WHERE ${ldIncConds.join(' AND ')}
+         GROUP BY lt.account_id
+       ) ld ON ld.account_id = a.id
+       WHERE ${incConds.join(' AND ')}`,
+      incParams,
+    );
+    const nonCashIncome = Math.round((num(incRow?.txn_fees) + num(incRow?.load_margin)) * 100) / 100;
+
     res.json({
       success: true,
       data: {
@@ -234,6 +289,12 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
         // of the opening-plus-sources-minus-uses identity, and folding it in
         // would break the tie-out the statement exists to satisfy.
         borrowingsOutstanding: num(borrowRow?.outstanding),
+        // Income earned on the non-cash accounts (wallets, banks, loading),
+        // beside the balance rather than inside it — the statement's `totals`
+        // stay a pure movement identity, and this says how much of what those
+        // accounts hold was earned rather than funded. Same figure as Reports
+        // → Income's totalIncome, scoped to non-cash account types.
+        nonCashIncome,
         // Served beside the drawer figure for the same reason: the expense form
         // on this page has to say what the books will do, and the create route
         // decides that from this number. The operator role holds no

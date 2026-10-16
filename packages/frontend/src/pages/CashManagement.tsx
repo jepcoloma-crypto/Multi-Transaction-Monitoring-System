@@ -52,6 +52,11 @@ interface Statement {
   frozenCashAccounts?: string;
   expenseApprovalThreshold?: number;
   borrowingsOutstanding?: number;
+  // Income earned on the non-cash accounts (wallets, banks, loading), served
+  // beside the balance rather than inside it — the statement's `totals` stay a
+  // pure movement identity, and this is how much of what those accounts hold
+  // was earned rather than funded. Same figure as Reports → Income.
+  nonCashIncome?: number;
 }
 
 interface Shift {
@@ -1445,6 +1450,24 @@ export default function CashManagement() {
                 </div>
                 <p className="text-2xl font-bold mt-2 tabular-nums">{formatCurrency(nonCashOnBooks)}</p>
                 <p className="text-sm text-gray-500">Banks and e-wallets — total less the drawer</p>
+              </div>
+            )}
+
+            {/* How much of the non-cash side was earned rather than funded:
+                transaction fees plus loading margin booked to wallets, banks
+                and loading accounts, all-time like the balance beside it. Kept
+                out of `totals` for the same reason the statement keeps income
+                out of Sources & Uses — it is not a movement of cash the drawer
+                has to reconcile — and it is the same figure Reports → Income
+                totals, so the two screens cannot disagree about the same peso. */}
+            {statement?.nonCashIncome !== undefined && (
+              <div className="card">
+                <div className="flex items-center gap-2 text-emerald-600">
+                  <TrendingUp className="w-4 h-4" />
+                  <p className="text-xs font-semibold uppercase tracking-wide">Income (non-cash)</p>
+                </div>
+                <p className="text-2xl font-bold mt-2 tabular-nums text-emerald-600">{formatCurrency(statement.nonCashIncome)}</p>
+                <p className="text-sm text-gray-500">Fees and loading margin earned by wallets, banks and loading</p>
               </div>
             )}
 
