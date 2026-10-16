@@ -6,6 +6,7 @@ import { branchClause, assertBranch, resolveBranchFilter } from '../middleware/s
 import { auditLedger } from '../services/ledgerAudit';
 import { buildReversalReport, reversalReason } from '../services/reversalReport';
 import { buildIncomeReport, buildIncomeDetail, type IncomeReport } from '../services/incomeReport';
+import { buildCashTransactionsReport, type CashTransactionsReport } from '../services/cashTransactionsReport';
 import { buildExpenseReport, buildExpenseDetail, type ExpenseReport, type ExpenseDetail } from '../services/expenseReport';
 import { statementReversal } from '../services/statementReversal';
 import { isFeeLedgerRow } from '../services/cashManagement';
@@ -1323,6 +1324,108 @@ router.get('/expense-detail', authorize('reports.read'), async (req: Request, re
   } catch (error) { next(error); }
 });
 
+// A cash-transactions report: every completed cash-in/out movement that charged
+// a fee, plus every completed loading sale, broken out by where the income
+// lands. It is the row-level detail behind the dashboard's two income cards —
+// on-top fees and loading margin are cash-on-hand money, inside fees are
+// non-cash — and is scoped the same way Reports → Income scopes it (completed,
+// non-cash account, branch-scoped) so its totals tie out to those cards rather
+// than disagreeing about the same peso.
+//
+// A loading sale is not a transaction; it lives in `loading_transactions`. The
+// two record types are loaded separately because they come from different
+// tables with different date columns and different read scopes, then combined
+// by the pure service that also sums the summary — so the figures above the
+// list are, by construction, that list added up.
+type CashTransactionsFilters = { startDate?: unknown; endDate?: unknown; branchId?: string | null };
+
+const loadCashTransactionsReport = async (
+  req: Request,
+  filters: CashTransactionsFilters,
+): Promise<{ period: { startDate: string | null; endDate: string | null } } & CashTransactionsReport> => {
+  const { startDate, endDate, branchId } = filters;
+
+  // Cash movements. `at.code <> 'cash'` mirrors the income report — a movement
+  // on the drawer's own account is not income — and every fee-bearing movement
+  // in this deployment sits on a bank or e-wallet account, so it admits all of
+  // them. `fee > 0` keeps the list to rows that actually carry a fee mode; a
+  // zero-fee movement has no on-top/inside to show and would only pad the list.
+  const cashConds: string[] = [
+    `t.status = 'completed'`,
+    `tt.direction IN ('in', 'out')`,
+    `at.code <> 'cash'`,
+    `COALESCE(t.fee, 0) > 0`,
+  ];
+  const cashParams: any[] = [];
+  let cpi = 1;
+  if (startDate) { cashConds.push(`t.transaction_date >= $${cpi++}`); cashParams.push(startDate); }
+  if (endDate) { cashConds.push(`t.transaction_date < ($${cpi++}::date + INTERVAL '1 day')`); cashParams.push(endDate); }
+  const cashScope = branchClause(req, 't', 'transactions.read_all', cpi, 'account', branchId ?? null);
+  if (cashScope.clause) { cashConds.push(cashScope.clause); cashParams.push(...cashScope.params); }
+
+  const cashRows = await query(
+    `SELECT t.id, t.transaction_number, t.transaction_date, t.amount, t.fee,
+            t.fee_added_to_balance, tt.direction, tt.name AS type_name,
+            a.name AS account_name, b.name AS branch_name
+     FROM transactions t
+     JOIN transaction_types tt ON tt.id = t.transaction_type_id
+     JOIN accounts a ON a.id = t.account_id
+     JOIN account_types at ON at.id = a.account_type_id
+     LEFT JOIN branches b ON b.id = a.branch_id
+     WHERE ${cashConds.join(' AND ')}
+     ORDER BY t.transaction_date DESC`,
+    cashParams,
+  );
+
+  // Loading sales — the other way cash reaches the drawer. Their income is the
+  // margin, not a fee, so the service tags them `loading` rather than a mode.
+  const ldConds: string[] = [`lt.status = 'completed'`, `at.code <> 'cash'`];
+  const ldParams: any[] = [];
+  let lpi = 1;
+  if (startDate) { ldConds.push(`lt.created_at >= $${lpi++}`); ldParams.push(startDate); }
+  if (endDate) { ldConds.push(`lt.created_at < ($${lpi++}::date + INTERVAL '1 day')`); ldParams.push(endDate); }
+  const ldScope = branchClause(req, 'lt', 'loading.read_all', lpi, 'account', branchId ?? null);
+  if (ldScope.clause) { ldConds.push(ldScope.clause); ldParams.push(...ldScope.params); }
+
+  const loadingRows = await query(
+    `SELECT lt.id, lt.transaction_number, lt.created_at, lt.total_revenue, lt.profit,
+            lp.name AS product_name, a.name AS account_name, b.name AS branch_name
+     FROM loading_transactions lt
+     JOIN loading_products lp ON lp.id = lt.product_id
+     JOIN accounts a ON a.id = lt.account_id
+     JOIN account_types at ON at.id = a.account_type_id
+     LEFT JOIN branches b ON b.id = a.branch_id
+     WHERE ${ldConds.join(' AND ')}
+     ORDER BY lt.created_at DESC`,
+    ldParams,
+  );
+
+  const report = buildCashTransactionsReport(cashRows, loadingRows);
+
+  // The period an operator picked, read back in Manila. Slicing the instant
+  // would print the UTC day — one day early for both ends — so a report filed
+  // under the wrong period would look perfectly well-formed while naming a
+  // range it never ran.
+  return {
+    period: {
+      startDate: startDate ? manilaDateKey(new Date(String(startDate))) : null,
+      endDate: endDate ? manilaDateKey(new Date(String(endDate))) : null,
+    },
+    ...report,
+  };
+};
+
+router.get('/cash-transactions', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const report = await loadCashTransactionsReport(req, {
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      branchId: await resolveBranchFilter(req, req.query.branchId),
+    });
+    res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
 type ExportColumn = { header: string; key: string };
 
 const csvCell = (value: unknown): string => {
@@ -1655,8 +1758,38 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
           variance: report.summary.totalVariance.toFixed(2),
         };
       }
+    } else if (type === 'cash-transactions' || type === 'cash') {
+      const report = await loadCashTransactionsReport(req, { startDate, endDate, branchId });
+      data = report.rows.map((r) => ({
+        day: r.day ?? '',
+        reference: r.reference ?? '',
+        account_name: r.accountName ?? '',
+        branch_name: r.branchName ?? '',
+        kind: r.kind === 'loading' ? 'Loading' : r.direction === 'in' ? 'Cash-in' : 'Cash-out',
+        description: r.description ?? '',
+        amount: r.amount.toFixed(2),
+        income: r.income.toFixed(2),
+        handling: r.incomeType === 'on-top' ? 'On top' : r.incomeType === 'inside' ? 'Inside' : 'Loading margin',
+      }));
+      columns = [
+        { header: 'Date', key: 'day' },
+        { header: 'Reference', key: 'reference' },
+        { header: 'Account', key: 'account_name' },
+        { header: 'Branch', key: 'branch_name' },
+        { header: 'Kind', key: 'kind' },
+        { header: 'Description', key: 'description' },
+        { header: 'Amount', key: 'amount' },
+        { header: 'Income', key: 'income' },
+        { header: 'Handling', key: 'handling' },
+      ];
+      if (data.length > 0) {
+        csvTotals = {
+          day: 'TOTAL',
+          income: report.summary.totalIncome.toFixed(2),
+        };
+      }
     } else {
-      return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger, reversals, shifts' } });
+      return res.status(400).json({ success: false, error: { message: 'Invalid export type. Use: transactions, transfers, loading, ledger, reversals, shifts, income, expense, cash-transactions' } });
     }
 
     if (fmt === 'csv') {

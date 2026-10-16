@@ -9,7 +9,7 @@ import { CashStatementPanel } from '../components/CashStatement';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement' | 'cash-transactions';
 
 // One report module, two tabs. They are separate queries with separate
 // endpoints rather than one payload split in the browser: the income side
@@ -217,6 +217,7 @@ export default function Reports() {
       case 'reversal-report': return 'reversals';
       case 'shift-report': return 'shifts';
       case 'income-expense': return incomeExpenseTab === 'income' ? 'income' : 'expense';
+      case 'cash-transactions': return 'cash-transactions';
       default: return null;
     }
   };
@@ -284,6 +285,7 @@ export default function Reports() {
     { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
     { id: 'shift-report' as ReportType, name: 'Shift & Cash Count', icon: Coins, desc: 'Drawer counts per shift: float, expected vs counted, and variance' },
     { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, in two tabs' },
+    { id: 'cash-transactions' as ReportType, name: 'Cash Transactions', icon: Coins, desc: 'Cash-in/out and loading sales, split by fee on top vs inside' },
     { id: 'cash-statement' as ReportType, name: 'Sources & Uses', icon: Scale, desc: 'Opening + sources − uses = closing for a period, per branch' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
   ];
@@ -1406,6 +1408,91 @@ export default function Reports() {
             </div>
           ) : activeReport === 'cash-statement' && reportData.branches ? (
             <CashStatementPanel statement={reportData} branchId={filters.branchId} />
+          ) : activeReport === 'cash-transactions' && reportData.rows ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm print:grid-cols-4">
+                <div className="card">
+                  <p className="text-gray-500">Fee on top</p>
+                  <p className="text-2xl font-bold mt-1 text-amber-600">{formatCurrency(reportData.summary?.feeOnTop?.total || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.feeOnTop?.count || 0} transactions · charged on top → cash on hand</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Fee inside</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.summary?.feeInside?.total || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.feeInside?.count || 0} transactions · deducted inside → non-cash</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Loading margin</p>
+                  <p className="text-2xl font-bold mt-1 text-amber-600">{formatCurrency(reportData.summary?.loadingMargin?.total || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.loadingMargin?.count || 0} sales · selling-price margin → cash on hand</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Total income</p>
+                  <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.totalIncome || 0)}</p>
+                  <p className="text-sm text-gray-500">On top + inside + loading</p>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Cash Transactions</h4>
+                  <p className="text-xs text-gray-500">
+                    {(reportData.summary?.feeOnTop?.count || 0) + (reportData.summary?.feeInside?.count || 0)} cash movements · {reportData.summary?.loadingMargin?.count || 0} loading sales · newest first
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1100px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">#</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Kind</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Income</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Handling</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.rows.length === 0 ? (
+                        <tr><td colSpan={9} className="px-4 py-8 text-center text-sm text-gray-500">No cash movements or loading sales for these filters.</td></tr>
+                      ) : reportData.rows.map((r: any) => (
+                        <tr key={`${r.kind}-${r.id}`} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.day ? dateKeyLabel(r.day) : '—'}</td>
+                          <td className="px-4 py-3.5 font-mono text-sm whitespace-nowrap">{r.reference || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.accountName || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.branchName || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.kind === 'loading' ? 'Loading' : r.direction === 'in' ? 'Cash-in' : 'Cash-out'}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.description || '—'}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono text-gray-600">{formatCurrency(r.amount)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(r.income)}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                              r.incomeType === 'on-top' ? 'bg-amber-100 text-amber-700'
+                              : r.incomeType === 'inside' ? 'bg-green-100 text-green-700'
+                              : 'bg-blue-100 text-blue-700'
+                            }`}>
+                              {r.incomeType === 'on-top' ? 'On top' : r.incomeType === 'inside' ? 'Inside' : 'Loading margin'}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {reportData.rows.length > 0 && (
+                      <tfoot className="bg-gray-50 border-t border-gray-200">
+                        <tr>
+                          <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap" colSpan={7}>Total income</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.totalIncome || 0)}</td>
+                          <td />
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                </div>
+              </div>
+            </div>
           ) : null}
         </div>
       </div>
