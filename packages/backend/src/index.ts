@@ -10,6 +10,7 @@ import { requestLogger } from './middleware/logging';
 import { errorHandler } from './middleware/error';
 import { sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security';
 import routes from './routes';
+import { startAlertScheduler } from './services/scheduler';
 
 const app = express();
 
@@ -91,6 +92,13 @@ async function startServer() {
       console.log(`Environment: ${config.nodeEnv}`);
       console.log(`API available at http://localhost:${config.port}/api`);
     });
+
+    // Started here rather than at module load so a failed database connection
+    // exits before anything begins polling it. pm2 runs this app as a single
+    // instance, so an in-process interval cannot double-fire — that stops
+    // being true if `instances` is ever raised, and the scheduler would then
+    // need a lock rather than this comment.
+    startAlertScheduler();
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
