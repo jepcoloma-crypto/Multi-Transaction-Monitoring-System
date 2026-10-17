@@ -152,6 +152,31 @@ test('a charge the provider bills us is a second row, and only on money moving i
   );
 });
 
+test('an Adjustment Out debits the account it lands on; an Adjustment In credits it', () => {
+  // Both carry direction 'adjustment' — the type family — so the code carries
+  // the sign. Booked on the drawer itself (the cash-event form's shape: no
+  // method typed, the cash account answering for it), the till's own row is
+  // the movement: an Adjustment Out is the ₱20 that brings an overstated
+  // drawer down, and planning it off the family value would have credited
+  // that ₱20 IN instead.
+  const out = walletPlan({
+    direction: 'adjustment',
+    code: 'adjustment_out',
+    accountTypeCode: 'cash',
+    amount: 20,
+    fee: 0,
+    paymentMethod: undefined as unknown as string,
+  });
+  assert.deepEqual(out.problems, []);
+  assert.equal(out.paymentMethod, 'cash', "the drawer's own account answers the tender question");
+  assert.equal(out.entryType, 'debit', 'the drawer hands the money out');
+  assert.equal(out.cashBehavior, 'out', 'the badge reads: cash leaves the drawer');
+  assert.equal(out.finalStatus, 'completed', 'an adjustment is not one of the controlled types — it settles at once');
+
+  const intoWallet = walletPlan({ direction: 'adjustment', code: 'adjustment_in', amount: 20, fee: 0 });
+  assert.equal(intoWallet.entryType, 'credit', 'money in still credits the account it lands on');
+});
+
 test('a charge cannot ride on a row that waits for approval', () => {
   const plan = walletPlan({ code: 'operating_expense', amount: 50000, providerCharge: 25 });
 

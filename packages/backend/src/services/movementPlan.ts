@@ -193,7 +193,15 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
     }
   }
 
-  const entryType = entryTypeFor(input.direction);
+  // The adjustment pair shares one direction value — the family says
+  // "adjustment", not which way — so the code has to carry the sign: an
+  // Adjustment In credits the account it lands on, an Adjustment Out debits
+  // it. Planning both off the family value booked every adjustment as money
+  // in, which would have put cash INTO the drawer an "Adjustment Out" is
+  // meant to take it out of. The reversal flow writes its own rows (mirroring
+  // the original) and never asks this question; the entry route, its preview
+  // and the cash-event form do.
+  const entryType = input.code === 'adjustment_out' ? 'debit' : entryTypeFor(input.direction);
   const net = netAmountOf({
     direction: input.direction,
     amount: input.amount,

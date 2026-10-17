@@ -221,11 +221,12 @@ const emptyForm = {
 
 // Cash events the entry form has no path to. That form picks its type from the
 // fee rule it runs, so anything without a fee is unreachable from there — and
-// these five move physical cash while carrying none.
+// these all move physical cash while carrying none.
 //
 // Curated rather than every type on the server: a picker offering all nineteen
 // would hand straight back the free choice that fee rules and D3 exist to
-// avoid. Each one here is a real counter event with no fee and no other form.
+// avoid. Each one here has no fee and no other form: a counter event, or a
+// correction the drawer itself has to carry.
 const CASH_EVENT_TYPES = [
   {
     code: 'loan_received',
@@ -251,6 +252,11 @@ const CASH_EVENT_TYPES = [
     code: 'refund_received',
     label: 'Refund received back',
     hint: 'Money returned to the company by a provider or partner.',
+  },
+  {
+    code: 'adjustment_out',
+    label: 'Adjustment out',
+    hint: 'A correction taken out of the drawer: for a figure that overstated what the till holds \u2014 a reversal that handed back more than the original ever moved. Booked on the drawer (the form\u2019s default), it files under Adjustments and is never spending.',
   },
 ] as const;
 
