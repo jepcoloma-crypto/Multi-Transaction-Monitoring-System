@@ -150,11 +150,16 @@ test('a branch with no activity at all still reports a balanced zero statement',
   assert.equal(statement.totals.balanced, true);
 });
 
-test('only the four money-through-the-drawer codes count as cash movements', () => {
+test('only the money-through-the-drawer codes count as cash movements', () => {
   assert.equal(isCashMovement('cash_in'), true);
   assert.equal(isCashMovement('cash_out'), true);
   assert.equal(isCashMovement('customer_payment'), true);
   assert.equal(isCashMovement('customer_withdrawal'), true);
+  // A bills payment settled at the counter hands cash across the drawer — the
+  // wallet pays the biller and the till keeps the customer's money. Declared
+  // method-less there was nowhere for its drawer side to come from, so the leg
+  // (amount, charges and fee) vanished while the wallet still paid out.
+  assert.equal(isCashMovement('bill_payment'), true);
 
   // These move money between accounts rather than through them, so asking the
   // operator how the cash was handed over would be a meaningless question.
@@ -169,7 +174,7 @@ test('import refuses a cash movement rather than inventing a tender', () => {
   // A CSV row has nowhere to declare how the money changed hands, and import
   // sits outside the shift gate as well. Both are enforced by the entry form,
   // so the refusal has to land before any row, balance or ledger entry exists.
-  const codes = ['cash_in', 'cash_out', 'customer_payment', 'customer_withdrawal'];
+  const codes = ['cash_in', 'cash_out', 'customer_payment', 'customer_withdrawal', 'bill_payment'];
   for (const code of codes) {
     const reason = importTypeRefusal(code);
     assert.notEqual(reason, null, `${code} would be imported undeclared`);
@@ -179,7 +184,7 @@ test('import refuses a cash movement rather than inventing a tender', () => {
 });
 
 test('import still accepts every type that needs no tender', () => {
-  for (const code of ['owner_funding', 'owner_return', 'operating_expense', 'transfer_in', 'transfer_out', 'bill_payment', 'adjustment_in', 'load_purchase', null, undefined, '']) {
+  for (const code of ['owner_funding', 'owner_return', 'operating_expense', 'transfer_in', 'transfer_out', 'adjustment_in', 'load_purchase', null, undefined, '']) {
     assert.equal(importTypeRefusal(code), null, `${String(code)} should import`);
   }
 });
@@ -188,7 +193,7 @@ test('every cash movement code reports into the customer cash bucket', () => {
   // The two vocabularies are declared independently, so this is the check that
   // they still agree: a movement asked for a payment method had better be one
   // of the rows counted as money moving through the branch.
-  const codes = ['cash_in', 'cash_out', 'customer_payment', 'customer_withdrawal'];
+  const codes = ['cash_in', 'cash_out', 'customer_payment', 'customer_withdrawal', 'bill_payment'];
   for (const code of codes) {
     assert.equal(isCashMovement(code), true, `${code} is no longer a cash movement`);
     assert.equal(bucketFor('transaction', code), 'customer_cash', `${code} left the cash bucket`);
@@ -728,12 +733,22 @@ test('cash expenses count only the rows where the company was the party that pai
   const rows = [
     toCashRecordRow(raw({ id: 'e1', amount: '1045.00' })),                          // operating_expenses
     toCashRecordRow(raw({ id: 'e2', amount: '30.00', txn_code: 'expense' })),       // provider_charges
-    toCashRecordRow(raw({ id: 'e3', amount: '50.00', txn_code: 'bill_payment' })),  // payments
+    toCashRecordRow(raw({ id: 'e3', amount: '50.00', txn_code: 'refund' })),          // payments
     toCashRecordRow(raw({ id: 'x1', amount: '200000.00', txn_code: 'owner_return' })),
     toCashRecordRow(raw({ id: 'x2', amount: '7220.00', txn_code: 'cash_out' })),
     toCashRecordRow(raw({ id: 'x3', amount: '1500.00', txn_code: 'transfer_out' })),
   ];
   assert.equal(cashExpenseTotal(rows), '1125.00');
+});
+
+test('a bills payment collected at the counter is never company spending', () => {
+  // The drawer row of a bills payment is the customer's own money arriving —
+  // the wallet paid the biller, the till kept the cash — so filing it under
+  // "Payments & Bills" would report money the company received as money the
+  // company spent. Cash leaving the drawer to settle a bill of the company's
+  // own has `cash_payment`, whose bucket sits outside the expense total.
+  const row = toCashRecordRow(raw({ id: 'bp1', amount: '4181.00', txn_code: 'bill_payment' }));
+  assert.equal(cashExpenseTotal([row]), '0.00');
 });
 
 test('money coming back through an expense bucket is not counted as spending', () => {
@@ -838,7 +853,7 @@ test('a cash payment leaves the drawer and is never counted as an expense', () =
   const rows = [
     toCashRecordRow(raw({ id: 'p1', amount: '5000.00', txn_code: 'cash_payment' })),
     toCashRecordRow(raw({ id: 'e1', amount: '1045.00' })),                          // operating_expenses
-    toCashRecordRow(raw({ id: 'e2', amount: '50.00', txn_code: 'bill_payment' })),  // payments
+    toCashRecordRow(raw({ id: 'e2', amount: '50.00', txn_code: 'refund' })),          // payments
   ];
   assert.equal(cashExpenseTotal(rows), '1095.00');
   assert.equal(

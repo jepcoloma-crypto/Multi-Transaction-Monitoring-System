@@ -113,6 +113,18 @@ test('a cash movement with no tender is refused, naming the tenders that count',
   ]);
 });
 
+test('a bills payment with no tender is refused the same way', () => {
+  // The entry form's half of the drawer rule: settling a bill at the counter
+  // has to say how the money changed hands, or the drawer side of it has
+  // nothing to be computed from — that silence is how a counter payment
+  // posted the wallet leg and lost the till's ₱4,181.
+  const plan = walletPlan({ code: 'bill_payment', direction: 'out', paymentMethod: null });
+
+  assert.deepEqual(plan.problems, [
+    'A bill payment needs a payment method: cash, gcash, bank, maya',
+  ]);
+});
+
 test('a tender the system does not know is refused rather than posted blind', () => {
   const plan = walletPlan({ paymentMethod: 'bitcoin' });
 

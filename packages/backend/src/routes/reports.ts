@@ -1378,7 +1378,17 @@ const loadCashTransactionsReport = async (
   const cashRows = await query(
     `SELECT t.id, t.transaction_number, t.reference_number, t.transaction_date, t.amount, t.fee,
             t.fee_added_to_balance, tt.direction, tt.name AS type_name,
-            a.name AS account_name, b.name AS branch_name
+            a.name AS account_name, b.name AS branch_name,
+            -- The charges folded into this movement's amount, pre-summed the
+            -- way the income report pre-sums them (same numeric regex guard, so
+            -- a malformed entry reads as nothing rather than throwing). This is
+            -- the customer's own money passing through — reference only, never
+            -- counted beside the fee.
+            (SELECT COALESCE(SUM(CASE WHEN (c->>'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (c->>'amount')::numeric END), 0)
+             FROM jsonb_array_elements(
+               CASE WHEN jsonb_typeof(t.additional_charges) = 'array'
+                    THEN t.additional_charges ELSE '[]'::jsonb END
+             ) c) AS additional_charges
      FROM transactions t
      JOIN transaction_types tt ON tt.id = t.transaction_type_id
      JOIN accounts a ON a.id = t.account_id
@@ -1790,6 +1800,7 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         kind: r.kind === 'loading' ? 'Loading' : r.direction === 'in' ? 'Cash-in' : 'Cash-out',
         description: r.description ?? '',
         amount: r.amount.toFixed(2),
+        charges: r.charges.toFixed(2),
         income: r.income.toFixed(2),
         handling: r.incomeType === 'on-top' ? 'On top' : r.incomeType === 'inside' ? 'Inside' : 'Loading margin',
       }));
@@ -1802,12 +1813,14 @@ router.get('/export/:type', authorize('reports.read'), async (req: Request, res:
         { header: 'Kind', key: 'kind' },
         { header: 'Description', key: 'description' },
         { header: 'Amount', key: 'amount' },
+        { header: 'Additional Charges', key: 'charges' },
         { header: 'Income', key: 'income' },
         { header: 'Handling', key: 'handling' },
       ];
       if (data.length > 0) {
         csvTotals = {
           day: 'TOTAL',
+          charges: report.summary.charges.toFixed(2),
           income: report.summary.totalIncome.toFixed(2),
         };
       }

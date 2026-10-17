@@ -57,6 +57,30 @@ test('fees split by mode and the three income types sum to totalIncome', () => {
   );
 });
 
+test('charges ride the row as reference and never join the income total', () => {
+  // A charge folded into the amount (a Home Credit cut, say) is the customer's
+  // own money passing through the till: the report carries it for
+  // reconciliation, and not a peso of it may reach the income figures.
+  const source: CashSourceRow[] = [
+    cash({ id: 'c1', fee: '50.00', fee_added_to_balance: true, additional_charges: '15.00' }),
+    cash({ id: 'c2', fee: '40.00', fee_added_to_balance: false, additional_charges: '7.50' }),
+    cash({ id: 'c3', fee: '10.00' }),
+  ];
+
+  const { rows, summary } = buildCashTransactionsReport(source, [loading()]);
+
+  assert.equal(rows.find((row) => row.id === 'c1')?.charges, 15);
+  assert.equal(rows.find((row) => row.id === 'c2')?.charges, 7.5);
+  assert.equal(rows.find((row) => row.id === 'c3')?.charges, 0, 'a row with no charges reads zero, never NaN');
+  assert.equal(rows.find((row) => row.kind === 'loading')?.charges, 0, 'a loading sale carries no charges of its own');
+  assert.equal(summary.charges, 22.5, 'the summary is the rows added up');
+  assert.equal(summary.totalIncome, 167, '50 + 40 + 10 of fees plus the 67 margin — charges excluded');
+
+  const onTop = buildCashTransactionsReport(source, [loading()], 'on-top');
+  assert.equal(onTop.summary.charges, 15, 'the drill-down re-sums charges from the rows it shows');
+  assert.equal(onTop.summary.totalIncome, 60);
+});
+
 test('a fee mode the column never stated reads as on-top', () => {
   const { rows, summary } = buildCashTransactionsReport(
     [cash({ fee: '60.00', fee_added_to_balance: null })],

@@ -232,16 +232,19 @@ export const movementPaymentMethodOptions = [
   { value: 'maya', label: 'Maya' },
 ] as const;
 
-// The four movements where money can physically change hands. Listed here
-// rather than derived from the server's list for the same reason the
-// controlled movement codes are: adding a fifth has to touch both ends, and
-// cannot quietly desynchronise the client's offer from the rule the server
-// enforces.
+// The movements where money can physically change hands, and so the only ones
+// the form asks for a tender. Listed here rather than derived from the server's
+// list for the same reason the controlled movement codes are: adding one has to
+// touch both ends, and cannot quietly desynchronise the client's offer from the
+// rule the server enforces. A bills payment is here because settling one at the
+// counter hands cash across the drawer like any cash-out — method-less there
+// was nowhere for its drawer side to come from.
 export const cashMovementCodes = [
   'cash_in',
   'cash_out',
   'customer_payment',
   'customer_withdrawal',
+  'bill_payment',
 ] as const;
 
 export const isCashMovementCode = (code: string | null | undefined): boolean =>

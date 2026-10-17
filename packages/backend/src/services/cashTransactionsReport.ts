@@ -85,6 +85,9 @@ export interface CashSourceRow {
   type_name?: string | null;
   account_name?: string | null;
   branch_name?: string | null;
+  // The charges folded into `amount`, pre-summed by the query as a numeric
+  // (same guard the income report uses). Missing reads as zero.
+  additional_charges?: number | string | null;
 }
 
 export interface LoadingSourceRow {
@@ -122,6 +125,10 @@ export interface CashTransactionRow {
   // Cash: the movement amount. Loading: the selling price that reached the
   // drawer. Context beside the income, never summed into it.
   amount: number;
+  // The additional charges riding inside `amount` — the customer's own money
+  // (a Home Credit cut, say) that passed through rather than earned. Shown for
+  // reconciliation, deliberately outside every income figure below.
+  charges: number;
   // What the row earned the company: the fee (cash) or the margin (loading).
   income: number;
   incomeType: CashIncomeType;
@@ -132,6 +139,9 @@ export interface CashTransactionsSummary {
   feeInside: { total: number; count: number };
   loadingMargin: { total: number; count: number };
   totalIncome: number;
+  // Summed from the surviving rows like every other figure here — reference
+  // only, so `totalIncome` never carries a peso of it.
+  charges: number;
 }
 
 export interface CashTransactionsReport {
@@ -162,6 +172,7 @@ export function buildCashTransactionsReport(
         description: asText(row.type_name),
         direction: asText(row.direction),
         amount: money(toCents(row.amount)),
+        charges: money(toCents(row.additional_charges)),
         income: money(feeCents),
         incomeType,
       } satisfies CashTransactionRow;
@@ -180,6 +191,9 @@ export function buildCashTransactionsReport(
         description: asText(row.product_name),
         direction: null,
         amount: money(toCents(row.total_revenue)),
+        // A loading sale has no `additional_charges` of its own — the product's
+        // company charge is already priced into the revenue above.
+        charges: 0,
         income: money(marginCents),
         incomeType: 'loading',
       } satisfies CashTransactionRow;
@@ -214,8 +228,10 @@ export function buildCashTransactionsReport(
   let insideCount = 0;
   let loadingCents = 0;
   let loadingCount = 0;
+  let chargesCents = 0;
   for (const row of rows) {
     const cents = toCents(row.income);
+    chargesCents += toCents(row.charges);
     if (row.incomeType === 'on-top') {
       onTopCents += cents;
       onTopCount += 1;
@@ -239,6 +255,7 @@ export function buildCashTransactionsReport(
       // earned and never double-counts a peso. This is the figure the
       // dashboard's two cards add back to.
       totalIncome: money(onTopCents + insideCents + loadingCents),
+      charges: money(chargesCents),
     },
   };
 }

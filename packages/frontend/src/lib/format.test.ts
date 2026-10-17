@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, shiftDaysLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel, floatAgainstBooks, transactionTypeLabel, cashBehaviorLabel } from './format';
+import { manilaDayLabel, manilaDateTimeLabel, manilaClockLabel, manilaDateTimeValue, manilaInputToIso, dateKeyLabel, shiftDaysLabel, cashOnHandNote, paymentMethodCell, paymentMethodLabel, floatAgainstBooks, transactionTypeLabel, cashBehaviorLabel, isCashMovementCode } from './format';
 
 // Manila is UTC+8 all year — no DST — so these boundaries are stable.
 const justAfterManilaMidnight = '2026-10-04T16:30:00.000Z'; // 00:30 on 5 Oct in Manila
@@ -223,6 +223,28 @@ describe('transactionTypeLabel', () => {
     expect(transactionTypeLabel('expense', undefined)).toBe('expense');
     expect(transactionTypeLabel(null, 'Refund')).toBe('Refund');
     expect(transactionTypeLabel(null, null)).toBe('');
+  });
+});
+
+describe('isCashMovementCode', () => {
+  // The client mirror of the server's drawer rule: a movement the form must
+  // ask a tender for. A bills payment settled at the counter hands cash across
+  // the drawer like any cash-out, so it belongs — declared method-less its
+  // drawer leg had nowhere to come from.
+  it('asks a tender for every movement the server counts as one', () => {
+    expect(isCashMovementCode('cash_in')).toBe(true);
+    expect(isCashMovementCode('cash_out')).toBe(true);
+    expect(isCashMovementCode('customer_payment')).toBe(true);
+    expect(isCashMovementCode('customer_withdrawal')).toBe(true);
+    expect(isCashMovementCode('bill_payment')).toBe(true);
+  });
+
+  it('asks none of money moving between accounts rather than through them', () => {
+    expect(isCashMovementCode('owner_funding')).toBe(false);
+    expect(isCashMovementCode('operating_expense')).toBe(false);
+    expect(isCashMovementCode('adjustment_in')).toBe(false);
+    expect(isCashMovementCode(null)).toBe(false);
+    expect(isCashMovementCode(undefined)).toBe(false);
   });
 });
 

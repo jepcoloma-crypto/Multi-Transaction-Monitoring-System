@@ -83,11 +83,18 @@ const toCents = (value: unknown): number => {
 // The movement codes where money can physically change hands, and so the only
 // ones asked for a payment method. These are the codes the drawer gate keys on;
 // every other type is money moving between accounts rather than through them.
+//
+// A bills payment belongs because settling a bill at the counter hands cash
+// across the drawer exactly like a cash-out: the wallet pays the biller and the
+// till keeps the customer's money. Recorded without a tender the drawer side
+// had nowhere to come from, so the whole leg — amount, charges and fee — was
+// silently dropped while the wallet still paid out.
 export const CASH_MOVEMENT_CODES = [
   'cash_in',
   'cash_out',
   'customer_payment',
   'customer_withdrawal',
+  'bill_payment',
 ] as const;
 
 // Everything the column may store, matching paymentMethodOptions on the client.
@@ -505,6 +512,13 @@ export function bucketFor(sourceType: string | null | undefined, txnCode: string
       case 'cash_out':
       case 'customer_payment':
       case 'customer_withdrawal':
+      // A bills payment settled at the counter is the customer's cash passing
+      // through the till — the same shape as a cash-out, which is why the entry
+      // form asks for its tender now too (and why a drawer row of it is money
+      // the drawer *received*, never a company expense). Cash that leaves the
+      // drawer to settle a bill of the company's own has its own type,
+      // `cash_payment`; `payments` keeps `service_fee` and `refund`.
+      case 'bill_payment':
         return 'customer_cash';
       case 'load_purchase':
         return 'load';
@@ -520,7 +534,6 @@ export function bucketFor(sourceType: string | null | undefined, txnCode: string
       case 'expense':
         return 'provider_charges';
       case 'service_fee':
-      case 'bill_payment':
       case 'refund':
         return 'payments';
       case 'other_income':

@@ -1454,7 +1454,7 @@ export default function Reports() {
                   </p>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[1100px]">
+                  <table className="w-full min-w-[1200px]">
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
@@ -1465,13 +1465,14 @@ export default function Reports() {
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Kind</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase" title="Not included in Total income">Additional Charges</th>
                         <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Income</th>
                         <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Handling</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
                       {reportData.rows.length === 0 ? (
-                        <tr><td colSpan={10} className="px-4 py-8 text-center text-sm text-gray-500">No cash movements or loading sales for these filters.</td></tr>
+                        <tr><td colSpan={11} className="px-4 py-8 text-center text-sm text-gray-500">No cash movements or loading sales for these filters.</td></tr>
                       ) : reportData.rows.map((r: any) => (
                         <tr key={`${r.kind}-${r.id}`} className="hover:bg-gray-50">
                           <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.day ? dateKeyLabel(r.day) : '—'}</td>
@@ -1482,6 +1483,7 @@ export default function Reports() {
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.kind === 'loading' ? 'Loading' : r.direction === 'in' ? 'Cash-in' : 'Cash-out'}</td>
                           <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{r.description || '—'}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono text-gray-600">{formatCurrency(r.amount)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono text-gray-600" title="Billed alongside the movement — shown for reference, not added to Total income">{formatCurrency(r.charges || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(r.income)}</td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">
                             <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
@@ -1499,6 +1501,7 @@ export default function Reports() {
                       <tfoot className="bg-gray-50 border-t border-gray-200">
                         <tr>
                           <td className="px-4 py-3.5 text-sm font-semibold whitespace-nowrap" colSpan={8}>Total income</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold text-gray-600">{formatCurrency(reportData.summary?.charges || 0)}</td>
                           <td className="px-4 py-3.5 text-sm text-right font-mono font-semibold">{formatCurrency(reportData.summary?.totalIncome || 0)}</td>
                           <td />
                         </tr>
