@@ -5,6 +5,7 @@ import { Smartphone, Plus, Search, Package, X, Edit2, Trash2, Ban } from 'lucide
 import { useAuth } from '../contexts/AuthContext';
 import Pagination from '../components/Pagination';
 import AccountSelect from '../components/AccountSelect';
+import ProductSelect from '../components/ProductSelect';
 import { ShiftGatedButton } from '../components/ShiftGatedButton';
 
 interface LoadingTx {
@@ -75,6 +76,9 @@ export default function Loading() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.accountId) { alert('Please select an account'); return; }
+    // The custom picker is a button, so the native `required` the old select
+    // carried no longer blocks an empty submit on its own.
+    if (!form.productId) { alert('Please select a product'); return; }
     setSubmitting(true);
     try {
       await api.post('/loading', { ...form, quantity: parseInt(form.quantity || '1') });
@@ -371,10 +375,12 @@ export default function Loading() {
               </div>
               <div>
                 <label className="form-label">Product *</label>
-                <select required value={form.productId} onChange={e => setForm({ ...form, productId: e.target.value })} className="input-field">
-                  <option value="">Select product</option>
-                  {products.map(p => <option key={p.id} value={p.id}>{p.name} ({p.provider_name}) - {formatCurrency(p.selling_price)}</option>)}
-                </select>
+                <ProductSelect
+                  products={products}
+                  value={form.productId}
+                  onChange={id => setForm({ ...form, productId: id })}
+                  placeholder="Select product"
+                />
               </div>
               <div>
                 <label className="form-label">Customer Number *</label>
