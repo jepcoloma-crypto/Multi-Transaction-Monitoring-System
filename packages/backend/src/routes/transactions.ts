@@ -13,6 +13,7 @@ import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, 
 import { resolveMovementFee } from '../services/movementFee';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
+import { assertReferenceIsNew } from '../services/referenceRule';
 import { withTransaction } from '../services/withTransaction';
 import { movementTotalOf, planLoadingCancel, planTransactionCancel } from '../services/cancelPlan';
 import { executeLoadingCancel } from '../services/loadingReversal';
@@ -521,6 +522,14 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // against the shift's date here, so a mistyped day is caught before any of
     // the balance work below rather than after it.
     await assertOpenShift(accountId, txType.code, { eventDate: bookedAt });
+
+    // Checked beside the shift gate because it refuses on the same grounds —
+    // something already stored — and so before any balance work, when the only
+    // thing lost by refusing is a form the operator has to correct. A double
+    // submit dies here; a reversal and its re-entry both pass, because the
+    // original has already been undone and its reference freed. The rule and
+    // why it is not a unique index: services/referenceRule.
+    await assertReferenceIsNew(client, { accountId, referenceNumber, eventDate: bookedAt });
 
     // Everything the entry preview must also know — the method the account
     // forces, the figures the row will carry, whose approval it needs, and the
@@ -1115,6 +1124,18 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
     set('fee', feeNum);
     set('net_amount', round2(netAmount));
     set('fee_added_to_balance', feeAddedToBalance);
+
+    // Checked against what the row will hold rather than against what was sent,
+    // because either field can be what makes the duplicate: a reference moved
+    // onto one already used this day, or this row moved onto a day that already
+    // holds it. The row is passed as the one to ignore, so keeping its own
+    // reference is never mistaken for colliding with itself.
+    await assertReferenceIsNew(client, {
+      accountId: row.account_id,
+      referenceNumber: provided('referenceNumber') ? body.referenceNumber : row.reference_number,
+      eventDate: transactionDate ?? row.transaction_date,
+      excludeId: req.params.id,
+    });
 
     updates.push('updated_at = NOW()');
     const updated = (await client.query(
