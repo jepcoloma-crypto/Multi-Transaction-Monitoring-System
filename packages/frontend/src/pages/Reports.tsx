@@ -6,6 +6,7 @@ import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck,
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 import { ExpenseDetailPanel } from '../components/ExpenseDetail';
 import { CashStatementPanel } from '../components/CashStatement';
+import { statementTotals } from '../lib/statementTotals';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -325,6 +326,15 @@ export default function Reports() {
         'transferCount', 'serviceFees', 'providerCharges', 'operatingExpenses', 'totalExpense',
       ], 'totalExpense')
     : [];
+
+  // One pass over the statement's entries feeds its footer: money in and out
+  // stay gross so the totals still tie to the balance column, while fees and
+  // charges count only the rows that stand — a reversed movement and the
+  // entry that undid it carry nothing anyone is owed. The split and why live
+  // with the totals themselves, in statementTotals.
+  const statementFooter = activeReport === 'account-statement' && reportData?.entries
+    ? statementTotals(reportData.entries)
+    : null;
 
   return (
     <div className="space-y-6">
@@ -703,10 +713,10 @@ export default function Reports() {
                     <tfoot className="bg-gray-100 border-t-2 border-gray-300">
                       <tr className="font-bold">
                         <td className="px-4 py-3.5 text-sm" colSpan={8}>Total ({reportData.entries.length} entries)</td>
-                        <td className="px-4 py-3.5 text-sm text-right text-green-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'credit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
-                        <td className="px-4 py-3.5 text-sm text-right text-red-600">{formatCurrency(reportData.entries.filter((e: any) => e.entry_type === 'debit').reduce((sum: number, e: any) => sum + parseFloat(e.amount), 0))}</td>
-                        <td className="px-4 py-3.5 text-sm text-right">{formatCurrency(reportData.entries.reduce((sum: number, e: any) => sum + (parseFloat(e.fee) || 0), 0))}</td>
-                        <td className="px-4 py-3.5 text-sm text-right">{formatCurrency(reportData.entries.reduce((sum: number, e: any) => sum + (e.charges_total || 0), 0))}</td>
+                        <td className="px-4 py-3.5 text-sm text-right text-green-600">{formatCurrency(statementFooter?.moneyIn ?? 0)}</td>
+                        <td className="px-4 py-3.5 text-sm text-right text-red-600">{formatCurrency(statementFooter?.moneyOut ?? 0)}</td>
+                        <td className="px-4 py-3.5 text-sm text-right">{formatCurrency(statementFooter?.fees ?? 0)}</td>
+                        <td className="px-4 py-3.5 text-sm text-right">{formatCurrency(statementFooter?.charges ?? 0)}</td>
                         <td className="px-4 py-3.5 text-sm text-right">{reportData.entries.length > 0 ? formatCurrency(reportData.entries[reportData.entries.length - 1].balance_after) : '₱0.00'}</td>
                       </tr>
                     </tfoot>
