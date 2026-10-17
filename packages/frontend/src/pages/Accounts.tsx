@@ -659,9 +659,14 @@ export default function Accounts() {
                   className="input" placeholder="Optional note" />
               </div>
               <div className="bg-gray-50 p-3 rounded-lg text-sm">
+                {/* The balance may arrive as a string, and string + number
+                    concatenates: "314.00" + 50 reads as "314.0050" and previews
+                    ₱314.01 instead of ₱364.00. Coerced so the preview adds.
+                    The posted amount is unaffected — it is sent separately and
+                    the server recomputes the balance from it. */}
                 <p>Current Balance: <span className="font-medium">{formatCurrency(addFundsAccount.current_balance)}</span></p>
                 <p>New Balance: <span className={`font-bold ${fundsMode === 'in' ? 'text-green-600' : 'text-red-600'}`}>
-                  {formatCurrency(addFundsAccount.current_balance + (fundsMode === 'in' ? 1 : -1) * (parseFloat(addFundsForm.amount) || 0))}
+                  {formatCurrency(Number(addFundsAccount.current_balance) + (fundsMode === 'in' ? 1 : -1) * (parseFloat(addFundsForm.amount) || 0))}
                 </span></p>
               </div>
               <div className="flex justify-end gap-2 pt-2">

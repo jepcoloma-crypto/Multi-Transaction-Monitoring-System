@@ -1,5 +1,25 @@
-import { Pool, PoolConfig } from 'pg';
+import { Pool, PoolConfig, types } from 'pg';
 import { config } from '../config';
+
+// node-postgres returns every `numeric` column as a string, because the type can
+// hold more precision than a JavaScript number can. Money here is numeric(15,2)
+// and never comes close to that limit, but the string that arrives instead has
+// caused four separate faults: `+` concatenates instead of adding, a sort reads
+// it lexicographically, and a guard written as `typeof x === 'string'` silently
+// skips it the moment it stops being one. Parsing it here fixes the class once,
+// instead of at each of the dozens of places that read a balance.
+//
+// The trade is real and worth stating plainly. A JS number is float64, so a
+// numeric beyond 2^53 loses its trailing digits; peso amounts with two decimals
+// are exact up to roughly 90 quadrillion, and the largest figure on this system
+// is under a hundred thousand. Aggregates lose nothing either: SUM(numeric)
+// returns numeric, so a total computed by the database arrives here and is
+// parsed by the same rule as the rows it summed.
+//
+// int8 is deliberately left alone. Counts come back as strings and the code that
+// reads them already says so, so widening that would change every COUNT for no
+// fault it fixes.
+types.setTypeParser(1700, (value: string | null) => (value === null ? null : parseFloat(value)));
 
 const poolConfig: PoolConfig = {
   host: config.db.host,
