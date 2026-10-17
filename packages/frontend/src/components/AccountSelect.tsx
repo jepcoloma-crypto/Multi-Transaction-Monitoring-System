@@ -51,6 +51,16 @@ function AccountLabel({ account }: { account: AccountOption }) {
   );
 }
 
+// Matching runs over everything the row shows, not just the name: an
+// operator who half-remembers "the GCash one ending 1234" should land on it,
+// and the branch is what separates two identically named accounts.
+export const accountMatches = (account: AccountOption, rawQuery: string): boolean => {
+  const query = rawQuery.trim().toLowerCase();
+  if (query === '') return true;
+  return [account.name, account.provider_name, account.masked_account_number, account.branch_name]
+    .some((field) => (field ?? '').toLowerCase().includes(query));
+};
+
 interface AccountSelectProps {
   accounts: AccountOption[];
   value: string;
@@ -61,8 +71,17 @@ interface AccountSelectProps {
 
 export default function AccountSelect({ accounts, value, onChange, placeholder, className }: AccountSelectProps) {
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const selected = accounts.find((a) => a.id === value);
+
+  const visible = accounts.filter((a) => accountMatches(a, query));
+
+  const choose = (id: string) => {
+    onChange(id);
+    setOpen(false);
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -80,6 +99,29 @@ export default function AccountSelect({ accounts, value, onChange, placeholder, 
     };
   }, [open]);
 
+  // Typing is the first thing anyone does with a list this long, so the box
+  // takes focus as the panel opens.
+  useEffect(() => {
+    if (open) searchRef.current?.focus();
+  }, [open]);
+
+  // Reopening starts from the whole list. A query left behind would present a
+  // narrowed list with nothing on screen explaining why it is narrowed.
+  useEffect(() => {
+    if (!open) setQuery('');
+  }, [open]);
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    // Enter picks the only sensible row left on screen. Stopping it here also
+    // keeps it from reaching the surrounding form as a submit — this picker
+    // sits inside the New Transaction form, where an accidental submit would
+    // post a transaction.
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (visible.length > 0) choose(visible[0].id);
+    }
+  };
+
   return (
     <div ref={containerRef} className="relative">
       <button
@@ -95,29 +137,41 @@ export default function AccountSelect({ accounts, value, onChange, placeholder, 
         <ChevronDown className="ml-2 h-4 w-4 shrink-0 text-gray-400" />
       </button>
       {open && (
-        <ul
-          role="listbox"
-          className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-gray-300 bg-white py-1 shadow-lg"
-        >
-          {accounts.length === 0 ? (
-            <li className="px-3 py-2 text-sm text-gray-500">No active accounts</li>
-          ) : (
-            accounts.map((a) => (
-              <li key={a.id}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange(a.id);
-                    setOpen(false);
-                  }}
-                  className={`block w-full px-3 py-2 text-left text-sm hover:bg-primary-50 ${a.id === value ? 'bg-primary-50' : ''}`}
-                >
-                  <AccountLabel account={a} />
-                </button>
-              </li>
-            ))
+        <div className="absolute z-20 mt-1 w-full rounded-lg border border-gray-300 bg-white shadow-lg">
+          {accounts.length > 0 && (
+            <div className="border-b border-gray-100 p-2">
+              <input
+                ref={searchRef}
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
+                placeholder="Search accounts…"
+                aria-label="Search accounts"
+                className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-primary-500 focus:outline-none"
+              />
+            </div>
           )}
-        </ul>
+          <ul role="listbox" className="max-h-60 overflow-y-auto py-1">
+            {accounts.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-gray-500">No active accounts</li>
+            ) : visible.length === 0 ? (
+              <li className="px-3 py-2 text-sm text-gray-500">No accounts match</li>
+            ) : (
+              visible.map((a) => (
+                <li key={a.id}>
+                  <button
+                    type="button"
+                    onClick={() => choose(a.id)}
+                    className={`block w-full px-3 py-2 text-left text-sm hover:bg-primary-50 ${a.id === value ? 'bg-primary-50' : ''}`}
+                  >
+                    <AccountLabel account={a} />
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
       )}
     </div>
   );

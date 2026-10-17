@@ -55,3 +55,72 @@ describe('AccountSelect', () => {
     expect(onChange).toHaveBeenCalledWith('a1');
   });
 });
+
+describe('AccountSelect search', () => {
+  const openWithSearch = () => {
+    const { onChange } = renderPicker(fromApi);
+    const search = screen.getByLabelText('Search accounts') as HTMLInputElement;
+    return { onChange, search };
+  };
+
+  it('takes focus when the panel opens, so typing narrows immediately', () => {
+    const { search } = openWithSearch();
+    expect(document.activeElement).toBe(search);
+  });
+
+  it('narrows to accounts whose name matches', () => {
+    const { search } = openWithSearch();
+    fireEvent.change(search, { target: { value: 'revolving' } });
+    expect(screen.getByText(/Revolving Fund Main Branch/)).toBeTruthy();
+    expect(screen.queryByText('GCash')).toBeNull();
+  });
+
+  it('matches on the masked number an operator half-remembers', () => {
+    const { search } = openWithSearch();
+    fireEvent.change(search, { target: { value: '1234' } });
+    // "GCash" is both name and provider, so anchor on the name element.
+    expect(screen.getAllByText('GCash').some((el) => el.tagName === 'STRONG')).toBe(true);
+    expect(screen.queryByText(/Revolving Fund/)).toBeNull();
+  });
+
+  it('matches on the branch, which is what separates two identical names', () => {
+    const twoBranches: AccountOption[] = [
+      { id: 'b1', name: 'Drawer', current_balance: '100.00', branch_name: 'Main Branch' },
+      { id: 'b2', name: 'Drawer', current_balance: '200.00', branch_name: 'Satellite' },
+    ];
+    renderPicker(twoBranches);
+    fireEvent.change(screen.getByLabelText('Search accounts'), { target: { value: 'satellite' } });
+    expect(screen.getByText(/Satellite/).closest('button')!.textContent).toContain('₱200.00');
+    expect(screen.queryByText(/Main Branch/)).toBeNull();
+  });
+
+  it('says so rather than showing an empty panel when nothing matches', () => {
+    const { search } = openWithSearch();
+    fireEvent.change(search, { target: { value: 'nonexistent' } });
+    expect(screen.getByText('No accounts match')).toBeTruthy();
+  });
+
+  it('picks the first match on Enter', () => {
+    const { onChange, search } = openWithSearch();
+    fireEvent.change(search, { target: { value: 'revolving' } });
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith('a1');
+  });
+
+  it('does not let Enter reach the form as a submit when nothing matches', () => {
+    const { onChange, search } = openWithSearch();
+    fireEvent.change(search, { target: { value: 'zzz' } });
+    const prevented = !fireEvent.keyDown(search, { key: 'Enter' });
+    expect(prevented).toBe(true);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('starts over from the whole list the next time it is opened', () => {
+    const { search } = openWithSearch();
+    fireEvent.change(search, { target: { value: 'gcash' } });
+    expect(screen.queryByText(/Revolving Fund/)).toBeNull();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(screen.getByText('Select account'));
+    expect(screen.getByText(/Revolving Fund Main Branch/)).toBeTruthy();
+  });
+});
