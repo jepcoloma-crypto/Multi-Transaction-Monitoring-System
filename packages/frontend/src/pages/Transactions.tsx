@@ -6,6 +6,7 @@ import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil, Ban 
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
 import { ShiftGatedButton } from '../components/ShiftGatedButton';
+import { feeRuleLabel, groupFeeRules } from '../lib/feeRuleLabel';
 
 const DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1, 0.25, 0.1, 0.05, 0.01];
 
@@ -907,10 +908,12 @@ export default function Transactions() {
                     <RequiredLabel htmlFor="feeRuleId">Fee Rule</RequiredLabel>
                     <select id="feeRuleId" required value={formData.feeRuleId} onChange={(e) => handleRuleChange(e.target.value)} className="input text-sm">
                       <option value="">Select fee rule</option>
-                      {feeRules.map(r => (
-                        <option key={r.id} value={r.id}>
-                          [{r.direction.toUpperCase()}] {transactionTypeLabel(r.type_code, r.type_name)}{r.category_name ? ` / ${r.category_name}` : ''} &mdash; {r.name} ({r.calculation_method === 'per_amount' ? 'per amount' : r.fee_type === 'percentage' ? `${r.fee_value}%` : formatCurrency(r.fee_value)})
-                        </option>
+                      {groupFeeRules(feeRules).map(group => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.rules.map(r => (
+                            <option key={r.id} value={r.id}>{feeRuleLabel(r)}</option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
                     {selectedRule && (
