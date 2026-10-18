@@ -1,14 +1,6 @@
-import { query, queryOne } from '../database/connection';
-
-// Every threshold comes from system_settings and lands in SQL, so each is
-// parsed once and rejected as a number rather than interpolated as text: a
-// setting edited to garbage must fail as a clean error, not as a query the
-// database has to diagnose.
-const settingNumber = async (key: string, fallback: number): Promise<number> => {
-  const row = await queryOne<{ value: string }>('SELECT value FROM system_settings WHERE key = $1', [key]);
-  const parsed = parseFloat(row?.value ?? '');
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
+import { query } from '../database/connection';
+import { settingNumber } from './settings';
+import { overdueReconciliations } from './reconciliationStatus';
 
 // One statement per candidate rather than a read-then-write pair. The
 // existence check moved inside the INSERT, so two overlapping runs cannot both
@@ -127,29 +119,21 @@ export async function generateAlerts(): Promise<number> {
     ]);
   }
 
-  // 5. Reconciliation overdue alerts
-  const reconDays = await settingNumber('reconciliation_period_days', 30);
-  const unreconciledAccounts = await query(
-    `SELECT a.id, a.name,
-            MAX(r.created_at) as last_recon,
-            EXTRACT(EPOCH FROM (NOW() - MAX(r.created_at))) / 86400 as days_since
-     FROM accounts a
-     LEFT JOIN reconciliations r ON a.id = r.account_id AND r.status = 'reconciled'
-     WHERE a.status = 'active'
-     GROUP BY a.id, a.name
-     HAVING MAX(r.created_at) IS NULL OR EXTRACT(EPOCH FROM (NOW() - MAX(r.created_at))) / 86400 > $1`,
-    [reconDays]
-  );
+  // 5. Reconciliation overdue alerts. The list is shared with the cash
+  // dashboard, which reports the same accounts against the same period, so
+  // there is one definition of "overdue" and one answer to which accounts it
+  // names rather than two that could drift apart.
+  const { periodDays, accounts: unreconciledAccounts } = await overdueReconciliations();
 
   for (const acct of unreconciledAccounts) {
     alertsCreated += await insertIfNew([
       'reconciliation_overdue',
       'warning',
       'account',
-      acct.id,
-      `Reconciliation Overdue: ${acct.name}`,
-      `Account "${acct.name}" hasn't been reconciled in over ${reconDays} days`,
-      JSON.stringify({ daysSince: acct.days_since }),
+      acct.accountId,
+      `Reconciliation Overdue: ${acct.accountName}`,
+      `Account "${acct.accountName}" hasn't been reconciled in over ${periodDays} days`,
+      JSON.stringify({ daysSince: acct.daysSince }),
     ]);
   }
 

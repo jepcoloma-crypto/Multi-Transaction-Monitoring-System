@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, unwrapRows } from '../lib/api';
 import { formatCurrency, manilaDateValue, manilaTimeLabel, dateKeyLabel, shiftDaysLabel, manilaDayLabel, manilaDateTimeLabel, movementPaymentMethodOptions, cashOnHandNote, paymentMethodCell, floatAgainstBooks } from '../lib/format';
 import { fetchShiftActivity, type ShiftActivity } from '../lib/shiftActivity';
+import { fetchOverdueReconciliations, type ReconciliationStatus } from '../lib/reconciliationStatus';
 import { denomQty, tallyCents, tallyUsed, denomSubtotalPesos, tallyPesos } from '../lib/tally';
 import {
   fetchCashRecords, downloadCashRecordsCsv,
@@ -456,6 +457,12 @@ export default function CashManagement() {
 
   const [shiftActivity, setShiftActivity] = useState<ShiftActivity | null>(null);
 
+  // The accounts that have gone past their reconciliation period. Held apart
+  // from the position because it answers a different question: the statement
+  // says what the books hold, this says which of them nobody has checked
+  // against the provider that actually holds it.
+  const [reconStatus, setReconStatus] = useState<ReconciliationStatus | null>(null);
+
   const [loadingActivity, setLoadingActivity] = useState(true);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -653,6 +660,15 @@ export default function CashManagement() {
     }
   }, [branchId]);
 
+  // Which accounts are past their reconciliation period. Advisory, like the
+  // shift panel: the cash position is what this screen is for, and a list that
+  // could not be read should not take the position down with it. Re-read on a
+  // branch change and on refresh — not after every recorded movement, because
+  // a transaction does not make an account any more or less reconciled.
+  const loadReconStatus = useCallback(async () => {
+    setReconStatus(await fetchOverdueReconciliations(branchId));
+  }, [branchId]);
+
   // The register reads from the same branch the position is scoped to, and
   // resets to page 1 whenever the filter changes: page 3 of a smaller set is a
   // page that does not exist, and an empty screen reads as "no records".
@@ -765,6 +781,7 @@ export default function CashManagement() {
   useEffect(() => { loadSetup(); }, [loadSetup]);
   useEffect(() => { loadStatement(); }, [loadStatement]);
   useEffect(() => { loadShiftActivity(); }, [loadShiftActivity]);
+  useEffect(() => { loadReconStatus(); }, [loadReconStatus]);
   useEffect(() => { loadExpenses(); }, [loadExpenses]);
   useEffect(() => { loadShifts(); }, [loadShifts]);
   useEffect(() => { loadRecords(); }, [loadRecords]);
@@ -1610,6 +1627,52 @@ export default function CashManagement() {
               <p className="text-sm text-gray-500">{dailyFigures.sub}</p>
             </div>
           </div>
+
+          {/* The one thing a close cannot do for itself. The drawer is counted
+              and the count is compared against the books, but that is a check
+              the branch performs on cash it can hold. Every e-wallet and bank
+              balance is verified against nothing until somebody opens the
+              provider's own app, and nothing in the system notices when that
+              stops happening — so the accounts going longest without it are
+              named here, beside the figures the closer is already reading.
+              Hidden when none are outstanding, and showing nothing at all when
+              the list could not be read: a screen that failed to ask must not
+              be taken as one that asked and heard "all clear". */}
+          {reconStatus !== null && reconStatus.accounts.length > 0 && (
+            <div className="card border border-amber-300">
+              <div className="flex items-center gap-2 text-amber-700">
+                <AlertTriangle className="w-4 h-4" />
+                <p className="text-xs font-semibold uppercase tracking-wide">
+                  Still to reconcile — {reconStatus.accounts.length}
+                </p>
+              </div>
+              <p className="text-sm text-gray-500 mt-2">
+                Past {reconStatus.periodDays} days without a sign-off. The balances shown are what the
+                books say, not what the provider does.
+              </p>
+              <ul className="mt-3 space-y-1.5">
+                {reconStatus.accounts.slice(0, 8).map((account) => (
+                  <li key={account.accountId} className="flex items-baseline justify-between gap-3 text-sm">
+                    <span className="font-medium text-gray-900 truncate">{account.accountName}</span>
+                    <span className="text-gray-500 whitespace-nowrap">
+                      {account.daysSince === null
+                        ? 'Never reconciled'
+                        : `${account.daysSince} day${account.daysSince === 1 ? '' : 's'}`}
+                      <span className="text-gray-400"> · {formatCurrency(account.currentBalance)}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-sm text-gray-500 mt-3">
+                {reconStatus.accounts.length > 8
+                  ? `…and ${reconStatus.accounts.length - 8} more. `
+                  : ''}
+                Record what the provider shows on{' '}
+                <Link to="/reconciliation" className="text-primary-600 hover:underline">Reconciliation</Link>
+                , then press Complete — only that clears it.
+              </p>
+            </div>
+          )}
 
           {/* Earnings, scoped by the shift instead of by a filter this screen
               is not allowed to have (D18): the window is the business day the

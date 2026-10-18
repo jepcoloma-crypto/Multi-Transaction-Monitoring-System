@@ -2,7 +2,8 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
-import { assertBranch } from '../middleware/scope';
+import { assertBranch, branchClause, resolveBranchFilter } from '../middleware/scope';
+import { overdueReconciliations } from '../services/reconciliationStatus';
 import { assertOpenShift } from '../middleware/shiftGate';
 import { createAuditLog } from '../services/audit';
 
@@ -37,6 +38,28 @@ router.get('/', authorize('reconciliation.read'), async (req: Request, res: Resp
     );
 
     res.json({ success: true, data: { data: recons, pagination: { page, limit, total: parseInt(countResult?.count || '0'), totalPages: Math.ceil(parseInt(countResult?.count || '0') / limit) } } });
+  } catch (error) { next(error); }
+});
+
+/**
+ * The accounts this branch has let slip, for the cash dashboard.
+ *
+ * The same list the alert pass draws, served with the figures an operator
+ * needs to act on — which branch, how long, what it holds — rather than the
+ * one sentence an alert can carry. Read-only and deliberately so: it reports
+ * a gap, it does not close one, and nothing here writes. Reconciling is a
+ * judgement about money the system cannot see, so it stays a person's call.
+ *
+ * Declared before `/:id` or `/overdue` would be read as an id and answer 404.
+ */
+router.get('/overdue', authorize('reconciliation.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+    // Numbered from 2: the overdue query owns $1 for the period, so the scope
+    // condition and its values have to begin where that one stops.
+    const scope = branchClause(req, 'a', 'accounts.read_all', 2, 'self', branchId ?? null);
+    const { periodDays, accounts } = await overdueReconciliations({ clause: scope.clause, params: scope.params });
+    res.json({ success: true, data: { periodDays, accounts } });
   } catch (error) { next(error); }
 });
 

@@ -13,3 +13,19 @@ export async function expenseApprovalThreshold(): Promise<number> {
   const parsed = parseFloat(row?.value || '0');
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
+
+/**
+ * A threshold from system_settings by key, parsed once and rejected as a
+ * number rather than interpolated as text.
+ *
+ * Every threshold this system applies lands in SQL, and a setting edited to
+ * garbage has to fail as a clean error rather than as a query the database
+ * has to diagnose. The same shape as `expenseApprovalThreshold` above, which
+ * exists for one specific key and fails to 0; this one takes the key and the
+ * fallback the caller judges safe.
+ */
+export const settingNumber = async (key: string, fallback: number): Promise<number> => {
+  const row = await queryOne<{ value: string }>('SELECT value FROM system_settings WHERE key = $1', [key]);
+  const parsed = parseFloat(row?.value ?? '');
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
