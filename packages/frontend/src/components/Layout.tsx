@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   Wallet,
+  Coins,
   ArrowLeftRight,
   ArrowUpDown,
   Smartphone,
@@ -30,20 +31,31 @@ import { useAuth } from '../contexts/AuthContext';
 import { api, unwrapRows } from '../lib/api';
 import GlobalSearch from './GlobalSearch';
 
-const navigation = [
+type NavItem = { name: string; href: string; icon: typeof Settings };
+type MenuItem = NavItem & { approverOnly?: boolean; adminOnly?: boolean };
+
+// Ordered by what gets done there rather than by importance. The first list is
+// where money is moved, in the order a branch day moves it: the drawer is
+// opened on Cash Management, fed from the other four, and closed there again.
+// The second is where money is looked at — screens read rather than written.
+// Cash Management carries Coins because Accounts holds Wallet, and the two used
+// to share one icon, which left the two hardest screens on the board to tell
+// apart wearing the same picture.
+const dailyWork: NavItem[] = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Cash Transactions', href: '/transactions', icon: ArrowLeftRight },
-  { name: 'Accounts', href: '/accounts', icon: Wallet },
   { name: 'Fund Transfers', href: '/transfers', icon: ArrowUpDown },
   { name: 'Loading', href: '/loading', icon: Smartphone },
   { name: 'Customers', href: '/customers', icon: UserCircle },
+  { name: 'Cash Management', href: '/cash-management', icon: Coins },
+];
+
+const review: NavItem[] = [
+  { name: 'Accounts', href: '/accounts', icon: Wallet },
   { name: 'Reconciliation', href: '/reconciliation', icon: CheckSquare },
-  { name: 'Cash Management', href: '/cash-management', icon: Wallet },
   { name: 'Reports', href: '/reports', icon: BarChart3 },
   { name: 'Alerts', href: '/alerts', icon: Bell },
 ];
-
-type MenuItem = { name: string; href: string; icon: typeof Settings; approverOnly?: boolean; adminOnly?: boolean };
 
 const adminSection: MenuItem[] = [
   { name: 'Providers', href: '/providers', icon: Settings },
@@ -59,11 +71,20 @@ const adminSection: MenuItem[] = [
   { name: 'Backup', href: '/backup', icon: Database },
 ];
 
-const adminNavigation = [
+const adminNavigation: NavItem[] = [
   { name: 'Users', href: '/users', icon: Users },
   { name: 'Roles', href: '/roles', icon: Shield },
   { name: 'Branches', href: '/branches', icon: Building2 },
 ];
+
+/**
+ * The name shown in the mobile header for a path. Searches every list rather
+ * than only the ones a given role happens to see: the title describes the page
+ * underneath it, and a user who somehow lands on a restricted page should read
+ * what it is, not what their role allows.
+ */
+const titleFor = (pathname: string): string | undefined =>
+  [...dailyWork, ...review, ...adminSection, ...adminNavigation].find((n) => n.href === pathname)?.name;
 
 /**
  * What this session can see, stated on every page.
@@ -101,6 +122,41 @@ function BranchScopeBadge() {
     </span>
   );
 }
+
+/**
+ * One sidebar row, written once. The sidebar renders four separate lists —
+ * daily work, review, administration and user management — and this markup
+ * had been copied into each of them. A fifth copy would be a fifth place for
+ * a hover style or a font weight to drift away from the other four, which on
+ * a list an operator scans by eye is the kind of difference nobody reports.
+ */
+function NavLink({ item, active, onClick, badge }: {
+  item: NavItem;
+  active: boolean;
+  onClick: () => void;
+  badge?: ReactNode;
+}) {
+  return (
+    <Link
+      to={item.href}
+      onClick={onClick}
+      className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+        active
+          ? 'bg-primary-600 text-white'
+          : 'text-gray-300 hover:bg-gray-800 hover:text-white'
+      }`}
+    >
+      <item.icon className="w-5 h-5" />
+      {item.name}
+      {badge}
+    </Link>
+  );
+}
+
+/** The label that says where one group of destinations ends and the next begins. */
+const NavHeading = ({ label }: { label: string }) => (
+  <p className="px-3 py-1 text-xs font-semibold text-gray-500 uppercase">{label}</p>
+);
 
 export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -167,75 +223,59 @@ export default function Layout() {
         </div>
 
         <nav className="mt-4 px-3 space-y-1 overflow-y-auto max-h-[calc(100vh-8rem)] no-scrollbar">
-          {navigation.map((item) => {
-            const isActive = location.pathname === item.href;
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
-                onClick={() => setSidebarOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-primary-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-800 hover:text-white'
-                }`}
-              >
-                <item.icon className="w-5 h-5" />
-                {item.name}
-              </Link>
-            );
-          })}
+          <NavHeading label="Daily work" />
+          {dailyWork.map((item) => (
+            <NavLink
+              key={item.href}
+              item={item}
+              active={location.pathname === item.href}
+              onClick={() => setSidebarOpen(false)}
+            />
+          ))}
 
           <div className="border-t border-gray-800 my-3"></div>
-          <p className="px-3 py-1 text-xs font-semibold text-gray-500 uppercase">Administration</p>
+          <NavHeading label="Review & reports" />
+          {review.map((item) => (
+            <NavLink
+              key={item.href}
+              item={item}
+              active={location.pathname === item.href}
+              onClick={() => setSidebarOpen(false)}
+            />
+          ))}
+
+          <div className="border-t border-gray-800 my-3"></div>
+          <NavHeading label="Administration" />
           {adminSection
             .filter((item) => (item.adminOnly ? Boolean(isAdmin) : !item.approverOnly || isApprover))
-            .map((item) => {
-            const isActive = location.pathname === item.href;
-            return (
-              <Link
-                key={item.name}
-                to={item.href}
+            .map((item) => (
+              <NavLink
+                key={item.href}
+                item={item}
+                active={location.pathname === item.href}
                 onClick={() => setSidebarOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-primary-600 text-white'
-                    : 'text-gray-300 hover:bg-gray-800 hover:text-white'
-                }`}
-              >
-                <item.icon className="w-5 h-5" />
-                {item.name}
-                {item.href === '/transfer-approvals' && pendingApprovals > 0 && (
-                  <span className="ml-auto bg-red-500 text-white text-xs font-semibold rounded-full px-1.5 py-0.5 leading-none">
-                    {pendingApprovals > 99 ? '99+' : pendingApprovals}
-                  </span>
-                )}
-              </Link>
-            );
-          })}
+                badge={
+                  item.href === '/transfer-approvals' && pendingApprovals > 0 ? (
+                    <span className="ml-auto bg-red-500 text-white text-xs font-semibold rounded-full px-1.5 py-0.5 leading-none">
+                      {pendingApprovals > 99 ? '99+' : pendingApprovals}
+                    </span>
+                  ) : undefined
+                }
+              />
+            ))}
 
           {isAdmin && (
             <>
               <div className="border-t border-gray-800 my-3"></div>
-              <p className="px-3 py-1 text-xs font-semibold text-gray-500 uppercase">User Management</p>
-              {adminNavigation.map((item) => {
-                const isActive = location.pathname === item.href;
-                return (
-                  <Link
-                    key={item.name}
-                    to={item.href}
-                    onClick={() => setSidebarOpen(false)}
-                    className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-primary-600 text-white'
-                        : 'text-gray-300 hover:bg-gray-800 hover:text-white'
-                    }`}
-                  >
-                    <item.icon className="w-5 h-5" />
-                    {item.name}
-                  </Link>
-                );
-              })}
+              <NavHeading label="User Management" />
+              {adminNavigation.map((item) => (
+                <NavLink
+                  key={item.href}
+                  item={item}
+                  active={location.pathname === item.href}
+                  onClick={() => setSidebarOpen(false)}
+                />
+              ))}
             </>
           )}
         </nav>
@@ -258,10 +298,7 @@ export default function Layout() {
               <Menu className="w-5 h-5" />
             </button>
             <h1 className="text-lg font-semibold text-gray-900">
-              {navigation.find((n) => n.href === location.pathname)?.name ||
-               adminSection.find((n) => n.href === location.pathname)?.name ||
-               adminNavigation.find((n) => n.href === location.pathname)?.name ||
-               'Dashboard'}
+              {titleFor(location.pathname) || 'Dashboard'}
             </h1>
             <BranchScopeBadge />
           </div>
