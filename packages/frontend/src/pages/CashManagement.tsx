@@ -1475,7 +1475,7 @@ export default function CashManagement() {
               <div className="card">
                 <div className="flex items-center gap-2 text-amber-700">
                   <HandCoins className="w-4 h-4" />
-                  <p className="text-xs font-semibold uppercase tracking-wide">Income (cash on hand)</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide">Total Income (cash on hand)</p>
                 </div>
                 <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{formatCurrency(statement.drawerIncome)}</p>
                 <p className="text-sm text-gray-500">Fee-on-top income plus loading margin — landed in the till</p>
@@ -1486,7 +1486,7 @@ export default function CashManagement() {
               <div className="card">
                 <div className="flex items-center gap-2 text-emerald-600">
                   <TrendingUp className="w-4 h-4" />
-                  <p className="text-xs font-semibold uppercase tracking-wide">Income (non-cash)</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide">Total Income (non-cash)</p>
                 </div>
                 <p className="text-2xl font-bold mt-2 tabular-nums text-emerald-600">{formatCurrency(statement.nonCashIncome)}</p>
                 <p className="text-sm text-gray-500">Fee-inside income — added to balances</p>
