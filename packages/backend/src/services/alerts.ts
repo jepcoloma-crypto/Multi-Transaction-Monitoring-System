@@ -13,16 +13,25 @@ const settingNumber = async (key: string, fallback: number): Promise<number> => 
 // One statement per candidate rather than a read-then-write pair. The
 // existence check moved inside the INSERT, so two overlapping runs cannot both
 // pass the check and both write — the half-open window the old pair had.
+//
+// Every parameter carries an explicit cast, because the statement uses three of
+// them twice. A bare `$1` in the SELECT list has no context to be read from, so
+// the parser deduces text, while `alert_type = $1` beside it deduces character
+// varying — one parameter, two types, and the database refuses the statement
+// outright rather than choosing. Casting every occurrence states the type once
+// and removes the disagreement. (This was found only at runtime: a probe with
+// literal values binds nothing and so exercises none of it.)
 const insertIfNew = async (
   values: [string, string, string, string | null, string, string, string],
 ): Promise<number> => {
   const [alertType, severity, entity, entityId, title, message, data] = values;
   const inserted = await query(
     `INSERT INTO alerts (alert_type, severity, entity, entity_id, title, message, data)
-     SELECT $1, $2, $3, $4, $5, $6, $7::jsonb
+     SELECT $1::varchar, $2::varchar, $3::varchar, $4::uuid, $5::varchar, $6::text, $7::jsonb
      WHERE NOT EXISTS (
        SELECT 1 FROM alerts
-       WHERE alert_type = $1 AND entity = $3 AND entity_id IS NOT DISTINCT FROM $4 AND is_read = false
+       WHERE alert_type = $1::varchar AND entity = $3::varchar
+         AND entity_id IS NOT DISTINCT FROM $4::uuid AND is_read = false
      )`,
     [alertType, severity, entity, entityId, title, message, data],
   );
