@@ -14,12 +14,12 @@ const payload: ShiftActivity = {
       branchId: 'branch-1',
       branchName: 'Main Branch',
       shiftDate: '2026-10-04',
-      income: { txnFees: 10, loadMargin: 5, totalIncome: 15 },
+      income: { txnFees: 10, loadMargin: 5, totalIncome: 15, drawerIncome: 11, nonCashIncome: 4 },
       expense: { serviceFees: 4, providerCharges: 1, operatingExpenses: 2, totalExpense: 7 },
     },
   ],
   totals: {
-    income: { txnFees: 10, loadMargin: 5, total: 15 },
+    income: { txnFees: 10, loadMargin: 5, total: 15, drawerIncome: 11, nonCashIncome: 4 },
     expense: { serviceFees: 4, providerCharges: 1, operatingExpenses: 2, total: 7 },
     net: 8,
   },
@@ -59,5 +59,22 @@ describe('fetchShiftActivity', () => {
 
     get.mockResolvedValue(payload);
     await expect(fetchShiftActivity()).resolves.toEqual(payload);
+  });
+
+  it('accepts a backend that does not serve the daily income split yet', async () => {
+    // The two new fields are optional so the panel can be built and shipped
+    // ahead of the endpoint that fills them. If they were required this would
+    // not compile — which is the point: the card reads an em dash rather than
+    // a 0.00 that would claim the shift earned nothing.
+    const older: ShiftActivity = {
+      ...payload,
+      branches: [{ ...payload.branches[0], income: { txnFees: 10, loadMargin: 5, totalIncome: 15 } }],
+      totals: { ...payload.totals, income: { txnFees: 10, loadMargin: 5, total: 15 } },
+    };
+
+    get.mockResolvedValue(older);
+    await expect(fetchShiftActivity()).resolves.toEqual(older);
+    expect(older.branches[0].income.drawerIncome).toBeUndefined();
+    expect(older.totals.income.nonCashIncome).toBeUndefined();
   });
 });

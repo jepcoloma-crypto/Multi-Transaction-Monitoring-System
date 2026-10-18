@@ -25,6 +25,14 @@ const money = (value: number | string | null | undefined): number => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+// A figure the server has not served reads as an em dash, never as 0.00. The
+// two say different things — "not available here" against "the shift earned
+// nothing" — and a panel built against an older backend would otherwise print
+// the second while meaning the first. Coercing through `money` would do that
+// silently, which is exactly why this does not.
+const optionalMoney = (value: number | undefined): string =>
+  value === undefined ? '—' : formatCurrency(value);
+
 // How long the drawer has been open, said the way an operator would say it.
 // Read from the instant rather than by subtracting date keys: a shift opened
 // at 23:50 and still open at 00:10 is twenty minutes old, not a day old.
@@ -1297,15 +1305,17 @@ export default function CashManagement() {
       ? 'What the drawer should hold'
       : 'No shift open';
 
-  // Both daily cards answer for the days the open shift covers — its own day
-  // and any since, which is what the drawer itself counts — so both name the
-  // span, or say there is none. Printing a zero with no window behind it
-  // would read as "nothing was earned today", which is a claim about a day
+  // Every daily card answers for the days the open shift covers — its own day
+  // and any since, which is what the drawer itself counts — so all of them
+  // name the span, or say there is none. Printing a zero with no window behind
+  // it would read as "nothing was earned today", which is a claim about a day
   // nobody opened.
   const dailyFigures =
     !loadingActivity && shiftActivity && shiftActivity.branches.length > 0
       ? {
           income: formatCurrency(shiftActivity.totals.income.total),
+          cash: optionalMoney(shiftActivity.totals.income.drawerIncome),
+          nonCash: optionalMoney(shiftActivity.totals.income.nonCashIncome),
           expense: formatCurrency(shiftActivity.totals.expense.total),
           sub: shiftActivity.shiftDates.length === 1
             ? `Shift day · ${dateKeyLabel(shiftActivity.shiftDates[0])}`
@@ -1313,6 +1323,8 @@ export default function CashManagement() {
         }
       : {
           income: '—',
+          cash: '—',
+          nonCash: '—',
           expense: '—',
           sub: loadingActivity ? 'Loading the open shift…' : 'No shift open',
         };
@@ -1560,6 +1572,32 @@ export default function CashManagement() {
                 <p className="text-xs font-semibold uppercase tracking-wide">Daily Income</p>
               </div>
               <p className="text-2xl font-bold mt-2 tabular-nums text-emerald-600">{dailyFigures.income}</p>
+              <p className="text-sm text-gray-500">{dailyFigures.sub}</p>
+            </div>
+
+            {/* The daily counterpart of the two Total Income cards, so the two
+                pairs share a name, an icon and a colour and cannot be read as
+                anything but one window against a lifetime. Split on the server
+                from the very summary Daily Income totals, so the three add
+                back together, and carrying the same span line as the cards on
+                either side because it is the same window. For the cashier who
+                needs to see what came in as cash against what was added to a
+                balance without leaving this screen. */}
+            <div className="card">
+              <div className="flex items-center gap-2 text-amber-700">
+                <HandCoins className="w-4 h-4" />
+                <p className="text-xs font-semibold uppercase tracking-wide">Daily Income (cash on hand)</p>
+              </div>
+              <p className="text-2xl font-bold mt-2 tabular-nums text-amber-700">{dailyFigures.cash}</p>
+              <p className="text-sm text-gray-500">{dailyFigures.sub}</p>
+            </div>
+
+            <div className="card">
+              <div className="flex items-center gap-2 text-emerald-600">
+                <Landmark className="w-4 h-4" />
+                <p className="text-xs font-semibold uppercase tracking-wide">Daily Income (non-cash)</p>
+              </div>
+              <p className="text-2xl font-bold mt-2 tabular-nums text-emerald-600">{dailyFigures.nonCash}</p>
               <p className="text-sm text-gray-500">{dailyFigures.sub}</p>
             </div>
 

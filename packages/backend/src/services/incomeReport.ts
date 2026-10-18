@@ -54,6 +54,15 @@ export interface IncomeSourceRow {
   account_type?: string | null;
   txn_count?: number | string | null;
   txn_fees?: number | string | null;
+  // The partition of `txn_fees` by where the fee landed: on top of the amount
+  // (handed over as separate cash, so it reaches the till) or inside it (added
+  // to the receiving account's balance). Both have to be supplied rather than
+  // defaulted, because a caller that forgot them would otherwise report a
+  // split adding up to nothing while `txn_fees` beside it read as a real
+  // figure. They sum back to `txn_fees`, which is the invariant the cash
+  // dashboard's income cards are built on.
+  fee_on_top?: number | string | null;
+  fee_inside?: number | string | null;
   additional_charges?: number | string | null;
   reversed_excluded?: number | string | null;
   transfer_count?: number | string | null;
@@ -75,6 +84,8 @@ export interface IncomeReportRow {
   transferCount: number;
   loadCount: number;
   txnFees: number;
+  feeOnTop: number;
+  feeInside: number;
   additionalCharges: number;
   transferFees: number;
   feeIncome: number;
@@ -92,6 +103,8 @@ export interface IncomeSummary {
   transferCount: number;
   loadCount: number;
   txnFees: number;
+  feeOnTop: number;
+  feeInside: number;
   additionalCharges: number;
   transferFees: number;
   feeIncome: number;
@@ -112,6 +125,8 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
   let transferCount = 0;
   let loadCount = 0;
   let txnFeesCents = 0;
+  let feeOnTopCents = 0;
+  let feeInsideCents = 0;
   let chargesCents = 0;
   let transferFeesCents = 0;
   let loadRevenueCents = 0;
@@ -122,6 +137,8 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
 
   const rows = sourceRows.map((row) => {
     const rowTxnFeesCents = toCents(row.txn_fees);
+    const rowFeeOnTopCents = toCents(row.fee_on_top);
+    const rowFeeInsideCents = toCents(row.fee_inside);
     const rowChargesCents = toCents(row.additional_charges);
     const rowTransferFeesCents = toCents(row.transfer_fees);
     const rowLoadMarginCents = toCents(row.load_margin);
@@ -131,6 +148,8 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
     transferCount += asCount(row.transfer_count);
     loadCount += asCount(row.load_count);
     txnFeesCents += rowTxnFeesCents;
+    feeOnTopCents += rowFeeOnTopCents;
+    feeInsideCents += rowFeeInsideCents;
     chargesCents += rowChargesCents;
     transferFeesCents += rowTransferFeesCents;
     loadRevenueCents += toCents(row.load_revenue);
@@ -150,6 +169,8 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
       transferCount: asCount(row.transfer_count),
       loadCount: asCount(row.load_count),
       txnFees: money(rowTxnFeesCents),
+      feeOnTop: money(rowFeeOnTopCents),
+      feeInside: money(rowFeeInsideCents),
       additionalCharges: money(rowChargesCents),
       transferFees: money(rowTransferFeesCents),
       feeIncome: money(rowTxnFeesCents),
@@ -174,6 +195,10 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
       transferCount,
       loadCount,
       txnFees: money(txnFeesCents),
+      // The pair has to sum back to `txnFees` above, so a total that cannot be
+      // walked back to its own columns would be visible here first.
+      feeOnTop: money(feeOnTopCents),
+      feeInside: money(feeInsideCents),
       additionalCharges: money(chargesCents),
       transferFees: money(transferFeesCents),
       feeIncome: money(txnFeesCents),

@@ -11,6 +11,14 @@ export interface ShiftActivityBranch {
     txnFees: number;
     loadMargin: number;
     totalIncome: number;
+    // Income split by where it landed — fee-on-top plus loading margin against
+    // fee-inside — which is the daily counterpart of the statement's two Total
+    // Income cards. Optional so a panel built against an older backend reads
+    // them as unavailable rather than as zero, the same way the statement's
+    // pair is guarded: a missing figure and a figure of nothing are different
+    // facts and must not be printed as the same one.
+    drawerIncome?: number;
+    nonCashIncome?: number;
   };
   expense: {
     serviceFees: number;
@@ -24,7 +32,13 @@ export interface ShiftActivity {
   shiftDates: string[];
   branches: ShiftActivityBranch[];
   totals: {
-    income: { txnFees: number; loadMargin: number; total: number };
+    income: {
+      txnFees: number;
+      loadMargin: number;
+      total: number;
+      drawerIncome?: number;
+      nonCashIncome?: number;
+    };
     expense: { serviceFees: number; providerCharges: number; operatingExpenses: number; total: number };
     net: number;
   };

@@ -839,6 +839,8 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
             typ.name AS account_type,
             txn.cnt AS txn_count,
             txn.fees AS txn_fees,
+            txn.fee_on_top AS fee_on_top,
+            txn.fee_inside AS fee_inside,
             txn.charges AS additional_charges,
             txn.excluded AS reversed_excluded,
             trf.cnt AS transfer_count,
@@ -863,6 +865,21 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
               -- it no longer decides what is counted.
               COALESCE(SUM(COALESCE(t.fee, 0))
                 FILTER (WHERE t.status = 'completed'), 0) AS fees,
+              -- The same figure split by where the fee landed, which is the
+              -- whole difference between the cash dashboard's two income
+              -- cards: a fee added on top was handed over as separate cash
+              -- and reaches the till, a fee inside the amount rides the
+              -- receiving account's balance. IS NOT FALSE reads a null as
+              -- on top exactly as amountFields does, so the two filters
+              -- partition every fee and sum back to fees. Same expressions
+              -- as the statement's own pair, or the daily figures and the
+              -- all-time ones would be two different amounts of money.
+              COALESCE(SUM(COALESCE(t.fee, 0))
+                FILTER (WHERE t.status = 'completed'
+                          AND t.fee_added_to_balance IS NOT FALSE), 0) AS fee_on_top,
+              COALESCE(SUM(COALESCE(t.fee, 0))
+                FILTER (WHERE t.status = 'completed'
+                          AND t.fee_added_to_balance IS FALSE), 0) AS fee_inside,
               COALESCE(SUM(chg.total) FILTER (WHERE t.status = 'completed'), 0) AS charges,
               -- Everything a reversed row carried, reported beside income
               -- rather than inside it. The drill-down totals the same figures
@@ -1028,7 +1045,13 @@ interface ShiftActivityBranch {
   branchId: string;
   branchName: string;
   shiftDate: string;
-  income: IncomeReport['summary'];
+  // The report's own summary plus the pair the cash dashboard's two daily
+  // income cards read, composed in the route from that summary so the rule
+  // about which side the loading margin is on is written once. Intersected
+  // here rather than folded into IncomeSummary on purpose: these two are a
+  // presentation of the summary, not facts about the report, and the Income
+  // and Expense report has never asked where a fee landed.
+  income: IncomeReport['summary'] & { drawerIncome: number; nonCashIncome: number };
   expense: ExpenseReport['summary'];
 }
 
@@ -1089,11 +1112,23 @@ router.get('/shift-activity', authorize('reports.read'), async (req: Request, re
         loadIncomeReport(req, { startDate: shift.shift_date, endDate: coverage[coverage.length - 1], branchId: shift.branch_id }),
         loadExpenseReport(req, { startDate: shift.shift_date, endDate: coverage[coverage.length - 1], branchId: shift.branch_id }),
       ]);
+      // The pair the cash dashboard's two daily income cards read, composed
+      // here rather than in the browser for the same reason the statement
+      // composes it there: which side the loading margin belongs on (cost
+      // deducted from the balance, selling price to cash on hand) is the
+      // owner's rule, and a second copy of it is a second chance to disagree.
+      // Both figures are taken from the same summary the Daily Income card
+      // sums, and they add back to it, so the three cards stay one set.
+      const summary = income.summary;
       branches.push({
         branchId: shift.branch_id,
         branchName: shift.branch_name,
         shiftDate: shift.shift_date,
-        income: income.summary,
+        income: {
+          ...summary,
+          drawerIncome: round2(summary.feeOnTop + summary.loadMargin),
+          nonCashIncome: round2(summary.feeInside),
+        },
         expense: expense.summary,
       });
     }
@@ -1103,6 +1138,8 @@ router.get('/shift-activity', authorize('reports.read'), async (req: Request, re
         txnFees: acc.txnFees + branch.income.txnFees,
         loadMargin: acc.loadMargin + branch.income.loadMargin,
         totalIncome: acc.totalIncome + branch.income.totalIncome,
+        drawerIncome: acc.drawerIncome + branch.income.drawerIncome,
+        nonCashIncome: acc.nonCashIncome + branch.income.nonCashIncome,
         serviceFees: acc.serviceFees + branch.expense.serviceFees,
         providerCharges: acc.providerCharges + branch.expense.providerCharges,
         operatingExpenses: acc.operatingExpenses + branch.expense.operatingExpenses,
@@ -1110,6 +1147,7 @@ router.get('/shift-activity', authorize('reports.read'), async (req: Request, re
       }),
       {
         txnFees: 0, loadMargin: 0, totalIncome: 0,
+        drawerIncome: 0, nonCashIncome: 0,
         serviceFees: 0, providerCharges: 0, operatingExpenses: 0, totalExpense: 0,
       },
     );
@@ -1128,6 +1166,11 @@ router.get('/shift-activity', authorize('reports.read'), async (req: Request, re
             txnFees: round2(totals.txnFees),
             loadMargin: round2(totals.loadMargin),
             total: round2(totals.totalIncome),
+            // Summed across branches rather than recomputed from the summed
+            // components, so a branch panel and the total under it are the
+            // same addition in the same direction.
+            drawerIncome: round2(totals.drawerIncome),
+            nonCashIncome: round2(totals.nonCashIncome),
           },
           expense: {
             serviceFees: round2(totals.serviceFees),

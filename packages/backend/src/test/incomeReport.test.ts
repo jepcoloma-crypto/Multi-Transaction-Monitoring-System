@@ -93,6 +93,52 @@ test('a column of pennies sums exactly rather than drifting', () => {
   assert.equal(summary.totalIncome, 10);
 });
 
+test('the fee split partitions transaction fees instead of adding to them', () => {
+  const { rows, summary } = buildIncomeReport([
+    row({ txn_fees: '1800.00', fee_on_top: '1000.00', fee_inside: '800.00', load_margin: '46.00' }),
+    row({ account_id: 'acc-2', account_name: 'Paula Bayubay', txn_fees: '140.00', fee_on_top: '100.00', fee_inside: '40.00' }),
+  ]);
+
+  // The cash dashboard prints this pair as two cards, so it has to be a
+  // division of the figure printed on the third rather than a third figure of
+  // its own: an operator who adds the two cards must reach Daily Income, and
+  // an operator who subtracts the two halves must reach the fee total.
+  assert.equal(rows[0].feeOnTop, 1000);
+  assert.equal(rows[0].feeInside, 800);
+  assert.equal(rows[0].feeOnTop + rows[0].feeInside, rows[0].txnFees);
+  assert.equal(summary.feeOnTop, 1100);
+  assert.equal(summary.feeInside, 840);
+  assert.equal(summary.feeOnTop + summary.feeInside, summary.txnFees);
+  // Moving nothing: income is still fees plus margin, whatever side the fees
+  // are reported under.
+  assert.equal(summary.totalIncome, summary.txnFees + summary.loadMargin);
+  assert.equal(summary.feeOnTop + summary.loadMargin + summary.feeInside, summary.totalIncome);
+});
+
+test('a fee credited back is split too, so the pair still walks back', () => {
+  const { summary } = buildIncomeReport([
+    row({ txn_fees: '90.00', fee_on_top: '100.00', fee_inside: '-10.00' }),
+  ]);
+
+  // A reversal can put a fee back, and the halves are allowed to disagree in
+  // sign — what the pair may never do is stop adding to the total beside it.
+  assert.equal(summary.feeOnTop, 100);
+  assert.equal(summary.feeInside, -10);
+  assert.equal(summary.feeOnTop + summary.feeInside, summary.txnFees);
+});
+
+test('a caller that supplies no split reports none rather than inventing one', () => {
+  const { summary } = buildIncomeReport([row({ txn_fees: '1800.00' })]);
+
+  // The split is supplied by the query that reads `fee_added_to_balance`, and
+  // a second caller that forgot those columns should be caught by a pair of
+  // zeros beside a real fee total — not papered over by a default that made
+  // the wrong answer look reconstructable.
+  assert.equal(summary.feeOnTop, 0);
+  assert.equal(summary.feeInside, 0);
+  assert.notEqual(summary.feeOnTop + summary.feeInside, summary.txnFees);
+});
+
 test('an account that earned nothing is still listed rather than dropped', () => {
   const { rows, summary } = buildIncomeReport([
     row({ txn_fees: '10.00' }),
