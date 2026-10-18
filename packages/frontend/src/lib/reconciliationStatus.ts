@@ -28,13 +28,18 @@ export interface ReconciliationStatus {
  * The `null` is worth keeping distinct from an empty list on the screen too:
  * "nobody is overdue" and "we could not tell" are different facts, and a
  * dashboard that printed both as "all clear" would be lying in one of them.
+ *
+ * The endpoint is `/reconciliations`, plural — the page is `/reconciliation`,
+ * singular, and the two are easy to cross. Getting it wrong here 404s, which
+ * this catch turns into `null`, which hides the card; the failure is silent by
+ * design and so has to be avoided rather than noticed.
  */
 export const fetchOverdueReconciliations = async (branchId?: string): Promise<ReconciliationStatus | null> => {
   const params = new URLSearchParams();
   if (branchId) params.set('branchId', branchId);
   const qs = params.toString();
   try {
-    return await api.get<ReconciliationStatus>(`/reconciliation/overdue${qs ? `?${qs}` : ''}`);
+    return await api.get<ReconciliationStatus>(`/reconciliations/overdue${qs ? `?${qs}` : ''}`);
   } catch {
     return null;
   }

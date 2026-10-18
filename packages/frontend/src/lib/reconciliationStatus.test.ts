@@ -39,19 +39,19 @@ describe('fetchOverdueReconciliations', () => {
   it('asks for the whole list when nothing narrows it', async () => {
     get.mockResolvedValue(payload);
     await expect(fetchOverdueReconciliations()).resolves.toEqual(payload);
-    expect(get).toHaveBeenCalledWith('/reconciliation/overdue');
+    expect(get).toHaveBeenCalledWith('/reconciliations/overdue');
   });
 
   it('narrows to the branch and to nothing else', async () => {
     get.mockResolvedValue(payload);
     await fetchOverdueReconciliations('branch-1');
-    expect(get).toHaveBeenCalledWith('/reconciliation/overdue?branchId=branch-1');
+    expect(get).toHaveBeenCalledWith('/reconciliations/overdue?branchId=branch-1');
   });
 
   it('reads an empty branch as no branch rather than sending an empty value', async () => {
     get.mockResolvedValue(payload);
     await fetchOverdueReconciliations('');
-    expect(get).toHaveBeenCalledWith('/reconciliation/overdue');
+    expect(get).toHaveBeenCalledWith('/reconciliations/overdue');
   });
 
   it('keeps "never reconciled" apart from a counted number of days', async () => {
