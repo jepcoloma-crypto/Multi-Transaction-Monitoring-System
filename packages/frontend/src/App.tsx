@@ -28,6 +28,7 @@ import Backup from './pages/Backup';
 import AmountCorrections from './pages/AmountCorrections';
 import FeeAudit from './pages/FeeAudit';
 import Integrity from './pages/Integrity';
+import MovementHistory from './pages/MovementHistory';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -88,6 +89,7 @@ function AppRoutes() {
         <Route path="amount-corrections" element={<AmountCorrections />} />
         <Route path="fee-audit" element={<FeeAudit />} />
         <Route path="integrity" element={<Integrity />} />
+        <Route path="movements/:id/history" element={<MovementHistory />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
