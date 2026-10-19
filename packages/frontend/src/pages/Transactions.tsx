@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, manilaDateTimeValue, paymentMethodCell, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel, manilaInputToIso, transactionTypeLabel, cashBehaviorLabel } from '../lib/format';
-import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil, Ban } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil, Ban, History } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
 import { ShiftGatedButton } from '../components/ShiftGatedButton';
@@ -724,6 +725,17 @@ export default function Transactions() {
                       </button>
                     )}
                     <button onClick={() => setShowDetail(tx)} className="p-1 text-gray-400 hover:text-primary-600"><Eye className="w-4 h-4" /></button>
+                    {/* What this movement wrote, and who has touched it since.
+                        Read-only, and it cannot open a correction: the page
+                        behind it holds no write path, so reaching it is safe for
+                        whoever may read a history. */}
+                    <Link
+                      to={`/movements/${tx.id}/history`}
+                      title="Movement history"
+                      className="p-1 text-gray-400 hover:text-primary-600"
+                    >
+                      <History className="w-4 h-4" />
+                    </Link>
                     {canEdit(tx) && (
                       <button onClick={() => openEdit(tx)} title="Edit transaction" className="p-1 text-gray-400 hover:text-primary-600"><Pencil className="w-4 h-4" /></button>
                     )}
