@@ -709,7 +709,13 @@ export default function Transactions() {
                     <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' || tx.status === 'rejected' ? 'red' : 'yellow'}`}>{tx.status}</span>
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_username || <span className="text-gray-400">-</span>}</td>
-                  <td className="px-4 py-3 text-right">
+                  {/* The icons must stay on one line. They are inline elements
+                      separated only by whitespace, so once a fourth one was
+                      added the cell wrapped at that space and the last icon
+                      dropped onto its own row -- the column read as a small
+                      pile rather than as actions. nowrap also makes the column
+                      size itself to fit all four instead of squeezing them. */}
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
                     {/* Same two-door rule as the detail modal and the Loading
                         page: an administrator cancels on the spot, everyone
                         else files a request that waits in the Approvals queue.
