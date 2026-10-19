@@ -46,7 +46,7 @@ export interface FeeFiguresInput {
 }
 
 /**
- * What a movement posts under one fee mode (D42): the account's whole figure
+ * What a movement posts under one fee mode (D46): the account's whole figure
  * signed by its own direction, and the drawer's net. The drawer is only
  * computed when the movement actually settles in cash — `hasDrawer` is the
  * recorder's own rows, not an assumption from the method, because a movement
@@ -76,15 +76,19 @@ const legMatches = (actual: number | null, expected: number | null): boolean =>
 /**
  * Judge one movement against both fee modes. The status is decided by the
  * legs that exist: matching the declared mode is `ok`; matching only the
- * opposite mode means the flag was backwards when the row was written — or
- * the row predates D42, where both modes posted alike and the two changed
- * cells therefore sit exactly one fee away from their declaration; matching
- * neither means the figures themselves, not just the flag, are wrong.
+ * opposite mode means the flag was backwards when the row was written —
+ * reachable only for a cash-out, since D46 gave both cash-in cells the same
+ * figures; matching neither means the figures themselves, not just the flag,
+ * are wrong.
  *
- * A row whose toggle was backwards but whose arithmetic was self-consistent
- * under the wrong mode looks `ok` here — postings alone cannot say which way
- * the tender really ran. That is the admin's call from the figures shown
- * beside each row; the tool never guesses it.
+ * Two things follow from that, and neither can be read out of the postings.
+ * A cash-in whose flag was typed backwards still looks `ok`, because both its
+ * cells move the same pesos — only the side carrying the fee's own row differs,
+ * and that is the tender, which the admin reads off the figures shown beside
+ * the row. And a cash-in that credited the customer the fee — D42's own
+ * posting, transactions 3 and 21 — matches neither cell and is named `neither`,
+ * which is the row the fee re-post exists to correct. The tool never guesses
+ * the tender; it only says which postings the books were meant to hold.
  */
 export function classifyFeeMovement(input: FeeFiguresInput & {
   actualAccountTotal: number;

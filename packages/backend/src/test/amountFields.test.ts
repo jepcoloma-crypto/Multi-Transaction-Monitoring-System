@@ -64,20 +64,23 @@ const throwsStatus = (fn: () => unknown, statusCode: number, pattern: RegExp) =>
     `expected ${pattern} with ${statusCode}`
   );
 
-test('a transaction posts the fee-riding net amount plus charges to the ledger', () => {
-  // Cash-in with the fee paid on top: the account lands 500 + 20 (D42), and
-  // the charges ride on top of that.
+test('a transaction posts the amount plus charges to the ledger, never the fee (D46)', () => {
+  // Cash-in with the fee collected on top: the account lands the 500 and the
+  // charges ride on top of that. The ₱20 fee is the till's income line, not a
+  // credit to the customer (D46) — so it is nowhere in this figure, which is
+  // now the same one the fee-inside cell below plans.
   const result = plan('transaction', transactionRecord(), [creditRow()], { amount: 500 });
 
-  assert.deepEqual(result.columns, { amount: 500, fee: 20, net_amount: 520 });
-  assert.deepEqual(result.amounts, { a1: 545 });
+  assert.deepEqual(result.columns, { amount: 500, fee: 20, net_amount: 500 });
+  assert.deepEqual(result.amounts, { a1: 525 });
 });
 
 test('a fee inside a cash-in is cut from the drawer, not from the account (D42)', () => {
   // The customer sent 500 of which 20 was the fee. The account still lands the
   // whole 500 — the carve-out is a drawer's story, not an account's — so this
   // cell posts what it always posted, and the fee stays the tender record it
-  // was. The fee-on-top row above differs by exactly the fee now (D42).
+  // was. The fee-on-top row above plans the same figures now (D46): since that
+  // decision the tender moves no peso on the debit side, only the fee's address.
   const record = transactionRecord({ fee_added_to_balance: false });
   const result = plan('transaction', record, [creditRow()], { amount: 500 });
 
@@ -107,14 +110,15 @@ test('a fee carved from a cash-out is cut from what the account hands out (D42)'
 });
 
 test('charges are summed and an unreadable charge list is refused, never guessed', () => {
-  // in-ON: the account lands 400 + 20 fee (D42), and the charges ride on top.
+  // in-ON: the account lands the 400 (D46 — never the fee), and the charges
+  // ride on top of it.
   const result = plan(
     'transaction',
     transactionRecord({ additional_charges: '[{"amount":"10.00"},{"amount":"15.50"}]' }),
     [creditRow()],
     { amount: 400 }
   );
-  assert.deepEqual(result.amounts, { a1: 445.5 });
+  assert.deepEqual(result.amounts, { a1: 425.5 });
 
   throwsStatus(
     () =>
@@ -278,10 +282,11 @@ test('a figure that is not a number is refused before it can reach the ledger', 
 });
 
 test('a record carrying no charges contributes nothing beyond its own figures', () => {
-  // in-ON with no proposal: the account's figure is the stored amount plus the
-  // fee (D42), and the absent charges add nothing on top of it.
+  // in-ON with no proposal: the account's figure is the stored amount, the
+  // fee belonging to the till (D46), and the absent charges add nothing on
+  // top of it.
   const absent = plan('transaction', transactionRecord({ additional_charges: null }), [creditRow()], {});
-  assert.deepEqual(absent.amounts, { a1: 420 });
+  assert.deepEqual(absent.amounts, { a1: 400 });
 
   const alreadyParsed = plan(
     'transaction',
@@ -289,7 +294,7 @@ test('a record carrying no charges contributes nothing beyond its own figures', 
     [creditRow()],
     {}
   );
-  assert.deepEqual(alreadyParsed.amounts, { a1: 430 });
+  assert.deepEqual(alreadyParsed.amounts, { a1: 410 });
 });
 
 test('a charge list that is not an array is refused rather than counted as zero', () => {
@@ -314,7 +319,7 @@ test('a provider fee keeps its stored total when the old quantity cannot be read
   assert.equal(result.columns.provider_convenience_fee, 20);
 });
 
-test('a corrected cash movement plans the till beside the account, as creation wrote it (D42)', () => {
+test('a corrected cash movement plans the till beside the account, as creation wrote it (D46)', () => {
   // Cash-in settled in cash: the record's account lands the figure and the
   // till carries the net that physically crossed it. Correcting only the
   // account would leave the till contradicting the record forever — which is
@@ -322,9 +327,11 @@ test('a corrected cash movement plans the till beside the account, as creation w
   const rows = [creditRow('a1'), debitRow('till')];
   const result = plan('transaction', transactionRecord(), rows, { amount: 500 });
 
-  // in-ON: the account lands 500 + 20 fee + 25 charges = 545; the till's net
-  // is fee − accountTotal = 20 − 545 = −525 (drawerLeg) — a debit of 525.
-  assert.deepEqual(result.amounts, { a1: 545, till: 525 });
+  // in-ON: the account lands 500 + 25 charges = 525 (the ₱20 fee is the
+  // till's, never the account's — D46); the till's net is
+  // fee − accountTotal = 20 − 525 = −505 (drawerLeg) — a debit of 505, the
+  // 20 of income already credited back against the 525 it hands over.
+  assert.deepEqual(result.amounts, { a1: 525, till: 505 });
   assert.deepEqual(result.signs, { a1: 1, till: -1 });
 });
 

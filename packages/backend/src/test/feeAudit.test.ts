@@ -26,17 +26,30 @@ test('a cash-out posted on top is ok, and the charges ride with it', () => {
   assert.deepEqual(verdict.declared, { accountTotal: -525, drawerNet: 535 });
 });
 
-test('a row written before the fee rode the account is named as the opposite mode', () => {
-  // in-ON declared, but the rows are the pre-D42 posting: the account landed
-  // the bare amount and the till carried the fee. The opposite mode expects
-  // exactly that, so the row is one fee away from its declaration.
+test('the posting D42 wrote for a cash-in on top is now named as wrong, not as the other cell', () => {
+  // in-ON declared; the rows are D42's own posting — the account landed
+  // amount + fee and the till handed the whole amount over. Under D46 neither
+  // cell wants those figures: the account lands the amount and the till keeps
+  // the fee, so this is exactly the row the fee re-post exists to correct
+  // (transactions 3 and 21, ₱20 between them).
+  const verdict = classifyFeeMovement({
+    direction: 'in', amount: 500, fee: 10, feeAddedToBalance: true, charges: 0,
+    actualAccountTotal: 510, actualDrawerNet: -500, hasDrawer: true,
+  });
+  assert.equal(verdict.status, 'neither');
+  assert.deepEqual(verdict.declared, { accountTotal: 500, drawerNet: -490 });
+  assert.deepEqual(verdict.opposite, { accountTotal: 500, drawerNet: -490 });
+});
+
+test('the cash-in posting written before D42 is the one D46 wants, so it reads ok again', () => {
+  // in-ON declared; the account landed the bare amount and the till carried
+  // the fee — which is what the books should have said all along. D46 restores
+  // that cell, so the row no longer needs correcting.
   const verdict = classifyFeeMovement({
     direction: 'in', amount: 500, fee: 10, feeAddedToBalance: true, charges: 0,
     actualAccountTotal: 500, actualDrawerNet: -490, hasDrawer: true,
   });
-  assert.equal(verdict.status, 'opposite');
-  assert.deepEqual(verdict.declared, { accountTotal: 510, drawerNet: -500 });
-  assert.deepEqual(verdict.opposite, { accountTotal: 500, drawerNet: -490 });
+  assert.equal(verdict.status, 'ok');
 });
 
 test('the out-OFF cell of the old rule is named the same way', () => {
@@ -59,22 +72,28 @@ test('figures that match neither mode are named neither', () => {
 });
 
 test('a non-cash movement is judged on its account alone', () => {
-  // No drawer rows: the drawer leg is null on every side and never votes.
+  // No drawer rows: the drawer leg is null on every side and never votes. The
+  // account still lands the bare amount under D46 — a fee has nowhere to sit
+  // but the income report when there is no tin — so the figure this always
+  // posted is the right one.
   const verdict = classifyFeeMovement({
     direction: 'in', amount: 500, fee: 10, feeAddedToBalance: true, charges: 0,
     actualAccountTotal: 500, actualDrawerNet: null, hasDrawer: false,
   });
-  assert.equal(verdict.status, 'opposite');
+  assert.equal(verdict.status, 'ok');
   assert.equal(verdict.declared.drawerNet, null);
   assert.equal(verdict.opposite.drawerNet, null);
 });
 
 // --- planFeeRepost -------------------------------------------------------
 
-test('re-posting under the other mode moves the fee between the two pools', () => {
-  // in declared ON, correcting to OFF: the account gives back the fee it was
-  // credited and the till hands out less — the deltas that make both legs
-  // match the other cell.
+test('re-posting a cash-in between the two fee modes moves no peso, only the tender', () => {
+  // Since D46 both cash-in cells land `amount` on the account and net the till
+  // to fee − amount: the flag alone decides which side carries the fee's own
+  // row, never a balance. So flipping it plans the same figures — which is
+  // also why correcting transactions 3 and 21 still works: their figures are
+  // wrong under either mode, and the re-post plans the right ones from the
+  // amount and the fee, not from the flag.
   const plan = planFeeRepost({
     direction: 'in',
     recordAmount: '500.00', recordFee: '10.00', recordFeeAddedToBalance: true,
@@ -94,8 +113,10 @@ test('re-posting fixes the amount and the fee together, charges untouched', () =
     primaryAccountId: WALLET, drawerAccountId: DRAWER,
     target: { amount: 600 },
   });
-  assert.equal(plan.columns.net_amount, 610, 'the fee rides the corrected amount too (D42)');
-  assert.deepEqual(plan.amounts, { [WALLET]: 635, [DRAWER]: 625 });
+  assert.equal(plan.columns.net_amount, 600, 'the corrected amount, the fee standing outside it (D46)');
+  // The account lands 600 + 25 charges; the till nets fee − that = −615, the
+  // ₱10 already credited back against the ₱625 it hands over.
+  assert.deepEqual(plan.amounts, { [WALLET]: 625, [DRAWER]: 615 });
 });
 
 test('the out-OFF target cuts the fee from what the account hands out', () => {
@@ -118,7 +139,9 @@ test('a movement with no drawer plans against the account alone', () => {
     primaryAccountId: WALLET, drawerAccountId: null,
     target: {},
   });
-  assert.deepEqual(plan.amounts, { [WALLET]: 510 });
+  // The account lands the amount (D46); with no tin to hold the fee it is
+  // income the income report books and the ledger does not carry.
+  assert.deepEqual(plan.amounts, { [WALLET]: 500 });
 });
 
 test('a target whose drawer nets to zero carries a zero, not a missing key', () => {
@@ -176,7 +199,7 @@ test('the plan declares signed targets and the direction each is measured in', (
     primaryAccountId: WALLET, drawerAccountId: null,
     target: {},
   });
-  assert.deepEqual(solo.targets, { accountTotal: 510, drawerNet: null });
+  assert.deepEqual(solo.targets, { accountTotal: 500, drawerNet: null });
   assert.deepEqual(solo.signs, { [WALLET]: 1 });
 
   const zeroNet = planFeeRepost({

@@ -106,11 +106,13 @@ export interface Posting {
  * (section 12 D12) out of this function. A cash movement may hand over two drawer rows
  * (the fee and the movement, D37); anything else is one or none.
  *
- * `accountFee` moves the fee onto the account's own side (D42): a cash-in's
- * fee was paid in e-money, so it lands beside the account's movement as its
- * own line — the fee row first, the movement pairing at its full figure
- * against the drawer's row after it — instead of being netted into the
- * drawer's movement. Zero keeps the single whole row.
+ * `accountFee` moves the fee onto the account's own side (D46): it is set only
+ * for a cash-in whose fee was carved from the amount it lands — a cut of what
+ * the customer sent, so the fee sits beside the account's movement as its own
+ * line, the fee row first, the movement pairing at its full figure against the
+ * drawer's row after it — instead of being netted into the drawer's movement.
+ * A cash-in that collected the fee on top puts it in the till instead, and
+ * zero keeps the single whole row.
  *
  * A zero-amount counterparty writes no row. A 0.00 ledger entry carries no information and
  * would show up as a movement in the Statement of Account.
@@ -185,12 +187,13 @@ export async function processTransaction(
   counterparties: CounterpartyLeg[] = [],
   feeOnAccount: boolean = false
 ): Promise<{ newBalance: number; netAmount: number; counterpartyBalance: number | null }> {
-  // The account's row carries the whole amount the balance moves (D42): the
-  // fee is a second line beside it when it belongs on this side — a cash-in's
-  // fee was paid in e-money and lands on the receiving account — and part of
-  // the drawer's movement when it does not, never a subtraction from what
-  // lands or leaves. `fee_added_to_balance` decides which, recorded on the
-  // transaction alongside the figure it produced.
+  // The account's row carries the whole amount the balance moves (D46): the
+  // fee is a second line beside it when it belongs on this side — only a
+  // cash-in whose fee was cut from the amount, since a fee collected on top
+  // belongs to the tin — and part of the drawer's movement when it does not,
+  // never a subtraction from what lands or leaves. `fee_on_drawer` (the
+  // tender's own record, D46) decides which, recorded on the transaction
+  // alongside the figure it produced.
   const netAmount = amount;
   const postings = planPostings(accountId, entryType, netAmount, counterparties, feeOnAccount ? fee : 0);
 

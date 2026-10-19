@@ -1966,6 +1966,12 @@ stand. D37's fee-row placement for cash-ins: the split moves from the till to th
 account, because the till never received it. D41 is unaffected — its nets simply quote D42's
 figures.
 
+**Superseded in part by D46** (§37): "in, fee on top" lands `amount + fee` on the receiving
+account no more. The customer was being credited the fee itself, and the tin was ₱20 short of
+the income the report had already booked for it. D46 keeps D42's other three cells and its
+cash-out fee-row placement, and moves the cash-in fee row back to the tin — but only when the
+tender put it there.
+
 ## 34. Finding and fixing a fee that went in backwards
 
 The entry toggle was the only place the ON/OFF flag was ever written, and after D42 it decides
@@ -2160,3 +2166,70 @@ written, so a record can never file under no day at all. Zero pesos move — the
 the shift windows (D28) and every posting instant are read from `ledger_entries.created_at`,
 never from this column. The form labels it "Sale date (Manila)": the whitelist still decides
 what renders, the label only names the day the operator means.
+
+## 37. A cash-in's fee belongs to the tin, not the wallet
+
+D42 landed a cash-in's fee on the account that received the money, on the argument that the
+customer had paid it in e-money. The books were internally consistent — D24's identity held —
+but they were wrong about where the money was, in a way two reports could see and no report
+could name. The income report books every fee collected on top as till income, while the tin
+was ₱20 short of that figure and the receiving e-wallet carried the fee as a credit to the
+customer. Two cash-ins were booked that way on 2026-10-19 — transactions 3 and 21, ₱10 each,
+against Vanessa Bautista — and the ₱20 they put in the wrong pocket is the ₱20 that would not
+tie.
+
+**The rule (D46).** A cash-in's fee is the tin's income whichever way the tender carried it, so
+the receiving account lands `amount` and nothing else. `netAmountOf` no longer reads the flag
+for a cash-in at all; only a cash-out still reads it, because a fee carved from what leaves is
+cut from what the account hands out.
+
+| Cell | Account leg | Drawer net |
+|---|---|---|
+| In, fee on top | credit `amount` | debit `amount − fee` |
+| In, fee inside | credit `amount` | debit `amount − fee` |
+| Out, fee on top | debit `amount` | credit `amount + fee` |
+| Out, fee inside | debit `amount − fee` | credit `amount` |
+
+Only the top-left cell moves; the other three are what they were. D24's identity
+`signed + drawer_delta = fee` holds in every cell still, so the books grow by exactly the fee
+the income report books — the ₱10 that was both credited to the customer and counted as income
+is now counted once, in the tin that holds it.
+
+**Where the fee's own row sits.** `drawerLegs` no longer branches on the direction but on
+`feeOnDrawerOf`: did the tender put this fee in the till? On a cash-out it always has, so that
+side is untouched. On a cash-in it has when the fee was collected on top — handed over as
+separate cash — and it has not when the fee was cut from the amount, which keeps D42's other
+cell exactly as it stood, fee row on the receiving account. The two cash-in cells now move the
+same figures and differ only in which side carries the line that says the fee exists: the tin
+shows a `Service fee` credit and settles the movement at its full figure, or the wallet shows
+the fee and the tin writes the net alone. A non-cash movement still has no counterparty to keep
+honest, so it keeps its single whole row — landing `amount`, where the fee was never anything
+but income.
+
+**What does not change.** Reversals still mirror the recorded rows (D40). Amount corrections and
+the fee re-post still ask the same `netAmountOf`, so editing an amount reproduces creation and
+the correction planner plans both legs to the centavo (§36, D45). D41's netted preview quotes
+the new nets; the entry form shows the drawer at the same net and names the fee's cash beside
+it, on a cash-in as on a cash-out. The shift's expected closing, the register, the statement's
+buckets and the Sources and Uses tie-out read the same rows they always read. Historical rows
+are not rewritten: the two cash-ins that went in backwards are corrected by the fee re-post,
+per row, on an administrator's word (§34, D43). What lands is an append-only pair — the
+receiving account's `Service fee` credit is cancelled by a `Fee correction:` line, and the till
+receives the same ₱10 beside the movement it already held — so the statement shows the wrong
+posting, its reason and its reversal in that order, and both balances end where this rule puts
+them.
+
+**What the flag decides now, and what the audit can no longer see.** For a cash-in the tender
+flag no longer moves a peso: both cells post the same figures, and the flag says which side
+carries the fee's row. That price is worth stating. `classifyFeeMovement` judges a movement by
+its account total and its till net, and since those are identical under both cash-in modes, a
+cash-in whose flag is backwards now reads `ok`. What it still catches is the posting that
+actually moves money wrongly — a cash-in that credited the customer the fee, which matches
+neither cell and is named `neither` (§34). A flag typed backwards on a cash-in is a
+presentation error, not a balance error, and the tin's `Service fee` total is where it shows.
+
+**Superseded:** D42's "in, fee on top" cell and its cash-in fee-row paragraph, in part — the
+flag is no longer a posting rule on the debit side, and the split follows the tender rather
+than the direction. D42's other three cells, its D40 guard (a fee inside the amount cannot
+exceed it) and its reversal paragraph stand, as does D37, whose fee-first ordering the tin
+keeps. D41 and D45 are unaffected; their figures simply quote the new nets.

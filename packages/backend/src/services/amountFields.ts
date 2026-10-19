@@ -183,14 +183,14 @@ function planTransaction(
   const amount = readMoney(read('amount'), 'Amount', 0);
   const fee = readMoney(read('fee'), 'Fee', 0);
 
-  // The same rule as creation, asked of the same function (design D42): the fee
-  // rides the side the customer paid it on — amount + fee on a cash-in that
-  // collected it on top, amount − fee on a cash-out that carved it from the
-  // amount, amount otherwise — and the balance moves by that net figure. A fee
-  // taken inside the amount still cannot exceed it, because it is a cut of the
-  // amount the customer sent and a larger cut would book income that money
-  // never carried. Reproducing exactly what creation would have written,
-  // instead of quietly re-pricing the movement.
+  // The same rule as creation, asked of the same function (design D46): a
+  // cash-in lands the amount and never the fee — the fee is the till's income
+  // whichever way the tender carried it — while a cash-out still cuts a fee
+  // taken inside the amount from what leaves. A fee taken inside the amount
+  // still cannot exceed it, because it is a cut of the amount the customer
+  // sent and a larger cut would book income that money never carried.
+  // Reproducing exactly what creation would have written, instead of quietly
+  // re-pricing the movement.
   const { exceeds, netAmount } = netAmountOf({
     direction: String(record.direction ?? ''),
     amount,
@@ -210,7 +210,7 @@ function planTransaction(
   const signs: Record<string, 1 | -1> = { [primary]: accountTotal < 0 ? -1 : 1 };
 
   // The drawer's net, from the same drawerLeg the entry route and the fee
-  // re-post call, so all three agree cell for cell (D42/D43): the till moves
+  // re-post call, so all three agree cell for cell (D46/D43): the till moves
   // by what the corrected figures say crossed it, or the fee audit would find
   // the record and its own two legs telling different stories.
   if (drawerId) {

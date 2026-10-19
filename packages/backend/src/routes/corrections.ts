@@ -67,7 +67,7 @@ function pick(row: any, columns: string[]): Record<string, unknown> {
 
 // The record the amount planner reads, enriched with its type's direction when
 // the record is a transaction: what the balance moves depends on direction and
-// fee mode (design D42), and the transactions table stores only the type's id.
+// fee mode (design D46), and the transactions table stores only the type's id.
 function recordSql(table: string): string {
   return table === 'transactions'
     ? `SELECT t.*, tt.direction FROM ${table} t
@@ -105,14 +105,14 @@ router.get('/audit', authorize('reports.read'), async (req: Request, res: Respon
 });
 
 // --------------------------------------------------------- fee audit -----
-// The ON/OFF fee flag decides what posts in two of the four cells (D42), and
-// it is written once, at the counter: the amount form corrected one account
-// only, so it refused a cash movement outright, and the flag itself was never
-// editable, so a row written backwards stayed backwards silently. This lists
-// every completed fee-bearing movement beside what its declared mode says
-// should have posted and what the opposite mode would, judged by the same
-// netAmountOf/drawerLeg the entry route writes with (D43). Read-only — the fix
-// is the re-post below.
+// The ON/OFF fee flag decides a cash-out's account figure outright and, on a
+// cash-in, which side carries the fee's own row (D46); it is written once, at
+// the counter: the amount form corrected one account only, so it refused a cash
+// movement outright, and the flag itself was never editable, so a row written
+// backwards stayed backwards silently. This lists every completed fee-bearing
+// movement beside what its declared mode says should have posted and what the
+// opposite mode would, judged by the same netAmountOf/drawerLeg the entry route
+// writes with (D43). Read-only — the fix is the re-post below.
 //
 // "actual" sums every row the movement owns, corrections appended included:
 // it is what the account and the till really moved, not what the record's

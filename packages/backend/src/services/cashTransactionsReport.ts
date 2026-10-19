@@ -102,8 +102,9 @@ export interface LoadingSourceRow {
   branch_name?: string | null;
 }
 
-// On top and inside are the two fee modes (D42's direction rule); loading is
-// neither, because a loading sale earns its margin rather than charging a fee.
+// On top and inside are the two fee modes (the tender's own record, posted per
+// D46); loading is neither, because a loading sale earns its margin rather than
+// charging a fee.
 export type CashIncomeType = 'on-top' | 'inside' | 'loading';
 
 export interface CashTransactionRow {

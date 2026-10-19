@@ -92,19 +92,21 @@ test('the drawer fee and its movement post as two rows, fee first (D37)', () => 
   ]);
 });
 
-test("a cash-in's fee posts on the account, fee first, movement pairing at its full figure (D42)", () => {
-  // ₱500 crosses the tin and the ₱10 fee was paid in e-money, so the wallet's
-  // two rows are the fee and the ₱500 movement beside it — the movement pairs
-  // exactly with the drawer's single net row, and the fee stands as the line
-  // of income it is, on the side that received it.
-  const postings = planPostings(WALLET, 'credit', 510, [
-    { accountId: DRAWER, amount: 500, entryType: 'debit', role: 'movement' },
+test("a cash-in's fee posts on the account, fee first, movement pairing with the till's net (D46)", () => {
+  // ₱500 crossed the tin of which ₱10 was carved out as the fee, so the wallet's
+  // two rows are the ₱10 fee and the ₱490 movement beside it — the fee stands as
+  // the line of income it is, on the side the carve took it from, and what
+  // remains leaves ₱490 for the drawer to hand over, which is exactly the
+  // drawer's own single row. A fee collected on top puts those rows on the till
+  // instead and leaves the wallet one whole row (D46).
+  const postings = planPostings(WALLET, 'credit', 500, [
+    { accountId: DRAWER, amount: 490, entryType: 'debit', role: 'movement' },
   ], 10);
 
   assert.deepEqual(postings, [
     { accountId: WALLET, entryType: 'credit', amount: 10, role: 'fee' },
-    { accountId: WALLET, entryType: 'credit', amount: 500, role: 'movement' },
-    { accountId: DRAWER, entryType: 'debit', amount: 500, role: 'movement' },
+    { accountId: WALLET, entryType: 'credit', amount: 490, role: 'movement' },
+    { accountId: DRAWER, entryType: 'debit', amount: 490, role: 'movement' },
   ]);
 });
 

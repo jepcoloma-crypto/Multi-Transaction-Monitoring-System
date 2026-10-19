@@ -253,7 +253,7 @@ export interface CashDetailSource {
   // Separate (true) or deducted (false) — the record of whether the customer
   // paid the fee on top of the amount or inside it. It decorates the badge on
   // each row and decides nothing in this report: income is read from the fee
-  // column itself, whichever cell the movement posted under (D42). NULL is the
+  // column itself, whichever cell the movement posted under (D46). NULL is the
   // column default and reads as separate, matching how the rest of the codebase
   // treats the flag.
   fee_added_to_balance?: boolean | null;

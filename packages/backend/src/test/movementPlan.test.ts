@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem } from '../services/movementPlan';
+import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf } from '../services/movementPlan';
+import { drawerLeg } from '../services/cashManagement';
 
 // The posting matrix the owner confirmed, in the figures from his own books,
 // run through the one planner the entry route and the entry preview now share.
@@ -36,28 +37,31 @@ test('cash received → e-money sent: the drawer gains the amount and the fee, t
   assert.equal(plan.finalStatus, 'completed');
 });
 
-test('e-money received → cash paid out: the fee rides the account, so the drawer hands over the whole amount', () => {
+test('e-money received → cash paid out: the fee is the till\'s, so the wallet lands the amount alone', () => {
   // The sentence the flow promises the entry form, on the owner's own numbers:
-  // a ₱24,800 GCash cash-in with the ₱250 fee paid on top lands the whole
-  // ₱25,050 on Sheryll's wallet and the till hands over ₱24,800. The old
-  // figures shortchanged the till by the fee (D42); this is the row that
-  // complained.
+  // a ₱24,800 cash-in with the ₱250 fee collected on top lands ₱24,800 on
+  // Sheryll's wallet and takes the ₱250 as the till's own income line — the
+  // receiving balance is never credited a fee (D46, which reversed D42's "in,
+  // fee on top" cell after it credited the customer the fee itself). The till
+  // hands over ₱24,800 against the ₱250 credited back to it, so it nets
+  // ₱24,550 — the figure it was short by before.
   const plan = walletPlan({ amount: 24800, fee: 250 });
 
   assert.deepEqual(plan.problems, []);
   assert.equal(plan.entryType, 'credit', "Sheryll's e-wallet is credited");
-  assert.equal(plan.netAmount, 25050, 'the fee rides the account that received it (D42)');
-  assert.deepEqual(plan.drawerLeg, { amount: 24800, entryType: 'debit' }, 'Cash on Hand −24,800');
+  assert.equal(plan.netAmount, 24800, 'the account lands the amount and never the fee (D46)');
+  assert.equal(plan.feeOnDrawer, true, 'the ₱250 is the till\'s own row');
+  assert.deepEqual(plan.drawerLeg, { amount: 24550, entryType: 'debit' }, 'Cash on Hand −24,550');
   assert.equal(plan.cashBehavior, 'out', 'the badge reads: cash leaves the drawer');
 });
 
 test('a fee inside a cash-in is cut from the drawer, not the account', () => {
   // The customer e-money-sends ₱500 of which ₱10 is the fee: the balance
   // lands the whole ₱500, the drawer nets ₱10 − ₱500 = −₱490 — what
-  // physically crossed the tin — and the fee is income. Under the old rule
-  // this cell posted the same figures as the fee-on-top row; only the tender
-  // record differs. Now the two cells are distinct (D42), and this is the
-  // half where the old arithmetic was already right.
+  // physically crossed the tin — and the fee is income. Since D46 both cash-in
+  // cells land `amount` and net the drawer the same way; they differ in which
+  // side carries the fee's own row, and this is the half where the figures
+  // never moved.
   const plan = walletPlan({ feeAddedToBalance: false });
 
   assert.equal(plan.feeInside, true, 'the tender record survives as a record');
@@ -200,12 +204,12 @@ test('additional charges ride the account leg and the drawer hands them over', (
   const plan = walletPlan({ additionalCharges: [{ amount: '50' }, { amount: 25 }] });
 
   assert.equal(plan.totalCharges, 75);
-  assert.equal(plan.netAmount, 510, 'the ₱10 fee rides the account too (D42)');
-  assert.equal(plan.totalAmount, 585, 'what the account leg moves includes the fee and the charges');
+  assert.equal(plan.netAmount, 500, 'the account lands the amount; the ₱10 fee is the till\'s (D46)');
+  assert.equal(plan.totalAmount, 575, 'what the account leg moves is the amount plus the charges');
   assert.deepEqual(
     plan.drawerLeg,
-    { amount: 575, entryType: 'debit' },
-    'the drawer hands over the full 585 less the 10 it withholds as its fee'
+    { amount: 565, entryType: 'debit' },
+    'the drawer hands over 575 less the 10 it withholds as its fee'
   );
 });
 
@@ -257,4 +261,69 @@ test('a charge is a second debit the balance has to carry, and the refusal says 
     balance: 500, entryType: 'debit', status: 'completed', totalAmount: 500, providerCharge: 25,
   });
   assert.equal(problem, 'Insufficient balance for the transaction plus the provider charge');
+});
+
+test('a cash-in lands the amount and never the fee, whichever way the tender carried it (D46)', () => {
+  // Collected on top: the customer handed ₱310 for a ₱300 cash-in, so the
+  // e-wallet credits ₱300 and the ₱10 belongs to the till — D42 had it land
+  // amount + fee on the account, which credited the customer the fee itself.
+  assert.equal(
+    netAmountOf({ direction: 'in', amount: 300, fee: 10, feeAddedToBalance: true }).netAmount,
+    300
+  );
+  // Cut from the amount: the whole typed figure lands, the fee having been
+  // inside it all along (D42's other cell, unchanged).
+  assert.equal(
+    netAmountOf({ direction: 'in', amount: 3030, fee: 30, feeAddedToBalance: false }).netAmount,
+    3030
+  );
+  // No fee: the amount, plainly.
+  assert.equal(
+    netAmountOf({ direction: 'in', amount: 500, fee: 0, feeAddedToBalance: true }).netAmount,
+    500
+  );
+});
+
+test('a cash-out still reads the flag: a fee carved from what leaves is cut from the debit', () => {
+  assert.equal(
+    netAmountOf({ direction: 'out', amount: 2500, fee: 30, feeAddedToBalance: true }).netAmount,
+    2500
+  );
+  assert.equal(
+    netAmountOf({ direction: 'out', amount: 2500, fee: 30, feeAddedToBalance: false }).netAmount,
+    2470
+  );
+});
+
+test('every cell still grows the books by exactly the fee (D24)', () => {
+  const cells: Array<[string, number, number, boolean]> = [
+    ['in', 300, 10, true],
+    ['in', 3030, 30, false],
+    ['out', 2500, 30, true],
+    ['out', 2500, 30, false],
+  ];
+  for (const [direction, amount, fee, feeAddedToBalance] of cells) {
+    const context = `${direction} amount=${amount} fee=${fee} onTop=${feeAddedToBalance}`;
+    const { netAmount } = netAmountOf({ direction, amount, fee, feeAddedToBalance });
+    const signed = direction === 'in' ? netAmount : -netAmount;
+    const leg = drawerLeg(signed, fee);
+    const drawerNet = leg ? (leg.entryType === 'credit' ? leg.amount : -leg.amount) : 0;
+    assert.equal(Math.round((signed + drawerNet) * 100) / 100, fee, context);
+  }
+});
+
+test('a fee taken inside the amount still cannot exceed it', () => {
+  assert.equal(
+    netAmountOf({ direction: 'in', amount: 5, fee: 10, feeAddedToBalance: false }).exceeds,
+    true
+  );
+  assert.equal(
+    netAmountOf({ direction: 'in', amount: 10, fee: 10, feeAddedToBalance: false }).exceeds,
+    false
+  );
+  // Only the inside reading refuses: a fee on top is never a cut of the amount.
+  assert.equal(
+    netAmountOf({ direction: 'in', amount: 5, fee: 10, feeAddedToBalance: true }).exceeds,
+    false
+  );
 });

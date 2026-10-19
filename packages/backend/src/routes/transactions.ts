@@ -9,7 +9,7 @@ import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccoun
 import type { CounterpartyLeg } from '../services/balance';
 import { drawerLeg, drawerLegs, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod } from '../services/cashManagement';
 import type { RecordedLedgerRow } from '../services/cashManagement';
-import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf } from '../services/movementPlan';
+import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, feeOnDrawerOf } from '../services/movementPlan';
 import { resolveMovementFee } from '../services/movementFee';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -328,12 +328,13 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
 // The drawer's side of a movement settled in physical cash (design D12; the
 // direction is opposite to the account leg, design D24).
 //
-// The rows come from `drawerLegs` rather than being restated here: on a
-// cash-out the fee first, then the movement (D37), because the customer paid
-// the fee in cash and it lands in the till; on a cash-in the till's only row
-// is the net, because the fee was paid in e-money and posts on the account's
-// side instead (D42). The rule covering both directions and both fee modes
-// lives in one tested place. The account is the branch's own cash account; a
+// The rows come from `drawerLegs` rather than being restated here: the fee
+// first when the tender put it in the till, then the movement (D37), because
+// that is the order the cash arrived in — a cash-in collected on top carries
+// its fee to the drawer as its own line too (D46), and a cash-in whose fee was
+// carved from the amount posts only the net, because the fee rides the
+// receiving account instead (D42). The rule covering every cell lives in one
+// tested place. The account is the branch's own cash account; a
 // movement already booked against one — an expense paid straight out of the
 // float — posts a single row rather than two against the same balance.
 //
@@ -349,7 +350,7 @@ async function resolveDrawerLeg(
   paymentMethod: string | null,
   signedAmount: number,
   fee: number,
-  direction: string
+  feeOnDrawer: boolean
 ): Promise<CounterpartyLeg[]> {
   if (paymentMethod !== 'cash') return [];
 
@@ -373,11 +374,11 @@ async function resolveDrawerLeg(
   if (!drawer) throw createError(400, 'This branch has no cash account to take the money from');
   if (drawer.id === accountId) return [];
 
-  const legs = drawerLegs(signedAmount, fee, direction);
+  const legs = drawerLegs(signedAmount, fee, feeOnDrawer);
   if (legs.length === 0) return [];
 
   // The advisory checks the net figure — the cash that actually crosses the
-  // till, whichever side the fee was paid on (D42) — so what the drawer must
+  // till, whichever side the fee was paid on (D37/D46) — so what the drawer must
   // hold to hand the money out is the amount it has always been asked for.
   const net = drawerLeg(signedAmount, fee);
   if (net) await assertDrawerCanFund({ accountId: drawer.id, ...net });
@@ -562,7 +563,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     const providerChargeNum = plan.providerCharge;
     const finalStatus = plan.finalStatus;
 
-    // The provider-charge rules, the D42 fee arithmetic and the
+    // The provider-charge rules, the D46 fee arithmetic and the
     // approval decision all moved into `paymentPlan` above — the same sequence
     // the preview runs — so the figures destructured there are what this row
     // writes. What remains here is the writing itself.
@@ -571,20 +572,22 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     // the whole submission rather than leaving a row whose drawer leg never
     // landed. A pending row moves nothing yet — its leg belongs to approval,
     // which is where the money actually leaves (design D5). Completed movements
-    // hand over their rows (D37/D42); an e-wallet tender or a movement booked
+    // hand over their rows (D37/D46); an e-wallet tender or a movement booked
     // onto the drawer itself posts no counterparties at all.
     const counterparties = finalStatus === 'completed'
       ? await resolveDrawerLeg(
-          accountId, paymentMethodValue, entryType === 'credit' ? totalAmount : -totalAmount, feeNum, txType.direction
+          accountId, paymentMethodValue, entryType === 'credit' ? totalAmount : -totalAmount, feeNum, plan.feeOnDrawer
         )
       : [];
 
-    // The fee row belongs on the account when the fee was paid in e-money — a
-    // cash-in's tender — and the drawer took part (D42): the drawer's row is
-    // then the net cash alone and the fee lands as its own line on the
-    // receiving account. With no drawer rows there is no pairing to keep
-    // honest, so the account's row stays whole.
-    const feeOnAccount = txType.direction === 'in' && feeNum > 0 && counterparties.length > 0;
+    // The fee row belongs on the drawer when the tender put the cash there — a
+    // cash-out's fee, or a cash-in's fee collected on top, which is the till's
+    // income and not the receiving balance's (D37/D46) — and on the account when
+    // the tender took the fee inside the amount instead (D42). With no drawer
+    // rows there is no pairing to keep honest, so the account keeps its single
+    // whole row.
+    const feeOnAccount =
+      txType.direction === 'in' && feeNum > 0 && counterparties.length > 0 && !plan.feeOnDrawer;
 
     // A pending row withdraws nothing yet, so there is nothing to fund: the
     // balance belongs to approval, which checks it inside the same
@@ -805,15 +808,14 @@ router.post('/preview', authorize('transactions.write'), async (req: Request, re
     let drawerBalance: number | null = null;
     if (plan.finalStatus === 'completed') {
       try {
-        // The save posts the drawer's rows — the till's own fee line on a
-        // cash-out (D37), or the single net cash figure on a cash-in, whose
-        // fee was paid in e-money and posts on the account instead (D42) —
-        // but the preview always lists the drawer as their net, because an
-        // operator checks it against the cash tin: ₱10 in and ₱510 out is a
-        // −₱500 drawer, not −₱510. One line here; the statement keeps every
-        // row, where the running balance explains the pair.
+        // The save posts the drawer's rows — the till's own fee line wherever
+        // the tender put it (D37/D46), never a figure of its own that the net
+        // would then double — but the preview always lists the drawer as their
+        // net, because an operator checks it against the cash tin: ₱10 in and
+        // ₱510 out is a −₱500 drawer, not −₱510. One line here; the statement
+        // keeps every row, where the running balance explains the pair.
         const drawerRows = await resolveDrawerLeg(
-          accountId, plan.paymentMethod, plan.drawerSignedAmount, feeNum, txType.direction
+          accountId, plan.paymentMethod, plan.drawerSignedAmount, feeNum, plan.feeOnDrawer
         );
         if (drawerRows.length > 0) {
           const drawerAcct = await queryOne<{ name: string; current_balance: string }>(
@@ -1102,13 +1104,13 @@ router.patch('/:id', authorize('transactions.write'), async (req: Request, res: 
 
     const feeAddedToBalance = provided('feeAddedToBalance') ? body.feeAddedToBalance !== false : row.fee_added_to_balance !== false;
 
-    // The same rule as creation, read from the same planner: the fee rides the
-    // side the customer paid it on (design D42), so the balance moves by
-    // amount + fee on a cash-in that collected it on top and by amount − fee
-    // on a cash-out that carved it from the amount — the other two cells carry
-    // the amount as typed. Editing must reproduce what the create path would
-    // have written, or correcting an amount would quietly re-price the
-    // movement — so both ask `netAmountOf`, and the preview quotes it too.
+    // The same rule as creation, read from the same planner: a cash-in lands
+    // the amount and never the fee, because the fee is the till's income
+    // whichever way the tender carried it (design D46), while a cash-out that
+    // carved the fee from the amount debits amount − fee. Editing must
+    // reproduce what the create path would have written, or correcting an
+    // amount would quietly re-price the movement — so both ask `netAmountOf`,
+    // and the preview quotes it too.
     const net = netAmountOf({
       direction: row.direction,
       amount: amountInput,
@@ -1413,16 +1415,24 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     // take the two locks in the same order. Locking the primary first here and
     // letting processTransaction sort them afterwards would give the two paths
     // opposite orders whenever the drawer sorts ahead of the wallet.
+
+    // The same rule as creation (D37/D46): whether the fee takes its own row on
+    // the till or rides the account is decided by the tender, not by who is
+    // posting — pending rows carry neither leg yet, so this is decided here,
+    // where they are written.
+    const feeOnDrawer = feeOnDrawerOf({
+      direction: row.direction,
+      fee: parseFloat(row.fee || 0),
+      feeAddedToBalance: row.fee_added_to_balance !== false,
+    });
+
     const counterparties = await resolveDrawerLeg(
       row.account_id, row.payment_method,
-      entryType === 'credit' ? totalAmount : -totalAmount, parseFloat(row.fee || 0), row.direction
+      entryType === 'credit' ? totalAmount : -totalAmount, parseFloat(row.fee || 0), feeOnDrawer
     );
 
-    // The same rule as creation (D42): the fee row belongs on the account when
-    // the fee was paid in e-money and the drawer took part — pending rows
-    // carry neither leg yet, so this is decided here, where they are written.
     const feeOnAccount =
-      row.direction === 'in' && parseFloat(row.fee || 0) > 0 && counterparties.length > 0;
+      row.direction === 'in' && parseFloat(row.fee || 0) > 0 && counterparties.length > 0 && !feeOnDrawer;
 
     await lockAccounts(client, [row.account_id, ...counterparties.map((leg) => leg.accountId)]);
 
@@ -2001,9 +2011,10 @@ router.delete('/:id', authorize('transactions.delete'), async (req: Request, res
         .reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
       // Read back the figure the row actually posted rather than recomputing
       // one: `net_amount` is what the account's own rows summed to when it was
-      // written — the four-cell figure since D42, the amount as typed since
-      // D40, the shrunk figure for a legacy deducted-fee row — so the undo
-      // matches the post exactly either way.
+      // written — the four-cell figure since D42, back to the amount itself for
+      // a cash-in since D46, the amount as typed since D40, the shrunk figure
+      // for a legacy deducted-fee row — so the undo matches the post exactly
+      // either way.
       const totalImpact = amount + charges;
       const balanceDelta = transaction.direction === 'in' ? totalImpact : -totalImpact;
 

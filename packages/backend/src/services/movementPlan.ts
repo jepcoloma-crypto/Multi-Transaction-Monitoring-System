@@ -37,21 +37,23 @@ export function entryTypeFor(direction: string): 'debit' | 'credit' {
 }
 
 /**
- * What the balance moves: the fee rides the side the customer paid it on (D42).
+ * What the balance moves: a cash-in lands the amount and never the fee (D46).
  *
- * A fee paid on top of a cash-in is e-money arriving with the amount, so the
- * account lands amount + fee. A fee carved from the amount of a cash-out is
- * cash the till keeps, so the account hands out amount − fee. The other two
- * cells need no rule of their own: a fee inside a cash-in is already cut from
- * the drawer's leg by `drawerLeg`'s formula, and a fee on top of a cash-out is
- * already added to it — so those two cells carry the amount as typed, and the
- * books grow by exactly the fee in all four (design D24's identity).
+ * A cash-in's fee is the till's income whichever way the tender carried it, so
+ * the receiving account lands `amount` and nothing else — a fee collected on
+ * top is handed over as separate cash and stays in the drawer (D46, reversing
+ * D42's "in, fee on top" cell), and a fee carved from the amount was never in
+ * the balance to begin with. Only a cash-out still reads the flag: a fee carved
+ * from what leaves is cut from the debit, so the account hands out amount − fee.
+ * The books grow by exactly the fee in all four cells either way, because
+ * `drawerLeg` takes the rest (design D24's identity).
  *
  * D40 posted the amount as typed in every cell, which left two of them
  * wrong: a ₱510 cash-in with a ₱10 fee on top booked ₱500 on the account and
- * ₱490 out of the drawer — ₱10 that never existed in the till. This restores
- * the tender flag as a posting rule, but only where it moves a peso: the
- * account's figure changes in the two cells the old formula mis-netted.
+ * ₱490 out of the drawer — ₱10 that never existed in the till. D42 fixed that
+ * by landing amount + fee on the account, which over-credited the customer by
+ * the fee and left the till holding nothing to show for it. The account now
+ * lands the amount alone and the fee posts on the drawer as its own row.
  *
  * A fee inside the amount cannot exceed it — the fee is a cut of what was
  * sent, and a larger cut would book income the money never carried — so that
@@ -70,12 +72,39 @@ export function netAmountOf(input: {
   const feeInside = input.feeAddedToBalance === false && input.fee > 0;
   const exceeds = feeInside && input.amount < input.fee;
   const fee = input.fee > 0 ? round2(input.fee) : 0;
-  const netAmount = input.direction === 'in' && !feeInside
-    ? round2(input.amount + fee)
-    : input.direction === 'out' && feeInside
-      ? round2(input.amount - fee)
-      : input.amount;
+  const netAmount = input.direction === 'out' && feeInside
+    ? round2(input.amount - fee)
+    : input.amount;
   return { feeInside, exceeds, netAmount };
+}
+
+/**
+ * Whether a movement's fee takes its own row on the till (D37/D46).
+ *
+ * On a cash-out the customer paid the fee in cash, so it has always been the
+ * till's own first row. A cash-in collected it the other way: a fee taken
+ * inside the amount was cut from what the account receives and rides that
+ * account (D42's other cell, unchanged), while a fee collected on top was
+ * handed over as separate cash — it is the drawer's income, not the
+ * e-wallet's, and posts beside the movement on the drawer (D46).
+ *
+ * The flag is about where the fee's *row* goes, not about the balance: both
+ * cash-in cells land the same figure on the account, and only this decides
+ * which side carries the line that says the fee exists.
+ *
+ * Every direction but a cash-in already posts the fee on the till, so they
+ * keep doing so unchanged. A movement with no fee, or one whose branch has no
+ * drawer, never reaches the row split at all — `resolveDrawerLeg` writes
+ * nothing for it — so `true` there is inert rather than wrong.
+ */
+export function feeOnDrawerOf(input: {
+  direction: string;
+  fee: number;
+  feeAddedToBalance: boolean;
+}): boolean {
+  if (!(input.fee > 0)) return false;
+  if (input.direction !== 'in') return true;
+  return input.feeAddedToBalance !== false;
 }
 
 /**
@@ -126,8 +155,10 @@ export interface PaymentPlan {
   /** After the cash-account rule has forced or accepted it. */
   paymentMethod: string | null;
   entryType: 'debit' | 'credit';
-  /** Whether the fee was taken inside the amount: tender record and posting rule (D42). */
+  /** Whether the fee was taken inside the amount: the tender's record, and still a posting rule for a cash-out (D46). */
   feeInside: boolean;
+  /** Whether the fee takes its own row on the till rather than the account (D37/D46). */
+  feeOnDrawer: boolean;
   netAmount: number;
   totalCharges: number;
   totalAmount: number;
@@ -240,12 +271,17 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
 
   // Signed for `drawerLeg`: positive when the account's leg is a credit. It is
   // the account's whole row — netAmount plus charges, the figure the balance
-  // actually moves (D42) — because the drawer has to move opposite to exactly
+  // actually moves (D46) — because the drawer has to move opposite to exactly
   // what the account moved, or the identity `signed + drawer_delta = fee`
-  // breaks on any movement that carries charges. The fee rides the side that
-  // paid it (D42), so this is where the two fee modes stop being the same
-  // number: a cash-in that collected the fee on top signs for amount + fee.
+  // breaks on any movement that carries charges. The fee takes its own row on
+  // whichever side the tender put it (D37/D46), which is where the two cash-in
+  // modes stop looking alike even though both land `amount` on the account.
   const drawerSignedAmount = entryType === 'credit' ? totalAmount : -totalAmount;
+  const feeOnDrawer = feeOnDrawerOf({
+    direction: input.direction,
+    fee: input.fee,
+    feeAddedToBalance: input.feeAddedToBalance,
+  });
   const drawerLegRow = method === 'cash' ? drawerLeg(drawerSignedAmount, input.fee) : null;
 
   // The badge the entry form shows beside the type. On a movement booked
@@ -263,6 +299,7 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
     paymentMethod: method,
     entryType,
     feeInside,
+    feeOnDrawer,
     netAmount,
     totalCharges,
     totalAmount,
