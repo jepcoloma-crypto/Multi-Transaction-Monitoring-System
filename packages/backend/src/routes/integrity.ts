@@ -26,13 +26,24 @@ import {
 const router = Router();
 router.use(authenticate);
 
-// A movement's fee is marked in the ledger by its description — `ledger_entries`
-// has no column naming which leg a row is, and the statement reads this same
-// marker. `Fee correction:` counts too, because a re-posted fee arrives as a
-// correction line: counting only `Service fee` would report a permanent false
-// gap for exactly the rows that were fixed (IC5).
-const FEE_ROW_PREDICATE =
-  `(le.description = 'Service fee' OR le.description LIKE 'Service fee %' OR le.description LIKE 'Fee correction%')`;
+// A movement's fee is marked by the row's own `role` (migration 048), not by
+// matching its description. Both a fee row and a line that re-posted one carry
+// the fee's money into the till, so `correction` counts beside `fee` — a
+// re-posted fee arrives as a correction line, and counting only fee rows would
+// report a permanent false gap for exactly the rows that were fixed (IC5).
+//
+// `role` was not always a column. Rows written before migration 048, and any
+// written between the migration and the code that fills it, carry NULL — and a
+// `role`-only predicate would silently skip them, which for a check is the
+// worst possible failure: it reads as a pass. Check 4 names every such row, and
+// the description stays here as the read of a row nobody has labelled yet.
+const FEE_ROW_PREDICATE = `(
+  CASE WHEN le.role IS NOT NULL
+       THEN le.role IN ('fee', 'correction')
+       ELSE le.description = 'Service fee'
+         OR le.description LIKE 'Service fee %'
+         OR le.description LIKE 'Fee correction%'
+  END)`;
 
 const num = (v: unknown): number => (v == null ? 0 : Math.round(parseFloat(String(v)) * 100) / 100);
 const str = (v: unknown): string | null => (v == null ? null : String(v));

@@ -460,8 +460,8 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
       await client.query(
         `INSERT INTO ledger_entries
            (account_id, transaction_id, transfer_id, source_type, source_id,
-            entry_type, amount, balance_after, reference_number, description, entry_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW())`,
+            entry_type, amount, balance_after, reference_number, description, entry_date, role)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW(), $10)`,
         [
           correction.accountId,
           sourceId,
@@ -472,6 +472,7 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
           correction.amount,
           newBalance,
           `Fee correction: ${reason}`,
+          'correction',
         ]
       );
     }
@@ -1064,8 +1065,8 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
       const inserted = await client.query(
         `INSERT INTO ledger_entries
            (account_id, transaction_id, transfer_id, source_type, source_id,
-            entry_type, amount, balance_after, reference_number, description, entry_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW())
+            entry_type, amount, balance_after, reference_number, description, entry_date, role)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW(), $10)
          RETURNING id`,
         [
           correction.accountId,
@@ -1077,6 +1078,10 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
           correction.amount,
           newBalance,
           `Correction: ${reason}`,
+          // A transfer's ledger row is outside the transaction vocabulary and
+          // keeps its role empty rather than borrowing a word that means
+          // something else (migration 048).
+          sourceType === 'transaction' ? 'correction' : null,
         ]
       );
 
@@ -1411,8 +1416,8 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
       const inserted = await client.query(
         `INSERT INTO ledger_entries
            (account_id, transaction_id, transfer_id, source_type, source_id,
-            entry_type, amount, balance_after, reference_number, description, entry_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW())
+            entry_type, amount, balance_after, reference_number, description, entry_date, role)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW(), $10)
          RETURNING id`,
         [
           row.accountId,
@@ -1424,6 +1429,14 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
           row.amount,
           newBalance,
           row.sourceId === newRecordId ? `Re-entered: ${reason}` : `Reversal: ${reason}`,
+          // A re-entry writes two kinds of row: the new record's own movement,
+          // and the lines that unwind the old one. Both are named, and neither
+          // borrows the other's word. Transfers stay outside the vocabulary.
+          sourceType !== 'transaction'
+            ? null
+            : row.sourceId === newRecordId
+              ? 'movement'
+              : 'reversal',
         ]
       );
 

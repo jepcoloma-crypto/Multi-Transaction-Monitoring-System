@@ -56,6 +56,10 @@ export async function createLedgerEntry(
   entryDate: Date,
   client?: any,
   writeSeq: number = 0,
+  // Which leg this row is, or null for anything outside the transaction
+  // vocabulary (migration 048). Last and defaulted so the transfer, loading and
+  // adjustment paths that never planned a role keep writing exactly as they did.
+  role: string | null = null,
 ): Promise<void> {
   const conn = client || (await getClient());
   const shouldRelease = !client;
@@ -72,9 +76,9 @@ export async function createLedgerEntry(
     // the order the rows were written in. `writeSeq` makes that strict within
     // one write; the clock makes separate writes in a transaction distinct.
     await conn.query(
-      `INSERT INTO ledger_entries (account_id, transaction_id, transfer_id, source_type, source_id, entry_type, amount, balance_after, reference_number, description, entry_date, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, clock_timestamp() + ($12 * INTERVAL '1 microsecond'))`,
-      [accountId, transactionId, transferId, sourceType, sourceId, entryType, amount, balanceAfter, referenceNumber, description, entryDate, writeSeq]
+      `INSERT INTO ledger_entries (account_id, transaction_id, transfer_id, source_type, source_id, entry_type, amount, balance_after, reference_number, description, entry_date, created_at, role)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, clock_timestamp() + ($12 * INTERVAL '1 microsecond'), $13)`,
+      [accountId, transactionId, transferId, sourceType, sourceId, entryType, amount, balanceAfter, referenceNumber, description, entryDate, writeSeq, role]
     );
   } finally {
     if (shouldRelease) conn.release();
@@ -224,7 +228,10 @@ export async function processTransaction(
       leg.role === 'fee' ? feeRowDescription(description) : description,
       transactionDate,
       client,
-      i
+      i,
+      // The row's own label, from the same figure that chose its description —
+      // so the description and the role can never disagree about which leg this is.
+      leg.role ?? null
     );
   }
 
