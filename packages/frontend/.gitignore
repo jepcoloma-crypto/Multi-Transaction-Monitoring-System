@@ -1,1 +1,7 @@
 .vercel
+
+# TypeScript incremental build cache. Committing it made every frontend build
+# dirty the tree, so every backend build afterwards reported `dirty: true` on
+# /api/health -- degrading the endpoint that exists to say what is actually
+# running. Cache files belong to the machine that made them.
+*.tsbuildinfo
