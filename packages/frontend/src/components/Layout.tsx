@@ -26,13 +26,14 @@ import {
   Pencil,
   Building2,
   Receipt,
+  ScanSearch,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { api, unwrapRows } from '../lib/api';
 import GlobalSearch from './GlobalSearch';
 
 type NavItem = { name: string; href: string; icon: typeof Settings };
-type MenuItem = NavItem & { approverOnly?: boolean; adminOnly?: boolean };
+type MenuItem = NavItem & { approverOnly?: boolean; adminOnly?: boolean; reviewerOnly?: boolean };
 
 // Ordered by what gets done there rather than by importance. The first list is
 // where money is moved, in the order a branch day moves it: the drawer is
@@ -64,6 +65,7 @@ const adminSection: MenuItem[] = [
   { name: 'Provider Charges', href: '/provider-charges', icon: DollarSign },
   { name: 'Amount Corrections', href: '/amount-corrections', icon: Pencil, adminOnly: true },
   { name: 'Fee Audit', href: '/fee-audit', icon: Receipt, adminOnly: true },
+  { name: 'Integrity Checks', href: '/integrity', icon: ScanSearch, reviewerOnly: true },
   { name: 'Approvals', href: '/transfer-approvals', icon: CheckSquare, approverOnly: true },
   { name: 'Import', href: '/import', icon: Upload },
   { name: 'Settings', href: '/settings', icon: Settings },
@@ -172,6 +174,9 @@ export default function Layout() {
 
   const isAdmin = user?.roles?.includes('administrator');
   const isApprover = isAdmin || user?.roles?.includes('manager');
+  // Integrity Checks is read-only, so it reaches the auditor as well as the
+  // administrator: the role that can see every finding still cannot move a peso.
+  const isReviewer = isAdmin || user?.roles?.includes('auditor');
   const [pendingApprovals, setPendingApprovals] = useState(0);
 
   useEffect(() => {
@@ -247,7 +252,12 @@ export default function Layout() {
           <div className="border-t border-gray-800 my-3"></div>
           <NavHeading label="Administration" />
           {adminSection
-            .filter((item) => (item.adminOnly ? Boolean(isAdmin) : !item.approverOnly || isApprover))
+            .filter((item) => {
+              if (item.adminOnly) return Boolean(isAdmin);
+              if (item.approverOnly) return Boolean(isApprover);
+              if (item.reviewerOnly) return Boolean(isReviewer);
+              return true;
+            })
             .map((item) => (
               <NavLink
                 key={item.href}
