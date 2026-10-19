@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node ../../node_modules/ts-node/dist/bin.js --project tsconfig.json src/index.ts",
-    "build": "node ../../node_modules/typescript/bin/tsc",
+    "build": "node ../../node_modules/typescript/bin/tsc && node scripts/build-info.js",
     "start": "node dist/index.js",
     "migrate": "node ../../node_modules/ts-node/dist/bin.js src/database/migrate.ts",
     "migrate:rollback": "node ../../node_modules/ts-node/dist/bin.js src/database/migrate.ts rollback",

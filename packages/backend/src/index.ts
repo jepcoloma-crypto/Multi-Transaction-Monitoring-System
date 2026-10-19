@@ -14,6 +14,23 @@ import { startAlertScheduler } from './services/scheduler';
 
 const app = express();
 
+// The API is reached at mapi.primeclc.com: the browser calls it directly, since
+// Vercel serves only the frontend and its one rewrite is the SPA fallback. That
+// hostname is a Cloudflare tunnel (e1d2299e…) whose local cloudflared connector
+// is what opens every connection to this process, from loopback.
+//
+// Express must be told that, or `req.ip` is the connector's address for every
+// caller — one shared bucket. That is not cosmetic: `express-rate-limit` keys on
+// `req.ip`, so all logins shared a single 20-per-15-minutes budget and every
+// /api call shared 500. The logs show the consequence, including a login
+// lockout and a 429 on the transaction 3 fee re-post.
+//
+// 'loopback' rather than a hop count, because the proxy really is the process on
+// this box: it stays correct if another local hop is added, and it means a
+// request reaching this port directly (it binds every interface) cannot name
+// itself a proxy and hand over a forged X-Forwarded-For.
+app.set('trust proxy', 'loopback');
+
 app.use(helmet());
 
 app.use(cors({
