@@ -67,6 +67,12 @@ interface PreviewData {
     problems: string[];
     affectedAccountsAfter: { id: string; name: string; reconciled: boolean; gap: number }[];
   };
+  /**
+   * The fee's own line moving to the side the declared mode names — a cash-in's
+   * two tender modes book identical pesos, so these rows are all a re-post with
+   * a changed mode has to show for it.
+   */
+  recarve: { accountId: string; entryType: string; amount: number; role: string }[] | null;
   nothingToDo: boolean;
   safeToApply: boolean;
   closedAccounts: string[];
@@ -610,7 +616,8 @@ export default function FeeAudit() {
                           </div>
                         ))}
                         <p className="text-xs text-gray-500">
-                          {preview.simulation.corrections.length} ledger row(s) will be appended. Nothing
+                          {(preview.simulation.corrections.length + (preview.recarve?.length ?? 0))} ledger
+                          row(s) will be appended{preview.recarve?.length ? ', of which these move the fee onto the side you declared' : ''}. Nothing
                           already posted is altered.
                         </p>
                       </div>

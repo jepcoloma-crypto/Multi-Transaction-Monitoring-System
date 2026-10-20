@@ -14,7 +14,7 @@
 // fix it: the amount form corrected one account only, so it refused a cash
 // movement outright, and the flag itself was not editable anywhere.
 import { createError } from '../middleware/error';
-import { netAmountOf, entryTypeFor } from './movementPlan';
+import { netAmountOf, entryTypeFor, feeOnDrawerOf } from './movementPlan';
 import { drawerLeg } from './cashManagement';
 import { sumCharges } from './amountFields';
 
@@ -123,6 +123,121 @@ export interface FeeRepostColumns {
   fee_added_to_balance: boolean;
 }
 
+/**
+ * Where a movement's fee-bearing rows sit, netted, in pesos.
+ *
+ * A fee is a *row*, and on a cash-in the tender mode decides only which side
+ * carries it — both cells move identical pesos (D46), so the row's home is the
+ * whole difference between them. These two figures say where it actually is,
+ * as opposed to where the record's flag claims.
+ */
+export interface FeeSideNets {
+  /** The receiving account's fee-bearing rows, netted (credits less debits). */
+  accountFeeNet: number;
+  /** The till's fee-bearing rows, netted. */
+  drawerFeeNet: number;
+}
+
+// A fee-bearing row, read off `role` first with the description as the read of
+// a row written before migration 048 labelled it — the same precedence the
+// integrity check judges by, so the re-post and the check that watches it can
+// never name a different row.
+//
+// Not `isFeeLedgerRow`: that reads the description alone, and it is shared with
+// the Statement of Account, whose callers need their own review before its
+// rule may move. `correction` counts beside `fee` because a re-posted fee
+// arrives as a correction line and netting only fee rows would report a gap for
+// exactly the rows that were fixed.
+const FEE_ROW_ROLES = new Set(['fee', 'correction']);
+
+interface RowLike {
+  account_id: string;
+  entry_type: string;
+  amount: string | number;
+  role?: string | null;
+  description?: string | null;
+}
+
+function isFeeRow(row: RowLike): boolean {
+  const role = row.role == null ? '' : String(row.role);
+  if (role !== '') return FEE_ROW_ROLES.has(role);
+  const description = row.description ?? '';
+  return (
+    description === 'Service fee' ||
+    description.startsWith('Service fee ') ||
+    description.startsWith('Fee correction')
+  );
+}
+
+const signedOf = (row: RowLike): number =>
+  (row.entry_type === 'credit' ? 1 : -1) * (parseFloat(String(row.amount)) || 0);
+
+/**
+ * The fee-bearing net on each side of a movement, from the rows themselves.
+ *
+ * Both nets come from the same rows the totals above are measured from, so the
+ * re-carve below and the totals correction cannot read different history.
+ */
+export function currentFeeNets(
+  rows: RowLike[],
+  primaryAccountId: string,
+  drawerAccountId: string | null
+): FeeSideNets {
+  let accountFeeNet = 0;
+  let drawerFeeNet = 0;
+  for (const row of rows) {
+    if (!isFeeRow(row)) continue;
+    if (row.account_id === primaryAccountId) accountFeeNet = round2(accountFeeNet + signedOf(row));
+    else if (drawerAccountId !== null && row.account_id === drawerAccountId) {
+      drawerFeeNet = round2(drawerFeeNet + signedOf(row));
+    }
+  }
+  return { accountFeeNet, drawerFeeNet };
+}
+
+/**
+ * Where a fee-bearing row would net on each side, or null when the rows say
+ * neither.
+ *
+ * `direction` fixes the sign a fee row faces on the account, because a fee row
+ * takes its own side's direction (`planPostings`): a cash-in's faces credit, a
+ * cash-out's debit. Demanding a positive fee net would read a cash-out's fee
+ * row as "not readable" and stop, when in fact a cash-out whose fee sits on the
+ * account is the clearest case for moving it.
+ *
+ * Null is a shape this planner will not guess at: the fee is spread across both
+ * sides or matches neither figure, which is the state the fee audit exists to
+ * name. Guessing here would move a row on invented history.
+ */
+export function feeRowIsOnDrawer(
+  nets: FeeSideNets,
+  fee: number,
+  direction: string
+): boolean | null {
+  const accountFace = entryTypeFor(direction) === 'credit' ? fee : -fee;
+  const onDrawer = cents(nets.drawerFeeNet) === cents(fee) && cents(nets.accountFeeNet) === 0;
+  const onAccount = cents(nets.accountFeeNet) === cents(accountFace) && cents(nets.drawerFeeNet) === 0;
+  return onDrawer ? true : onAccount ? false : null;
+}
+
+/**
+ * One row of a fee re-carve: the append-only way the fee's line migrates.
+ *
+ * A cash-in's two tender modes move the same pesos, so the per-account targets
+ * are identical under both and a totals correction has nothing to append — yet
+ * the fee's row still has to change sides. This is that change, written as two
+ * zero-sum pairs: a fee-bearing row on the side gaining the fee and a movement
+ * row to hold that account's total where it was, mirrored on the side losing it.
+ * Every net and every balance is unchanged; only which side's fee-bearing rows
+ * carry the fee moves.
+ */
+export interface FeeRowRecarve {
+  accountId: string;
+  entryType: 'credit' | 'debit';
+  amount: number;
+  role: 'fee' | 'movement' | 'correction';
+}
+
 export interface FeeRepostPlan {
   columns: FeeRepostColumns;
   /** Target magnitude per account, keyed by account id — `simulateCorrection`'s input. */
@@ -135,6 +250,11 @@ export interface FeeRepostPlan {
   signs: Record<string, 1 | -1>;
   /** The signed targets themselves, for the preview and the audit record. */
   targets: { accountTotal: number; drawerNet: number | null };
+  /**
+   * Rows that move the fee's line to the side the target mode names, when the
+   * totals alone cannot. Null when nothing has to move.
+   */
+  recarve: FeeRowRecarve[] | null;
 }
 
 // Record columns arrive as pg hands them over: NUMERIC as a string, the flag
@@ -168,6 +288,13 @@ export function planFeeRepost(input: {
   primaryAccountId: string;
   drawerAccountId: string | null;
   target: { amount?: unknown; fee?: unknown; feeAddedToBalance?: unknown };
+  /**
+   * Where the fee's row actually sits, read off the movement's own rows. Omit
+   * it and the plan re-carves nothing — the totals it targets are identical
+   * under both cash-in modes, so a mode flip would otherwise write a flag that
+   * says one thing and leave rows that say another.
+   */
+  currentFeeNets?: FeeSideNets | null;
 }): FeeRepostPlan {
   const amount =
     input.target.amount === undefined ? readMoney(input.recordAmount) : readMoney(input.target.amount);
@@ -209,12 +336,118 @@ export function planFeeRepost(input: {
     signs[input.drawerAccountId] = (targets.drawerNet ?? 0) < 0 ? -1 : 1;
   }
 
+  const recarve = planFeeRowRecarve({
+    direction: input.direction,
+    fee,
+    feeAddedToBalance,
+    targetModeDeclared: input.target.feeAddedToBalance !== undefined,
+    primaryAccountId: input.primaryAccountId,
+    drawerAccountId: input.drawerAccountId,
+    nets: input.currentFeeNets ?? null,
+  });
+
   return {
     columns: { amount, fee, net_amount: netAmount, fee_added_to_balance: feeAddedToBalance },
     amounts,
     signs,
     targets,
+    recarve,
   };
+}
+
+/**
+ * The rows that move the fee's line across, or null when none are needed.
+ *
+ * Judged against where the fee's row *is*, not against whether the flag is
+ * changing. A re-post that only flips the flag was tried three times on
+ * transaction 44 and moved nothing, because the rows it was meant to fix had
+ * been left behind by the flip before it — so a "did the mode change?" test
+ * would miss the exact case this exists for. The rows say which side carries
+ * the fee; the target mode says which side should; the difference is the work.
+ *
+ * Only a re-post that actually names a tender mode may move the row. An amount
+ * fix on a movement whose fee sits on the wrong side leaves it where it is:
+ * that is the fee audit's finding to report, not this correction's to do
+ * unasked.
+ *
+ * No drawer means no second side to move between, and creation writes the
+ * account's single whole row either way, so there is nothing to re-carve.
+ *
+ * An unreadable shape is refused rather than guessed at: if the fee's row is
+ * spread across both sides or matches neither figure, the fee audit is the tool
+ * that names what those rows are, and moving money on a guess is worse than
+ * stopping.
+ */
+function planFeeRowRecarve(input: {
+  direction: string;
+  fee: number;
+  feeAddedToBalance: boolean;
+  targetModeDeclared: boolean;
+  primaryAccountId: string;
+  drawerAccountId: string | null;
+  nets: FeeSideNets | null;
+}): FeeRowRecarve[] | null {
+  if (input.fee <= 0 || !input.drawerAccountId || input.nets === null) return null;
+  if (!input.targetModeDeclared) return null;
+  const drawerAccountId = input.drawerAccountId;
+  const nets = input.nets;
+
+  const onDrawer = feeRowIsOnDrawer(nets, input.fee, input.direction);
+  if (onDrawer === null) {
+    throw createError(
+      400,
+      'This movement’s ledger rows do not agree about which side carries its fee, ' +
+        'so the fee cannot be re-posted safely. Run the fee audit to see what those rows are.'
+    );
+  }
+
+  const targetOnDrawer = feeOnDrawerOf({
+    direction: input.direction,
+    fee: input.fee,
+    feeAddedToBalance: input.feeAddedToBalance,
+  });
+  if (onDrawer === targetOnDrawer) return null;
+
+  // Each side's fee net moves from where it stands to where the target mode
+  // puts it — and every sign is derived from that, never written out. A fee row
+  // takes its own side's direction, so a cash-out's faces debit on the account
+  // while the till's is always a credit; a pair assumed positive would book
+  // +fee against a −fee and leave the fee exactly where it was.
+  //
+  // Each row is paired with a movement row of the same size the other way, so
+  // both accounts keep the totals the deltas above target. Four rows, no
+  // balance and no net moves, and the fee's line has crossed.
+  const entryFor = (net: number): 'credit' | 'debit' => (net >= 0 ? 'credit' : 'debit');
+  const accountFace = entryTypeFor(input.direction) === 'credit' ? 1 : -1;
+
+  const recarve: FeeRowRecarve[] = [];
+  for (const side of ['account', 'drawer'] as const) {
+    const accountId = side === 'account' ? input.primaryAccountId : drawerAccountId;
+    const current = side === 'account' ? nets.accountFeeNet : nets.drawerFeeNet;
+    const target = side === 'account'
+      ? (targetOnDrawer ? 0 : accountFace * input.fee)
+      : (targetOnDrawer ? input.fee : 0);
+
+    const delta = round2(target - current);
+    if (delta === 0) continue;
+
+    recarve.push({
+      accountId,
+      entryType: entryFor(delta),
+      amount: Math.abs(delta),
+      // The side that held nothing earns the fee's own row; the side giving it
+      // up earns a correction, which counts as fee-bearing and cancels it.
+      role: current === 0 ? 'fee' : 'correction',
+    });
+    recarve.push({
+      accountId,
+      entryType: entryFor(-delta),
+      amount: Math.abs(delta),
+      role: 'movement',
+    });
+  }
+
+  return recarve.length > 0 ? recarve : null;
 }
 
 /**

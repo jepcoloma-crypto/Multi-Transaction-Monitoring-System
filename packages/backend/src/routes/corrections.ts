@@ -13,7 +13,7 @@ import { simulateCorrection, appendPlannedRows } from '../services/correctionPre
 import { validateTierA, TIER_A_FIELDS, planDateCascade } from '../services/correctionFields';
 import { planReEntry, RE_ENTERABLE } from '../services/reEntryPlan';
 import { planGapFix, isGapFixDirection, GAP_FIX_DIRECTIONS, GAP_FIX_LABELS } from '../services/gapFixPlan';
-import { classifyFeeMovement, planFeeRepost, currentFeeColumns, changedFeeColumns } from '../services/feeAudit';
+import { classifyFeeMovement, planFeeRepost, currentFeeColumns, changedFeeColumns, currentFeeNets } from '../services/feeAudit';
 import { planAmountCorrection, columnsChanged, AMOUNT_FIELDS, isAmountable, sumCharges } from '../services/amountFields';
 import type { AmountPlan } from '../services/amountFields';
 import { updateAccountBalance } from '../services/balance';
@@ -331,10 +331,14 @@ router.post('/fee-repost/preview', authorize('transactions.correct'), async (req
       primaryAccountId: record.account_id,
       drawerAccountId: shape.drawerAccountId,
       target: req.body?.target ?? {},
+      // Where the fee's row sits today, so a cash-in mode flip can plan the
+      // rows that move it rather than a totals correction that has nothing to
+      // append and would leave the flag describing rows it never touched.
+      currentFeeNets: currentFeeNets(rows, record.account_id, shape.drawerAccountId),
     });
     const simulation = simulateCorrection(accounts, entries, rows, plan.amounts, plan.signs);
     const changed = changedFeeColumns(before, plan.columns);
-    const nothingToDo = simulation.corrections.length === 0 && !changed;
+    const nothingToDo = simulation.corrections.length === 0 && !plan.recarve && !changed;
 
     const safeToApply =
       frozen.length === 0 &&
@@ -357,6 +361,9 @@ router.post('/fee-repost/preview', authorize('transactions.correct'), async (req
         drawerAccountId: shape.drawerAccountId,
         ledgerRows: rows,
         simulation,
+        // The rows that will move the fee's line across, when a cash-in's
+        // tender changed and the totals alone cannot express it.
+        recarve: plan.recarve,
         nothingToDo,
         safeToApply,
         closedAccounts: frozen,
@@ -387,7 +394,8 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
     started = true;
 
     const rows: LedgerRowRef[] = (await client.query(
-      `SELECT le.id, le.account_id, le.entry_type, le.amount, le.balance_after, le.created_at
+      `SELECT le.id, le.account_id, le.entry_type, le.amount, le.balance_after, le.created_at,
+              le.role, le.description
          FROM ledger_entries le
         WHERE le.source_type = 'transaction' AND le.source_id = $1
         ORDER BY le.created_at, le.id`,
@@ -433,6 +441,9 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
       primaryAccountId: recordBefore.account_id,
       drawerAccountId: shape.drawerAccountId,
       target,
+      // The same rows, and the same reading of them, as the preview: a plan the
+      // preview called safe must not apply different rows here.
+      currentFeeNets: currentFeeNets(rows, recordBefore.account_id, shape.drawerAccountId),
     });
     const simulation: Simulation = simulateCorrection(accounts, entries, rows, plan.amounts, plan.signs);
     const changed = changedFeeColumns(before, plan.columns);
@@ -440,7 +451,7 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
     if (simulation.problems.length > 0) {
       throw createError(409, `Refusing to re-post: ${simulation.problems.join('; ')}`);
     }
-    if (simulation.corrections.length === 0 && !changed) {
+    if (simulation.corrections.length === 0 && !plan.recarve && !changed) {
       throw createError(400, 'Those values do not change anything');
     }
     if (!simulation.affectedAccountsAfter.every((a) => a.reconciled)) {
@@ -453,6 +464,14 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
       drawerNet: shape.drawerAccountId ? ledgerSignedSum(rows, shape.drawerAccountId) : null,
     };
 
+    // `clock_timestamp()` for `created_at` rather than the column's default
+    // `now()`: `now()` is frozen for the whole transaction, and the ledger reads
+    // rows back with `ORDER BY created_at, id` — a tie broken by a random UUID.
+    // Two rows on one account would then come back in either order, and the
+    // audit would see a row before the one that preceded it: a broken chain on a
+    // ledger that had been perfectly sound moments earlier. A fee re-post can
+    // put two rows on one account (its delta plus the re-carve below), so both
+    // loops stamp theirs as they go.
     for (const correction of simulation.corrections) {
       const newBalance = await updateAccountBalance(
         correction.accountId, correction.amount, correction.entryType, client
@@ -460,8 +479,8 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
       await client.query(
         `INSERT INTO ledger_entries
            (account_id, transaction_id, transfer_id, source_type, source_id,
-            entry_type, amount, balance_after, reference_number, description, entry_date, role)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW(), $10)`,
+            entry_type, amount, balance_after, reference_number, description, entry_date, created_at, role)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW(), clock_timestamp(), $10)`,
         [
           correction.accountId,
           sourceId,
@@ -473,6 +492,35 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
           newBalance,
           `Fee correction: ${reason}`,
           'correction',
+        ]
+      );
+    }
+
+    // These rows are the fee's line migrating: a cash-in's tender mode
+    // decides only which side carries it, both modes move identical pesos, so
+    // the deltas above have nothing to append and the flag alone would end up
+    // describing rows it never touched. Written as zero-sum pairs on each
+    // account — no balance and no net moves, only the composition.
+    //
+    // Stamped with `clock_timestamp()` for the reason given above.
+    for (const row of plan.recarve ?? []) {
+      const newBalance = await updateAccountBalance(row.accountId, row.amount, row.entryType, client);
+      await client.query(
+        `INSERT INTO ledger_entries
+           (account_id, transaction_id, transfer_id, source_type, source_id,
+            entry_type, amount, balance_after, reference_number, description, entry_date, created_at, role)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NOW(), clock_timestamp(), $10)`,
+        [
+          row.accountId,
+          sourceId,
+          null,
+          'transaction',
+          sourceId,
+          row.entryType,
+          row.amount,
+          newBalance,
+          `Fee correction: ${reason}`,
+          row.role,
         ]
       );
     }
@@ -516,6 +564,11 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
       newData: {
         ...(changed ? { fields: changed } : {}),
         posted: targetPosted,
+        // The rows that moved the fee's line across. Without this the trail
+        // reads as a flag change with `posted` identical either side — which is
+        // exactly what three entries on transaction 44 looked like, and why
+        // nothing could tell the money had never moved.
+        ...(plan.recarve ? { recarved: plan.recarve } : {}),
       },
     });
 

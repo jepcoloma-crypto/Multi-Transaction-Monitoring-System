@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyFeeMovement, planFeeRepost, currentFeeColumns, changedFeeColumns } from '../services/feeAudit';
+import { classifyFeeMovement, planFeeRepost, currentFeeColumns, changedFeeColumns, currentFeeNets, feeRowIsOnDrawer } from '../services/feeAudit';
 
 const WALLET = 'a1a1a1a1-0000-0000-0000-000000000001';
 const DRAWER = 'b2b2b2b2-0000-0000-0000-000000000002';
@@ -232,4 +232,239 @@ test('only the columns that differ are reported changed', () => {
     changedFeeColumns(before, { amount: 480, fee: 10, net_amount: 490, fee_added_to_balance: false }),
     { amount: 480, net_amount: 490, fee_added_to_balance: false }
   );
+});
+
+// --- re-carving the fee's own row ------------------------------------------
+// A cash-in's two tender modes move identical pesos, so the per-account targets
+// are the same under both and a totals correction has nothing to append. The
+// fee's *row* still has to change sides, and that is what these rows do.
+
+const row = (account_id: string, entry_type: string, amount: number, role: string | null, description: string | null = null) =>
+  ({ account_id, entry_type, amount: String(amount.toFixed(2)), role, description });
+
+test('the fee nets are read off role first, and the description only when role is silent', () => {
+  // Migration 048 gave every new row a label; the rows that predate it still
+  // speak through their description, so a `role`-only read would skip them —
+  // and for a re-post that means moving money on a false "nothing to move".
+  const labelled = currentFeeNets(
+    [row(WALLET, 'credit', 500, null), row(DRAWER, 'credit', 10, 'fee'), row(DRAWER, 'debit', 500, 'movement')],
+    WALLET, DRAWER
+  );
+  assert.deepEqual(labelled, { accountFeeNet: 0, drawerFeeNet: 10 });
+
+  const legacy = currentFeeNets(
+    [row(WALLET, 'credit', 500, null), row(DRAWER, 'credit', 10, null, 'Service fee'), row(DRAWER, 'debit', 500, null, null)],
+    WALLET, DRAWER
+  );
+  assert.deepEqual(legacy, { accountFeeNet: 0, drawerFeeNet: 10 });
+
+  // A re-posted fee arrives as a correction line, and it nets against the
+  // original rather than counting as a second fee.
+  const rePosted = currentFeeNets(
+    [
+      row(WALLET, 'credit', 500, null),
+      row(DRAWER, 'credit', 10, 'fee'),
+      row(DRAWER, 'debit', 10, 'correction'),
+      row(DRAWER, 'debit', 500, 'movement'),
+    ],
+    WALLET, DRAWER
+  );
+  assert.deepEqual(rePosted, { accountFeeNet: 0, drawerFeeNet: 0 });
+});
+
+test('feeRowIsOnDrawer names a side, and refuses to guess when the rows say neither', () => {
+  // A cash-in's fee row faces credit on the account...
+  assert.equal(feeRowIsOnDrawer({ accountFeeNet: 0, drawerFeeNet: 10 }, 10, 'in'), true);
+  assert.equal(feeRowIsOnDrawer({ accountFeeNet: 10, drawerFeeNet: 0 }, 10, 'in'), false);
+  assert.equal(feeRowIsOnDrawer({ accountFeeNet: 5, drawerFeeNet: 5 }, 10, 'in'), null);
+  assert.equal(feeRowIsOnDrawer({ accountFeeNet: 0, drawerFeeNet: 0 }, 10, 'in'), null);
+  assert.equal(feeRowIsOnDrawer({ accountFeeNet: 20, drawerFeeNet: 0 }, 10, 'in'), null);
+  // ...and a cash-out's faces debit there, so the same account row in that
+  // direction is a fee on the account rather than one nobody posted.
+  assert.equal(feeRowIsOnDrawer({ accountFeeNet: -10, drawerFeeNet: 0 }, 10, 'out'), false);
+  assert.equal(feeRowIsOnDrawer({ accountFeeNet: 10, drawerFeeNet: 0 }, 10, 'out'), null);
+});
+
+test('a cash-in declared fee-inside moves the fee row onto the account', () => {
+  // Transaction 44 (reference 59724), created on top and since declared inside:
+  // the till holds the fee's row and the account holds none.
+  const plan = planFeeRepost({
+    direction: 'in',
+    recordAmount: '210.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { feeAddedToBalance: false },
+    currentFeeNets: { accountFeeNet: 0, drawerFeeNet: 10 },
+  });
+
+  assert.deepEqual(plan.recarve, [
+    { accountId: WALLET, entryType: 'credit', amount: 10, role: 'fee' },
+    { accountId: WALLET, entryType: 'debit', amount: 10, role: 'movement' },
+    { accountId: DRAWER, entryType: 'debit', amount: 10, role: 'correction' },
+    { accountId: DRAWER, entryType: 'credit', amount: 10, role: 'movement' },
+  ]);
+
+  // Every account nets to zero across its own pair, so no balance and no
+  // movement total shifts — only which side's fee-bearing rows carry the fee.
+  const perAccount = new Map<string, number>();
+  for (const r of plan.recarve!) {
+    perAccount.set(r.accountId, (perAccount.get(r.accountId) ?? 0) + (r.entryType === 'credit' ? r.amount : -r.amount));
+  }
+  assert.deepEqual([...perAccount.values()], [0, 0]);
+});
+
+test('a cash-in flipped back to fee-on-top moves the fee row onto the till', () => {
+  const plan = planFeeRepost({
+    direction: 'in',
+    recordAmount: '210.00', recordFee: '10.00', recordFeeAddedToBalance: false,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { feeAddedToBalance: true },
+    currentFeeNets: { accountFeeNet: 10, drawerFeeNet: 0 },
+  });
+
+  assert.deepEqual(plan.recarve, [
+    { accountId: WALLET, entryType: 'debit', amount: 10, role: 'correction' },
+    { accountId: WALLET, entryType: 'credit', amount: 10, role: 'movement' },
+    { accountId: DRAWER, entryType: 'credit', amount: 10, role: 'fee' },
+    { accountId: DRAWER, entryType: 'debit', amount: 10, role: 'movement' },
+  ]);
+});
+
+test('a cash-out flip moves money through the totals and re-carves nothing', () => {
+  // Both cash-out modes put the fee on the till, so the row never changes sides
+  // — what changes is what the account hands out, and the totals already carry
+  // that. Re-carving here would add four rows that say nothing.
+  const plan = planFeeRepost({
+    direction: 'out',
+    recordAmount: '500.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { feeAddedToBalance: false },
+    currentFeeNets: { accountFeeNet: 0, drawerFeeNet: 10 },
+  });
+  assert.equal(plan.recarve, null);
+});
+
+test('an amount-only re-post never touches where the fee’s row sits', () => {
+  // Including one whose rows already disagree with the flag: moving them is the
+  // fee audit's finding to report, not this tool's to do unasked. The plan may
+  // only cross accounts when the operator actually declared a tender mode.
+  const plan = planFeeRepost({
+    direction: 'in',
+    recordAmount: '210.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { amount: 300 },
+    currentFeeNets: { accountFeeNet: 10, drawerFeeNet: 0 },
+  });
+  assert.equal(plan.recarve, null);
+});
+
+test('re-posting a mode that was already declared still moves the row it never moved', () => {
+  // The shape transaction 44 is actually in: the flag was flipped to "inside"
+  // three times while the row stayed in the till, so the record's mode and the
+  // target agree and there is no column change at all — yet the books still
+  // disagree. A "did the mode change?" trigger would see nothing to do, which
+  // is precisely why three re-posts passed and moved no money. Judged on where
+  // the row is instead, this is the exact operation that fixes it.
+  const plan = planFeeRepost({
+    direction: 'in',
+    recordAmount: '210.00', recordFee: '10.00', recordFeeAddedToBalance: false,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { feeAddedToBalance: false },
+    currentFeeNets: { accountFeeNet: 0, drawerFeeNet: 10 },
+  });
+
+  assert.deepEqual(plan.recarve, [
+    { accountId: WALLET, entryType: 'credit', amount: 10, role: 'fee' },
+    { accountId: WALLET, entryType: 'debit', amount: 10, role: 'movement' },
+    { accountId: DRAWER, entryType: 'debit', amount: 10, role: 'correction' },
+    { accountId: DRAWER, entryType: 'credit', amount: 10, role: 'movement' },
+  ]);
+  assert.equal(changedFeeColumns(
+    { amount: 210, fee: 10, net_amount: 210, fee_added_to_balance: false },
+    plan.columns
+  ), null, 'and the columns change nothing, so the rows are the whole job');
+});
+
+test('a cash-out whose fee sits on the account is moved onto the till', () => {
+  // Both cash-out modes name the till, so a cash-out re-post re-carves only
+  // when the row is genuinely on the wrong side — a real mis-posting. The
+  // account's fee row faces debit there, and the offsets below are derived from
+  // that sign rather than assumed positive: a pair booked the wrong way would
+  // leave the fee exactly where it was.
+  const plan = planFeeRepost({
+    direction: 'out',
+    recordAmount: '500.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { feeAddedToBalance: true },
+    currentFeeNets: { accountFeeNet: -10, drawerFeeNet: 0 },
+  });
+
+  assert.deepEqual(plan.recarve, [
+    { accountId: WALLET, entryType: 'credit', amount: 10, role: 'correction' },
+    { accountId: WALLET, entryType: 'debit', amount: 10, role: 'movement' },
+    { accountId: DRAWER, entryType: 'credit', amount: 10, role: 'fee' },
+    { accountId: DRAWER, entryType: 'debit', amount: 10, role: 'movement' },
+  ]);
+
+  // Each side's fee net moves by exactly the fee: the account's rises by +10
+  // to cancel the −10 it held, the till's by +10 to take it over. And each
+  // account's own pair nets to zero, which is what keeps every balance where it
+  // was. (The two accounts' offsets do *not* cancel each other — each holds its
+  // own total, not the other's.)
+  const rowsFor = (accountId: string) => (plan.recarve ?? []).filter((r) => r.accountId === accountId);
+  const feeChange = (accountId: string) => rowsFor(accountId)
+    .filter((r) => r.role !== 'movement')
+    .reduce((sum, r) => sum + (r.entryType === 'credit' ? r.amount : -r.amount), 0);
+
+  assert.equal(feeChange(WALLET), 10, 'the account’s fee-bearing rows cancel the −10 it held');
+  assert.equal(feeChange(DRAWER), 10, 'and the till’s take over the fee');
+  for (const accountId of [WALLET, DRAWER]) {
+    const net = rowsFor(accountId).reduce((sum, r) => sum + (r.entryType === 'credit' ? r.amount : -r.amount), 0);
+    assert.equal(net, 0, `${accountId === WALLET ? 'the account' : 'the till'} moves no peso`);
+  }
+});
+
+test('with no drawer there is no second side, so nothing re-carves', () => {
+  const plan = planFeeRepost({
+    direction: 'in',
+    recordAmount: '210.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: null,
+    target: { feeAddedToBalance: false },
+    currentFeeNets: { accountFeeNet: 10, drawerFeeNet: 0 },
+  });
+  assert.equal(plan.recarve, null);
+});
+
+test('a fee the rows spread across both sides is refused, not guessed at', () => {
+  // The tool may not move money on a history it cannot read. Naming the fault
+  // and stopping is what the fee audit exists for.
+  assert.throws(
+    () => planFeeRepost({
+      direction: 'in',
+      recordAmount: '210.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+      additionalCharges: '[]',
+      primaryAccountId: WALLET, drawerAccountId: DRAWER,
+      target: { feeAddedToBalance: false },
+      currentFeeNets: { accountFeeNet: 5, drawerFeeNet: 5 },
+    }),
+    /do not agree about which side carries its fee/
+  );
+});
+
+test('a caller that supplies no fee nets re-carves nothing, as it did before', () => {
+  // Backwards compatibility for every other caller of this planner.
+  const plan = planFeeRepost({
+    direction: 'in',
+    recordAmount: '210.00', recordFee: '10.00', recordFeeAddedToBalance: true,
+    additionalCharges: '[]',
+    primaryAccountId: WALLET, drawerAccountId: DRAWER,
+    target: { feeAddedToBalance: false },
+  });
+  assert.equal(plan.recarve, null);
 });

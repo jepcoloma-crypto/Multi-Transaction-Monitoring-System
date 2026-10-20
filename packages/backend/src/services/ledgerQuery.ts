@@ -68,11 +68,15 @@ export interface LedgerRowRef {
   amount: string;
   balance_after: string;
   created_at: Date;
+  /** Migration 048's label; null on rows written before it, which the description still speaks for. */
+  role?: string | null;
+  description?: string | null;
 }
 
 export function loadLedgerRowsBySource(sourceType: string, sourceId: string): Promise<LedgerRowRef[]> {
   return query<LedgerRowRef>(
-    `SELECT le.id, le.account_id, le.entry_type, le.amount, le.balance_after, le.created_at
+    `SELECT le.id, le.account_id, le.entry_type, le.amount, le.balance_after, le.created_at,
+            le.role, le.description
      FROM ledger_entries le
      WHERE le.source_type = $1 AND le.source_id = $2
      ORDER BY le.created_at, le.id`,
