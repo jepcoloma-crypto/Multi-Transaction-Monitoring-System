@@ -8,6 +8,7 @@ import {
   type FeePlacementRow,
   type NetAmountRow,
 } from '../services/integrityChecks';
+import { sumCharges } from '../services/amountFields';
 
 // Integrity checks (design IC1–IC6). Read-only, and deliberately so: a finding
 // says two surfaces disagree and cannot say which one is wrong, so this module
@@ -99,6 +100,8 @@ router.get('/run', authorize('reconciliation.read'), async (req: Request, res: R
           GROUP BY 1
        )
        SELECT t.transaction_number, t.reference_number, t.amount, t.fee, t.net_amount,
+              CASE WHEN jsonb_typeof(t.additional_charges) = 'array'
+                   THEN t.additional_charges ELSE '[]'::jsonb END AS additional_charges,
               t.fee_added_to_balance, t.status, tt.direction,
               COALESCE(pr.net, 0)        AS account_net,
               COALESCE(pr.row_count, 0)  AS account_rows,
@@ -149,6 +152,9 @@ router.get('/run', authorize('reconciliation.read'), async (req: Request, res: R
       amount: num(r.amount),
       fee: num(r.fee),
       netAmount: num(r.net_amount),
+      // The column above is already guarded to an array, so this cannot throw;
+      // it is the same summation creation and every reversal path use.
+      additionalCharges: sumCharges(r.additional_charges),
       status: String(r.status),
       accountNet: num(r.account_net),
       hasAccountRows: Number(r.account_rows) > 0,

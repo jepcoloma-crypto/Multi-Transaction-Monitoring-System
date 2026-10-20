@@ -180,7 +180,7 @@ test('net_amount is compared against the magnitude, since a debit sums negative'
   // Found by running the check before trusting it: without the absolute value
   // this reported thirty findings against perfectly correct books.
   const rows: NetAmountRow[] = [
-    { transactionNumber: 6, referenceNumber: '60001', direction: 'out', amount: 2500, fee: 30, netAmount: 2500, status: 'completed', accountNet: -2500, hasAccountRows: true },
+    { transactionNumber: 6, referenceNumber: '60001', direction: 'out', amount: 2500, fee: 30, netAmount: 2500, additionalCharges: 0, status: 'completed', accountNet: -2500, hasAccountRows: true },
   ];
 
   const check = checkNetAmountConsistency(rows);
@@ -190,7 +190,7 @@ test('net_amount is compared against the magnitude, since a debit sums negative'
 test('a record and its rows driven apart is named', () => {
   // An amount correction that moved the record without moving the ledger.
   const rows: NetAmountRow[] = [
-    { transactionNumber: 8, referenceNumber: '80002', direction: 'in', amount: 100, fee: 0, netAmount: 150, status: 'completed', accountNet: 100, hasAccountRows: true },
+    { transactionNumber: 8, referenceNumber: '80002', direction: 'in', amount: 100, fee: 0, netAmount: 150, additionalCharges: 0, status: 'completed', accountNet: 100, hasAccountRows: true },
   ];
 
   const check = checkNetAmountConsistency(rows);
@@ -202,12 +202,44 @@ test('a record and its rows driven apart is named', () => {
 
 test('a completed record that wrote no rows at all is a finding', () => {
   const rows: NetAmountRow[] = [
-    { transactionNumber: 11, referenceNumber: '11003', direction: 'in', amount: 500, fee: 0, netAmount: 500, status: 'completed', accountNet: 0, hasAccountRows: false },
+    { transactionNumber: 11, referenceNumber: '11003', direction: 'in', amount: 500, fee: 0, netAmount: 500, additionalCharges: 0, status: 'completed', accountNet: 0, hasAccountRows: false },
   ];
 
   const check = checkNetAmountConsistency(rows);
   assert.equal(check.status, 'findings');
   assert.match(check.findings[0].detail, /wrote no rows/);
+});
+
+test('a movement that billed an additional charge is not a finding', () => {
+  // Transaction 106 (reference 58327), on the books as they stood: a ₱988.00
+  // bill payment with a ₱12.00 Converge charge billed on top. The customer's
+  // account was debited ₱1,000.00 — net_amount plus the charge — because that
+  // is what creation posts (amountFields: `netAmount + charges`) and what every
+  // reversal moves (`movementTotalOf`, "the figure every reversal path moves").
+  // Judging the stored figure against the rows alone named three perfectly
+  // correct books as disagreements: the charge was never folded in, so every
+  // movement carrying one was a guaranteed false positive.
+  const rows: NetAmountRow[] = [
+    { transactionNumber: 106, referenceNumber: '58327', direction: 'out', amount: 988, fee: 10, netAmount: 988, additionalCharges: 12, status: 'completed', accountNet: -1000, hasAccountRows: true },
+  ];
+
+  const check = checkNetAmountConsistency(rows);
+  assert.equal(check.status, 'pass');
+});
+
+test('a charge-bearing movement whose rows still disagree is still a finding', () => {
+  // The other half of the fix, or it would be no fix at all: folding the
+  // charges in must not blind the check. Here the record bills ₱15.00 of
+  // charges but its account moved only the bare amount, so the two still
+  // disagree by exactly that much.
+  const rows: NetAmountRow[] = [
+    { transactionNumber: 110, referenceNumber: '07193', direction: 'out', amount: 3119, fee: 40, netAmount: 3119, additionalCharges: 15, status: 'completed', accountNet: -3119, hasAccountRows: true },
+  ];
+
+  const check = checkNetAmountConsistency(rows);
+  assert.equal(check.status, 'findings');
+  assert.equal(check.findings[0].expected, 3134);
+  assert.equal(check.findings[0].actual, 3119);
 });
 
 // --- the whole run --------------------------------------------------------
@@ -230,8 +262,8 @@ test('a clean book passes every check, which is the point', () => {
       { ...base, transactionNumber: 6, direction: 'out', amount: 2500, fee: 30, accountFeeNet: 0, drawerFeeNet: 30 },
     ],
     [
-      { transactionNumber: 3, referenceNumber: '13006', direction: 'in', amount: 300, fee: 10, netAmount: 300, status: 'completed', accountNet: 300, hasAccountRows: true },
-      { transactionNumber: 6, referenceNumber: '60001', direction: 'out', amount: 2500, fee: 30, netAmount: 2500, status: 'completed', accountNet: -2500, hasAccountRows: true },
+      { transactionNumber: 3, referenceNumber: '13006', direction: 'in', amount: 300, fee: 10, netAmount: 300, additionalCharges: 0, status: 'completed', accountNet: 300, hasAccountRows: true },
+      { transactionNumber: 6, referenceNumber: '60001', direction: 'out', amount: 2500, fee: 30, netAmount: 2500, additionalCharges: 0, status: 'completed', accountNet: -2500, hasAccountRows: true },
     ]
   );
 
@@ -248,7 +280,7 @@ test('one bad movement surfaces in the checks that can see it', () => {
   const checks = runIntegrityChecks(
     [{ ...bad, drawerFeeNet: 0, hasDrawerRows: true }],
     [{ ...bad, accountFeeNet: 10, drawerFeeNet: 0 }],
-    [{ transactionNumber: 3, referenceNumber: '13006', direction: 'in', amount: 300, fee: 10, netAmount: 310, status: 'completed', accountNet: 310, hasAccountRows: true }]
+    [{ transactionNumber: 3, referenceNumber: '13006', direction: 'in', amount: 300, fee: 10, netAmount: 310, additionalCharges: 0, status: 'completed', accountNet: 310, hasAccountRows: true }]
   );
 
   assert.equal(checks[0].status, 'findings');

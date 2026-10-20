@@ -211,6 +211,15 @@ export function checkFeeRowPlacement(rows: FeePlacementRow[]): IntegrityCheck {
 // agree with the rows they actually left behind. Stored as a magnitude: a
 // debit's rows sum negative, and comparing without the absolute value reported
 // thirty findings against perfectly correct books. (Found by running it first.)
+//
+// `net_amount` is not the whole figure, though, and comparing it alone was the
+// second such finding: creation posts `net_amount + additional_charges` as the
+// account's row (amountFields), and every reversal path moves the same sum
+// (`movementTotalOf`, "the figure every reversal path moves"). A movement that
+// billed a charge therefore left rows larger than its own column by exactly the
+// charge, and this check read that as three books disagreeing when it was one
+// expression applied to half a figure. The charges are folded in here so the
+// comparison is against what the account was actually asked to move.
 
 export interface NetAmountRow {
   transactionNumber: number;
@@ -219,6 +228,8 @@ export interface NetAmountRow {
   amount: number;
   fee: number;
   netAmount: number;
+  /** Charges billed on top of the amount, which the account's rows carry too. */
+  additionalCharges: number;
   status: string;
   /** The primary account's own rows, netted and signed. */
   accountNet: number;
@@ -247,18 +258,22 @@ export function checkNetAmountConsistency(rows: NetAmountRow[]): IntegrityCheck 
       });
       continue;
     }
+    // What the account was asked to move: the amount, plus whatever the
+    // movement billed on top of it. In cents throughout, so the sum of two
+    // stored figures cannot drift by a centavo on the way in.
+    const expectedCents = cents(r.netAmount) + cents(r.additionalCharges);
     const actual = Math.abs(cents(r.accountNet)) / 100;
-    if (cents(r.netAmount) !== cents(actual)) {
+    if (expectedCents !== cents(actual)) {
       findings.push({
         transactionNumber: r.transactionNumber,
         referenceNumber: r.referenceNumber,
         direction: r.direction,
         amount: r.amount,
         fee: r.fee,
-        expected: r.netAmount,
+        expected: expectedCents / 100,
         actual,
         detail:
-          `The record claims ${money(r.netAmount)} but the account's rows sum to ${money(actual)}. ` +
+          `The record claims ${money(expectedCents / 100)} but the account's rows sum to ${money(actual)}. ` +
           'It was written under a rule its ledger no longer matches.',
       });
     }
