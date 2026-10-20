@@ -2178,6 +2178,8 @@ customer. Two cash-ins were booked that way on 2026-10-19 — transactions 3 and
 against Vanessa Bautista — and the ₱20 they put in the wrong pocket is the ₱20 that would not
 tie.
 
+### D46 — a cash-in's fee is the tin's income whichever way the tender read
+
 **The rule (D46).** A cash-in's fee is the tin's income whichever way the tender carried it, so
 the receiving account lands `amount` and nothing else. `netAmountOf` no longer reads the flag
 for a cash-in at all; only a cash-out still reads it, because a fee carved from what leaves is
@@ -2233,3 +2235,79 @@ flag is no longer a posting rule on the debit side, and the split follows the te
 than the direction. D42's other three cells, its D40 guard (a fee inside the amount cannot
 exceed it) and its reversal paragraph stand, as does D37, whose fee-first ordering the tin
 keeps. D41 and D45 are unaffected; their figures simply quote the new nets.
+
+## 38. A borrowing may arrive and leave by different routes
+
+The branch borrows physical cash and settles it online, or borrows online and hands cash back
+across the counter. Both happen. The question asked was whether the system can record them.
+
+### D47 — the route belongs to the movement, never to the loan
+
+Both combinations were driven through `paymentPlan` before answering, rather than reasoned
+about:
+
+| | borrow | repay |
+|---|---|---|
+| cash in, online out | drawer + `cash` ✅ | bank + `bank` ✅ |
+| online in, cash out | bank + `bank` ✅ | drawer + `cash` ✅ |
+
+Each nets to the same outstanding figure, neither produces an Owner Capital line, and neither
+leg needs the other's permission — nor can it be given one: `paymentPlan` receives one code,
+one account and one route per call, so there is no point at which a pairing could be checked.
+That is the correct design rather than an omission. A route describes one movement across one
+account, and the two legs of a mixed borrowing legitimately disagree; enforcing sameness would
+refuse entries that are true.
+
+What settles the money between them is a **Fund Transfer** — a third row, `txn_code: null`, so
+it never reaches the `borrowings` bucket. Borrow ₱5,000 across the counter, bank it, repay
+₱2,000 online, and the transfer is what leaves the till's ₱5,000 and the bank's movement both
+true at once. Omitting it corrupts nothing — the drawer really does hold the cash — but it
+leaves the books silent about a journey they were in a position to record.
+
+**No build.** The statement, `borrowingsOutstanding` and the drill-down already carry all of
+this: the outstanding figure is read by subtraction from the start of the books, the
+drill-down names each row's payee, account and route, and `borrowings` stays out of
+`EXPENSE_BUCKETS` so a repayment never inflates what operating the business costs.
+
+### D48 — the capital door does not say it is not a debt — *recorded, deliberately not built*
+
+With only the owner ever lending — the business's own answer — the expensive mistake is no
+longer the route. It is the choice of door.
+
+The loan door explains itself. **Record cash event → Borrowed funds received** carries a hint
+calling the money *"the company's to hold but not to keep"*. The capital door does not: **Add
+Funds (from owner)** opens a dialog titled only *"Add Funds to {account}"*, and nothing on it
+says the money is never repaid. An owner handing over ₱50,000 of returnable working capital,
+entered there, becomes equity the system will never ask to see again.
+
+Neither mistake throws an error, and the two exits are different codes:
+
+| recorded as | must leave as | if the exit takes the other code |
+|---|---|---|
+| `owner_funding` | `owner_return` | a `loan_repayment` against capital drives `borrowingsOutstanding` **negative** — loud, and worth an enquiry |
+| `loan_received` | `loan_repayment` | an `owner_return` leaves "Still owed" pinned at the full amount **forever** — silent |
+
+So the rule is **decide at entry, not at return**: by the time the owner asks for the money
+back, the answer depends entirely on a choice made weeks earlier, and the only moment that
+choice is still cheap is the one it is made in. This cannot be validated away — there is no
+loan object to check a return against — so it is discipline, and discipline needs the form to
+say what it is doing.
+
+**Proposed, and deferred until it is needed:** one line beneath the Add Funds dialog title —
+*"Capital, not a loan — this is not repayable."* A static label rather than a warning: no
+threshold, no detector, no new data, and nothing that could be wrong about a particular entry.
+
+Considered alongside it and rejected for the same deferral:
+
+- **a per-lender breakdown of "Still owed"** — pointless while there is exactly one lender, and
+  a total silently wrong is worse than no total. Revisit only if a second lender appears, and
+  only with previous payees offered as the operator types: `payee` is free text, so *"Jessica"*,
+  *"Jessica B."* and *"Ma. Jessica Bautista"* would otherwise read as three debts.
+- **validating that a borrowing's two legs agree** — impossible by construction (D47) and wrong
+  in principle, since they legitimately differ.
+- **inferring the intervening transfer** — a heuristic, and the standing rule is that alert
+  noise is worse than silence.
+
+Deferred, not rejected. Both `loan_received` and `loan_repayment` still carry **0 rows**, so
+there is nothing yet to be wrong about and nothing to correct. The moment the first one is
+written is the moment this section is worth reopening.
