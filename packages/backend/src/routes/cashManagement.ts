@@ -247,16 +247,23 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     // `fee_added_to_balance IS NOT FALSE` reads as fee-on-top (a null is read
     // the same way amountFields does — anything but false is on top), so the
     // two filters partition every fee and the figures sum back to totalIncome.
-    const incRow = await queryOne<{ fee_on_top: string; fee_inside: string; load_margin: string }>(
+    const incRow = await queryOne<{ fee_on_top: string; fee_inside: string; provider_interest: string; load_margin: string }>(
       `SELECT COALESCE(SUM(txn.fee_on_top), 0) AS fee_on_top,
               COALESCE(SUM(txn.fee_inside), 0) AS fee_inside,
+              COALESCE(SUM(txn.provider_interest), 0) AS provider_interest,
               COALESCE(SUM(ld.margin), 0) AS load_margin
        FROM accounts a
        JOIN account_types at ON at.id = a.account_type_id
        LEFT JOIN (
          SELECT t.account_id,
                 COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed' AND t.fee_added_to_balance IS NOT FALSE), 0) AS fee_on_top,
-                COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed' AND t.fee_added_to_balance IS FALSE), 0) AS fee_inside
+                COALESCE(SUM(COALESCE(t.fee, 0)) FILTER (WHERE t.status = 'completed' AND t.fee_added_to_balance IS FALSE), 0) AS fee_inside,
+                -- Same expression loadIncomeReport uses, or the daily figure
+                -- and the all-time one would be two different amounts of money:
+                -- whole amount, completed rows only.
+                COALESCE(SUM(CASE WHEN t.payment_method = 'provider_interest'
+                                  THEN t.amount ELSE 0 END)
+                  FILTER (WHERE t.status = 'completed'), 0) AS provider_interest
          FROM transactions t
          JOIN transaction_types tt ON tt.id = t.transaction_type_id
          WHERE ${txnIncConds.join(' AND ')}
@@ -276,7 +283,12 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     // money while the cost it came out of was deducted from the non-cash
     // channel. Hence margin joins the on-top fees in `drawerIncome`.
     const drawerIncome = Math.round((num(incRow?.fee_on_top) + num(incRow?.load_margin)) * 100) / 100;
-    const nonCashIncome = Math.round(num(incRow?.fee_inside) * 100) / 100;
+    // Income that rode the non-cash accounts' balances: fees inside the
+    // amount, plus provider interest — both credited to the receiving
+    // account rather than handed over as cash. Beside the balance rather than
+    // inside it, for the same reason. `drawerIncome + nonCashIncome` equals
+    // Reports → Income's totalIncome.
+    const nonCashIncome = Math.round((num(incRow?.fee_inside) + num(incRow?.provider_interest)) * 100) / 100;
 
     res.json({
       success: true,

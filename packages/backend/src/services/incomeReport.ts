@@ -20,6 +20,20 @@
 // transaction rather than revenue the company earned. Leaving it inside
 // feeIncome meant the card read "Fees 1,800 + Charges 30" as one income figure,
 // which made the account look like it earned thirty pesos it had not.
+//
+// Provider interest is the third component, and the only one counted at its
+// full amount rather than at a margin. A fee is what the company charged a
+// customer and a margin is what a sale spread over its cost; interest is money
+// the provider simply paid the company, so the whole peso is what it earned.
+// It is carried on its own column for the same reason the others are: a reader
+// has to be able to walk `totalIncome` back to the rows that built it.
+//
+// It is counted wherever it sits, from the same transaction rows the fee is
+// read from, so a period cannot hold interest that the account report beside it
+// does not. Its full amount also being a *source* in the cash statement is not
+// a double count — the statement answers where money came from and income
+// answers what it earned — and a loading sale already works this way, with its
+// whole selling price a source and only its margin income.
 
 const NUMERIC = /^-?\d+(\.\d+)?$/;
 
@@ -63,6 +77,11 @@ export interface IncomeSourceRow {
   // dashboard's income cards are built on.
   fee_on_top?: number | string | null;
   fee_inside?: number | string | null;
+  // The full amount of the provider interest credited to this account in the
+  // period — complete, not a margin and not a fee. Supplied like the fee split
+  // rather than defaulted, for the same reason: a caller that forgot it would
+  // report an interest column of nothing while the balances beside it had grown.
+  provider_interest?: number | string | null;
   additional_charges?: number | string | null;
   reversed_excluded?: number | string | null;
   transfer_count?: number | string | null;
@@ -86,6 +105,7 @@ export interface IncomeReportRow {
   txnFees: number;
   feeOnTop: number;
   feeInside: number;
+  providerInterest: number;
   additionalCharges: number;
   transferFees: number;
   feeIncome: number;
@@ -105,6 +125,7 @@ export interface IncomeSummary {
   txnFees: number;
   feeOnTop: number;
   feeInside: number;
+  providerInterest: number;
   additionalCharges: number;
   transferFees: number;
   feeIncome: number;
@@ -127,6 +148,7 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
   let txnFeesCents = 0;
   let feeOnTopCents = 0;
   let feeInsideCents = 0;
+  let providerInterestCents = 0;
   let chargesCents = 0;
   let transferFeesCents = 0;
   let loadRevenueCents = 0;
@@ -139,10 +161,15 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
     const rowTxnFeesCents = toCents(row.txn_fees);
     const rowFeeOnTopCents = toCents(row.fee_on_top);
     const rowFeeInsideCents = toCents(row.fee_inside);
+    const rowProviderInterestCents = toCents(row.provider_interest);
     const rowChargesCents = toCents(row.additional_charges);
     const rowTransferFeesCents = toCents(row.transfer_fees);
     const rowLoadMarginCents = toCents(row.load_margin);
-    const rowTotalCents = rowTxnFeesCents + rowLoadMarginCents;
+    // Three components, none of which can reach the same peso: a fee is what a
+    // customer paid over the amount, a margin is what a sale spread over its
+    // cost, and interest is what the provider credited. A fourth arriving would
+    // have to be shown beside them before it joins this sum.
+    const rowTotalCents = rowTxnFeesCents + rowLoadMarginCents + rowProviderInterestCents;
 
     txnCount += asCount(row.txn_count);
     transferCount += asCount(row.transfer_count);
@@ -150,6 +177,7 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
     txnFeesCents += rowTxnFeesCents;
     feeOnTopCents += rowFeeOnTopCents;
     feeInsideCents += rowFeeInsideCents;
+    providerInterestCents += rowProviderInterestCents;
     chargesCents += rowChargesCents;
     transferFeesCents += rowTransferFeesCents;
     loadRevenueCents += toCents(row.load_revenue);
@@ -171,6 +199,7 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
       txnFees: money(rowTxnFeesCents),
       feeOnTop: money(rowFeeOnTopCents),
       feeInside: money(rowFeeInsideCents),
+      providerInterest: money(rowProviderInterestCents),
       additionalCharges: money(rowChargesCents),
       transferFees: money(rowTransferFeesCents),
       feeIncome: money(rowTxnFeesCents),
@@ -195,17 +224,20 @@ export function buildIncomeReport(sourceRows: IncomeSourceRow[]): IncomeReport {
       transferCount,
       loadCount,
       txnFees: money(txnFeesCents),
-      // The pair has to sum back to `txnFees` above, so a total that cannot be
-      // walked back to its own columns would be visible here first.
+      // The fee pair has to sum back to `txnFees` above, so a total that cannot
+      // be walked back to its own columns would be visible here first. Interest
+      // is deliberately *not* part of that pair: it is a component of
+      // `totalIncome` in its own right, not a way the fee landed.
       feeOnTop: money(feeOnTopCents),
       feeInside: money(feeInsideCents),
+      providerInterest: money(providerInterestCents),
       additionalCharges: money(chargesCents),
       transferFees: money(transferFeesCents),
       feeIncome: money(txnFeesCents),
       loadRevenue: money(loadRevenueCents),
       loadCost: money(loadCostCents),
       loadMargin: money(loadMarginCents),
-      totalIncome: money(txnFeesCents + loadMarginCents),
+      totalIncome: money(txnFeesCents + loadMarginCents + providerInterestCents),
       reversedExcluded: money(reversedCents),
     },
   };
@@ -277,6 +309,32 @@ export interface CashDetailRow {
   feeCharges: number;
 }
 
+// The provider interest credited to an account in the period. Counted at the
+// full amount, so unlike a fee row there is no second figure to carry beside
+// it: what the provider credited is what the company earned.
+export interface InterestDetailSource {
+  id: string;
+  transaction_number?: number | string | null;
+  reference_number?: string | null;
+  transaction_date?: string | Date | null;
+  type_name?: string | null;
+  description?: string | null;
+  status?: string | null;
+  amount?: number | string | null;
+}
+
+export interface InterestDetailRow {
+  id: string;
+  transactionNumber: number | null;
+  referenceNumber: string | null;
+  transactionDate: string | null;
+  typeName: string | null;
+  description: string | null;
+  status: string | null;
+  amount: number;
+  interest: number;
+}
+
 export interface LoadingDetailSource {
   id: string;
   transaction_number?: number | string | null;
@@ -338,6 +396,8 @@ export interface IncomeDetailSummary {
   loadRevenue: number;
   loadCost: number;
   loadMargin: number;
+  interestCount: number;
+  providerInterest: number;
   transferCount: number;
   transferAmount: number;
   transferFees: number;
@@ -345,6 +405,7 @@ export interface IncomeDetailSummary {
 
 export interface IncomeDetail {
   cash: CashDetailRow[];
+  interest: InterestDetailRow[];
   loading: LoadingDetailRow[];
   transfers: TransferDetailRow[];
   summary: IncomeDetailSummary;
@@ -352,6 +413,7 @@ export interface IncomeDetail {
 
 export function buildIncomeDetail(source: {
   cash?: CashDetailSource[];
+  interest?: InterestDetailSource[];
   loading?: LoadingDetailSource[];
   transfers?: TransferDetailSource[];
 }): IncomeDetail {
@@ -410,6 +472,34 @@ export function buildIncomeDetail(source: {
     } satisfies CashDetailRow;
   });
 
+  // Provider interest is the one component counted whole: there is no cost
+  // beside it to net off and no fee mode to report it under, so the row's
+  // amount *is* its income. A reversed credit is shown for the same reason a
+  // reversed fee is — a reader reconciling the parent row has to be able to see
+  // what was given back — but only completed rows earn.
+  let interestCount = 0;
+  let providerInterestCents = 0;
+
+  const interest: InterestDetailRow[] = (source.interest ?? []).map((row) => {
+    const amountCents = toCents(row.amount);
+    if (asText(row.status) === 'completed') {
+      interestCount += 1;
+      providerInterestCents += amountCents;
+    }
+
+    return {
+      id: row.id,
+      transactionNumber: asIdentifier(row.transaction_number),
+      referenceNumber: asText(row.reference_number),
+      transactionDate: asDate(row.transaction_date),
+      typeName: asText(row.type_name),
+      description: asText(row.description),
+      status: asText(row.status),
+      amount: money(amountCents),
+      interest: money(amountCents),
+    } satisfies InterestDetailRow;
+  });
+
   let loadRevenueCents = 0;
   let loadCostCents = 0;
   let loadMarginCents = 0;
@@ -457,6 +547,7 @@ export function buildIncomeDetail(source: {
 
   return {
     cash,
+    interest,
     loading,
     transfers,
     summary: {
@@ -474,6 +565,8 @@ export function buildIncomeDetail(source: {
       loadRevenue: money(loadRevenueCents),
       loadCost: money(loadCostCents),
       loadMargin: money(loadMarginCents),
+      interestCount,
+      providerInterest: money(providerInterestCents),
       transferCount: transfers.length,
       transferAmount: money(transferAmountCents),
       transferFees: money(transferFeeCents),

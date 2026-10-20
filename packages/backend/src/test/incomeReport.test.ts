@@ -426,3 +426,66 @@ test('a row the query gave no branch reads as null, never undefined', () => {
   assert.equal(bare.branchId, null);
   assert.equal(bare.branchName, null);
 });
+
+test('provider interest is counted whole and joins totalIncome', () => {
+  const { rows, summary } = buildIncomeReport([
+    row({ txn_fees: '1800.00', fee_on_top: '1000.00', fee_inside: '800.00', load_margin: '46.00', provider_interest: '10.00' }),
+  ]);
+
+  // A fee is what a customer paid over the amount and a margin is what a sale
+  // spread over its cost; interest is money the provider simply credited the
+  // company, so the whole peso is the income and there is nothing to net off.
+  assert.equal(rows[0].providerInterest, 10);
+  assert.equal(summary.providerInterest, 10);
+  assert.equal(rows[0].totalIncome, 1856);
+  assert.equal(summary.totalIncome, 1856);
+
+  // And it stays out of the fee figures it sits beside: the fee pair still
+  // partitions txnFees rather than absorbing a credit that is not a fee.
+  assert.equal(rows[0].feeIncome, 1800);
+  assert.equal(rows[0].feeOnTop + rows[0].feeInside, rows[0].txnFees);
+  assert.equal(rows[0].txnFees + rows[0].loadMargin + rows[0].providerInterest, rows[0].totalIncome);
+});
+
+test('an account credited interest and nothing else is still an earning account', () => {
+  // Interest reaches the balance the same way a fee inside the amount does, so
+  // an account the provider credited is one that earned — reporting it as an
+  // account with no income beside the balance it grew would contradict the
+  // balance on the same screen.
+  const { rows, summary } = buildIncomeReport([
+    row({ provider_interest: '5.96' }),
+    row({ account_id: 'acc-2', account_name: 'Nobody', txn_fees: '0.00' }),
+  ]);
+
+  assert.equal(summary.earningAccounts, 1);
+  assert.equal(summary.providerInterest, 5.96);
+  assert.equal(summary.totalIncome, 5.96);
+  assert.equal(rows[0].totalIncome, 5.96);
+});
+
+test('the interest drill-down reconciles with its row, and a reversed credit earns nothing', () => {
+  const { interest, summary } = buildIncomeDetail({
+    interest: [
+      { id: 'i1', transaction_number: '44', type_name: 'Owner Funding', status: 'completed', amount: '10.00' },
+      { id: 'i2', transaction_number: '45', type_name: 'Owner Funding', status: 'reversed', amount: '5.00' },
+    ],
+  });
+
+  // The two halves are totalled rather than dropped, for the reason the cash
+  // table gives: a reader reconciling the parent row has to be able to see
+  // what was handed back.
+  assert.equal(summary.interestCount, 1);
+  assert.equal(summary.providerInterest, 10);
+  assert.equal(interest.length, 2);
+  assert.equal(interest[0].interest, 10);
+  assert.equal(interest[1].status, 'reversed');
+  assert.equal(interest[1].amount, 5, 'the reversed credit still prints, it just earns nothing');
+});
+
+test('an account with no interest reports a drill-down of nothing rather than undefined', () => {
+  const detail = buildIncomeDetail({});
+
+  assert.deepEqual(detail.interest, []);
+  assert.equal(detail.summary.interestCount, 0);
+  assert.equal(detail.summary.providerInterest, 0);
+});

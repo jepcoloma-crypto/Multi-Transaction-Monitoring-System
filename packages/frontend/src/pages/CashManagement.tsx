@@ -64,8 +64,9 @@ interface Statement {
   // Total income (Reports → Income) split by where it lands, served beside
   // the balance rather than inside it — the statement's `totals` stay a pure
   // movement identity. `drawerIncome` is fee-on-top plus the loading margin
-  // (both land in the till); `nonCashIncome` is fee-inside (rides the account
-  // balance). They sum back to totalIncome.
+  // (both land in the till); `nonCashIncome` is fee-inside plus provider
+  // interest (both ride the receiving account's balance). They sum back to
+  // totalIncome.
   drawerIncome?: number;
   nonCashIncome?: number;
 }

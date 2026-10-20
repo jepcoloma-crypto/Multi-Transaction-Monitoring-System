@@ -1,12 +1,15 @@
 import { formatCurrency, manilaDayLabel } from '../lib/format';
 
-export type IncomeDetailTab = 'cash' | 'loading' | 'transfers';
+export type IncomeDetailTab = 'cash' | 'interest' | 'loading' | 'transfers';
 
 export interface IncomeParentRow {
   txnFees: number;
   additionalCharges: number;
   transferFees: number;
   loadMargin: number;
+  // The whole credited amount — this component's only figure, with no fee or
+  // cost beside it to reconcile against.
+  providerInterest: number;
   reversedExcluded: number;
 }
 
@@ -30,6 +33,21 @@ interface CashRow {
   feeAddedToBalance: boolean | null;
   charges: number;
   feeCharges: number;
+}
+
+// Provider interest, counted whole: there is no cost beside it and no fee
+// beside it, so `amount` and `interest` are the same figure — the second is
+// kept anyway so the table reads the way the other two do.
+interface InterestRow {
+  id: string;
+  transactionNumber: number | null;
+  referenceNumber: string | null;
+  transactionDate: string | null;
+  typeName: string | null;
+  description: string | null;
+  status: string | null;
+  amount: number;
+  interest: number;
 }
 
 interface LoadingRow {
@@ -56,6 +74,7 @@ interface TransferRow {
 
 interface Detail {
   cash: CashRow[];
+  interest: InterestRow[];
   loading: LoadingRow[];
   transfers: TransferRow[];
   summary: {
@@ -75,6 +94,8 @@ interface Detail {
     loadRevenue: number;
     loadCost: number;
     loadMargin: number;
+    interestCount: number;
+    providerInterest: number;
     transferCount: number;
     transferAmount: number;
     transferFees: number;
@@ -90,6 +111,7 @@ interface Props {
 
 const TABS: { id: IncomeDetailTab; label: string }[] = [
   { id: 'cash', label: 'Cash Transactions' },
+  { id: 'interest', label: 'Provider Interest' },
   { id: 'loading', label: 'Loading' },
   { id: 'transfers', label: 'Transfers' },
 ];
@@ -104,10 +126,17 @@ const dateLabel = (value: string | null): string => manilaDayLabel(value);
 const numberLabel = (value: number | null): string =>
   value === null ? '—' : `#${value}`;
 
-const countFor = (detail: Detail, tab: IncomeDetailTab): number =>
-  tab === 'cash' ? detail.summary.cashCount
-    : tab === 'loading' ? detail.summary.loadingCount
-      : detail.summary.transferCount;
+// Named per tab rather than read off a chain of ternaries: a tab added later
+// that forgot itself here would be a type error, not a tab quietly counting
+// whichever bucket the chain happened to fall through to.
+const COUNTS: Record<IncomeDetailTab, (detail: Detail) => number> = {
+  cash: (detail) => detail.summary.cashCount,
+  interest: (detail) => detail.summary.interestCount,
+  loading: (detail) => detail.summary.loadingCount,
+  transfers: (detail) => detail.summary.transferCount,
+};
+
+const countFor = (detail: Detail, tab: IncomeDetailTab): number => COUNTS[tab](detail);
 
 // Every tab prints the number its rows total next to the number on the account
 // row above. Agreeing is the expected case and says so quietly; disagreeing is
@@ -134,6 +163,7 @@ export const Reconciles = ({ label, expected, actual, format = formatCurrency }:
 const EmptyTab = ({ tab }: { tab: IncomeDetailTab }) => (
   <p className="text-sm text-gray-500 py-6 text-center">
     {tab === 'cash' && 'No cash transactions for this account in the selected period.'}
+    {tab === 'interest' && 'No provider interest credited to this account in the selected period.'}
     {tab === 'loading' && 'No loading transactions for this account in the selected period.'}
     {tab === 'transfers' && 'No transfers funded from this account in the selected period.'}
   </p>
@@ -205,6 +235,57 @@ const CashTable = ({ rows, summary, parent }: { rows: CashRow[]; summary: Detail
       {(parent.reversedExcluded > 0 || summary.refunded > 0) && (
         <Reconciles label="Reversed (Excluded)" expected={parent.reversedExcluded} actual={summary.refunded} />
       )}
+    </div>
+  </>
+);
+
+// The whole credit is the income, so unlike the other two tables there is no
+// second figure to net off — which is exactly why it still gets one: a reader
+// reconciling the account row has to be able to reach this total from rows they
+// can see, and a table with no total would leave them adding it up by hand.
+const InterestTable = ({ rows, summary, parent }: { rows: InterestRow[]; summary: Detail['summary']; parent: IncomeParentRow }) => (
+  <>
+    <p className="text-xs text-gray-500 mb-2">
+      Credited to this account by the provider — the whole amount is what it earned.
+    </p>
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[800px]">
+        <thead className="bg-gray-100">
+          <tr>
+            <th className={th}>Txn #</th>
+            <th className={th}>Date</th>
+            <th className={th}>Status</th>
+            <th className={th}>Type</th>
+            <th className={th}>Reference</th>
+            <th className={thRight}>Credited</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {rows.map((r) => (
+            <tr key={r.id}>
+              <td className={`${td} font-medium`}>{numberLabel(r.transactionNumber)}</td>
+              <td className={td}>{dateLabel(r.transactionDate)}</td>
+              <td className={td}>
+                {r.status === 'reversed'
+                  ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-800">Reversed</span>
+                  : <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">Completed</span>}
+              </td>
+              <td className={td}>{r.typeName || '—'}</td>
+              <td className={td}>{r.referenceNumber || '—'}</td>
+              <td className={tdRight}>{formatCurrency(r.interest)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot className="bg-gray-100 border-t border-gray-200">
+          <tr>
+            <td className={`${td} font-semibold`} colSpan={5}>Total ({summary.interestCount} credited)</td>
+            <td className={`${tdRight} font-semibold text-finance-green`}>{formatCurrency(summary.providerInterest)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <div className="mt-2 text-xs">
+      <Reconciles label="Provider Interest" expected={parent.providerInterest} actual={summary.providerInterest} />
     </div>
   </>
 );
@@ -318,12 +399,16 @@ export function IncomeDetailPanel({ detail, tab, onTab, parent }: Props) {
         })}
       </div>
 
-      {/* A printed statement has no tabs to switch, so all three tables are kept
-          in the DOM and only the chosen one is shown on screen. */}
+      {/* A printed statement has no tabs to switch, so every table is kept in
+          the DOM and only the chosen one is shown on screen. */}
       <div className="pt-3">
         <div className={tab === 'cash' ? '' : 'hidden print:block'}>
           <h5 className="hidden print:block font-semibold text-sm text-gray-800 mb-1">Cash Transactions</h5>
           {detail.cash.length === 0 ? <EmptyTab tab="cash" /> : <CashTable rows={detail.cash} summary={detail.summary} parent={parent} />}
+        </div>
+        <div className={tab === 'interest' ? '' : 'hidden print:block'}>
+          <h5 className="hidden print:block font-semibold text-sm text-gray-800 mb-1 mt-5">Provider Interest</h5>
+          {detail.interest.length === 0 ? <EmptyTab tab="interest" /> : <InterestTable rows={detail.interest} summary={detail.summary} parent={parent} />}
         </div>
         <div className={tab === 'loading' ? '' : 'hidden print:block'}>
           <h5 className="hidden print:block font-semibold text-sm text-gray-800 mb-1 mt-5">Loading</h5>

@@ -12,11 +12,12 @@ export interface ShiftActivityBranch {
     loadMargin: number;
     totalIncome: number;
     // Income split by where it landed — fee-on-top plus loading margin against
-    // fee-inside — which is the daily counterpart of the statement's two Total
-    // Income cards. Optional so a panel built against an older backend reads
-    // them as unavailable rather than as zero, the same way the statement's
-    // pair is guarded: a missing figure and a figure of nothing are different
-    // facts and must not be printed as the same one.
+    // fee-inside plus provider interest, all of it credited to a balance —
+    // which is the daily counterpart of the statement's two Total Income cards.
+    // Optional so a panel built against an older backend reads them as
+    // unavailable rather than as zero, the same way the statement's pair is
+    // guarded: a missing figure and a figure of nothing are different facts
+    // and must not be printed as the same one.
     drawerIncome?: number;
     nonCashIncome?: number;
   };

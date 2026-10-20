@@ -841,6 +841,7 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
             txn.fees AS txn_fees,
             txn.fee_on_top AS fee_on_top,
             txn.fee_inside AS fee_inside,
+            txn.provider_interest AS provider_interest,
             txn.charges AS additional_charges,
             txn.excluded AS reversed_excluded,
             trf.cnt AS transfer_count,
@@ -880,6 +881,15 @@ const loadIncomeReport = async (req: Request, filters: IncomeFilters): Promise<I
               COALESCE(SUM(COALESCE(t.fee, 0))
                 FILTER (WHERE t.status = 'completed'
                           AND t.fee_added_to_balance IS FALSE), 0) AS fee_inside,
+               -- Provider interest, at the whole amount rather than a margin:
+               -- the provider credited the company, so every peso of it is what
+               -- was earned. Completed only, the rule the fee above follows —
+               -- a credit that was reversed earned nothing. Read off the same
+               -- transaction rows the fee is, so the two cannot drift apart on
+               -- the period either reports.
+               COALESCE(SUM(CASE WHEN t.payment_method = 'provider_interest'
+                                 THEN t.amount ELSE 0 END)
+                 FILTER (WHERE t.status = 'completed'), 0) AS provider_interest,
               COALESCE(SUM(chg.total) FILTER (WHERE t.status = 'completed'), 0) AS charges,
               -- Everything a reversed row carried, reported beside income
               -- rather than inside it. The drill-down totals the same figures
@@ -1127,7 +1137,12 @@ router.get('/shift-activity', authorize('reports.read'), async (req: Request, re
         income: {
           ...summary,
           drawerIncome: round2(summary.feeOnTop + summary.loadMargin),
-          nonCashIncome: round2(summary.feeInside),
+          // Interest rides the receiving account's balance, so it is non-cash
+          // money exactly like a fee taken inside the amount. Added to that
+          // side rather than its own card, because the two cards have to add
+          // back to `income.total` beside them and a third would leave one of
+          // them disagreeing with the figure it sits under.
+          nonCashIncome: round2(summary.feeInside + summary.providerInterest),
         },
         expense: expense.summary,
       });
@@ -1320,6 +1335,20 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
       [accountId, ...cashScope.params]
     );
 
+    // The provider interest behind the account's interest line. Same account,
+    // period and scope as the cash query above, and still admitting reversed
+    // rows for the same reason: the parent row prints what was given back, and
+    // a drill-down that could not reach it would be worse than none.
+    const interest = await query(
+      `SELECT t.id, t.transaction_number, t.reference_number, t.transaction_date,
+              tt.name AS type_name, t.description, t.status, t.amount
+       FROM transactions t
+       JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       WHERE ${cashConds.join(' AND ')} AND t.payment_method = 'provider_interest'
+       ORDER BY t.transaction_date DESC`,
+      [accountId, ...cashScope.params]
+    );
+
     const transfers = await loadTransfersDetail(req, accountId, filters);
 
     const ldScope = detailScope(req, 'lt', 'loading.read_all', 'lt.created_at', filters, 2);
@@ -1334,7 +1363,7 @@ router.get('/income-detail', authorize('reports.read'), async (req: Request, res
       [accountId, ...ldScope.params]
     );
 
-    res.json({ success: true, data: buildIncomeDetail({ cash, loading, transfers }) });
+    res.json({ success: true, data: buildIncomeDetail({ cash, interest, loading, transfers }) });
   } catch (error) { next(error); }
 });
 
@@ -1384,7 +1413,7 @@ router.get('/expense-detail', authorize('reports.read'), async (req: Request, re
 // is "no filter"; anything outside the three is a typo, answered with 400 rather
 // than silently returning every row — a filter that quietly does nothing reads
 // exactly like one that is working.
-const HANDLING_VALUES = new Set<CashIncomeType>(['on-top', 'inside', 'loading']);
+const HANDLING_VALUES = new Set<CashIncomeType>(['on-top', 'inside', 'loading', 'provider-interest']);
 const parseHandling = (value: unknown): { handling: CashIncomeType | null; invalid: boolean } => {
   const raw = typeof value === 'string' ? value.trim() : '';
   if (!raw) return { handling: null, invalid: false };
@@ -1442,6 +1471,35 @@ const loadCashTransactionsReport = async (
     cashParams,
   );
 
+  // Provider interest — the third way this report's income arrives. No fee and
+  // no direction, so nothing of the cash query's shape applies to it: the cash
+  // list wants `fee > 0` and an in/out direction precisely because it is
+  // reporting a *charge*, and an interest credit is neither.
+  const interestConds: string[] = [
+    `t.status = 'completed'`,
+    `t.payment_method = 'provider_interest'`,
+    `at.code <> 'cash'`,
+  ];
+  const interestParams: any[] = [];
+  let ipi = 1;
+  if (startDate) { interestConds.push(`t.transaction_date >= $${ipi++}`); interestParams.push(startDate); }
+  if (endDate) { interestConds.push(`t.transaction_date < ($${ipi++}::date + INTERVAL '1 day')`); interestParams.push(endDate); }
+  const interestScope = branchClause(req, 't', 'transactions.read_all', ipi, 'account', branchId ?? null);
+  if (interestScope.clause) { interestConds.push(interestScope.clause); interestParams.push(...interestScope.params); }
+
+  const interestRows = await query(
+    `SELECT t.id, t.transaction_number, t.reference_number, t.transaction_date, t.amount,
+            tt.name AS type_name, a.name AS account_name, b.name AS branch_name
+     FROM transactions t
+     JOIN transaction_types tt ON tt.id = t.transaction_type_id
+     JOIN accounts a ON a.id = t.account_id
+     JOIN account_types at ON at.id = a.account_type_id
+     LEFT JOIN branches b ON b.id = a.branch_id
+     WHERE ${interestConds.join(' AND ')}
+     ORDER BY t.transaction_date DESC`,
+    interestParams,
+  );
+
   // Loading sales — the other way cash reaches the drawer. Their income is the
   // margin, not a fee, so the service tags them `loading` rather than a mode.
   const ldConds: string[] = [`lt.status = 'completed'`, `at.code <> 'cash'`];
@@ -1465,7 +1523,7 @@ const loadCashTransactionsReport = async (
     ldParams,
   );
 
-  const report = buildCashTransactionsReport(cashRows, loadingRows, handling);
+  const report = buildCashTransactionsReport(cashRows, loadingRows, handling, interestRows);
 
   // The period an operator picked, read back in Manila. Slicing the instant
   // would print the UTC day — one day early for both ends — so a report filed

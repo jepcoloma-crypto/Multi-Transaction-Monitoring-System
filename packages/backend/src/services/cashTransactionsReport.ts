@@ -90,6 +90,20 @@ export interface CashSourceRow {
   additional_charges?: number | string | null;
 }
 
+// The provider interest credited in the period. No fee, no charges and no
+// direction: a credit the provider simply made, counted at the whole amount.
+export interface InterestSourceRow {
+  id: string;
+  transaction_number?: number | string | null;
+  reference_number?: string | number | null;
+  transaction_date?: string | Date | null;
+  type_name?: string | null;
+  account_name?: string | null;
+  branch_name?: string | null;
+  // The whole credited amount — this row's income, with nothing to net off it.
+  amount?: number | string | null;
+}
+
 export interface LoadingSourceRow {
   id: string;
   transaction_number?: number | string | null;
@@ -104,12 +118,17 @@ export interface LoadingSourceRow {
 
 // On top and inside are the two fee modes (the tender's own record, posted per
 // D46); loading is neither, because a loading sale earns its margin rather than
-// charging a fee.
-export type CashIncomeType = 'on-top' | 'inside' | 'loading';
+// charging a fee; provider interest is a fourth thing again — money the
+// provider credited the company, of which the whole peso is the income.
+export type CashIncomeType = 'on-top' | 'inside' | 'loading' | 'provider-interest';
+
+// The four are disjoint, and this is the order a same-day page lists them in:
+// the transactions first, then the loading sales that happen to share the day.
+const KIND_RANK: Record<CashTransactionRow['kind'], number> = { cash: 0, interest: 1, loading: 2 };
 
 export interface CashTransactionRow {
   id: string;
-  kind: 'cash' | 'loading';
+  kind: 'cash' | 'interest' | 'loading';
   // Manila day, `YYYY-MM-DD` — the grouping key the report sorts and prints by.
   day: string | null;
   // The system's own sequential number, and the external reference beside it —
@@ -123,14 +142,16 @@ export interface CashTransactionRow {
   // loading sale — what the row was, in the reader's own words.
   description: string | null;
   direction: string | null;
-  // Cash: the movement amount. Loading: the selling price that reached the
-  // drawer. Context beside the income, never summed into it.
+  // Cash: the movement amount. Interest: the credited amount, which is also its
+  // income. Loading: the selling price that reached the drawer. Context beside
+  // the income, never summed into it.
   amount: number;
   // The additional charges riding inside `amount` — the customer's own money
   // (a Home Credit cut, say) that passed through rather than earned. Shown for
   // reconciliation, deliberately outside every income figure below.
   charges: number;
-  // What the row earned the company: the fee (cash) or the margin (loading).
+  // What the row earned the company: the fee (cash), the whole credit
+  // (interest) or the margin (loading).
   income: number;
   incomeType: CashIncomeType;
 }
@@ -139,6 +160,7 @@ export interface CashTransactionsSummary {
   feeOnTop: { total: number; count: number };
   feeInside: { total: number; count: number };
   loadingMargin: { total: number; count: number };
+  providerInterest: { total: number; count: number };
   totalIncome: number;
   // Summed from the surviving rows like every other figure here — reference
   // only, so `totalIncome` never carries a peso of it.
@@ -154,6 +176,7 @@ export function buildCashTransactionsReport(
   cash: CashSourceRow[],
   loading: LoadingSourceRow[],
   handling?: CashIncomeType | null,
+  interest?: InterestSourceRow[],
 ): CashTransactionsReport {
   const allRows: CashTransactionRow[] = [
     ...cash.map((row) => {
@@ -176,6 +199,27 @@ export function buildCashTransactionsReport(
         charges: money(toCents(row.additional_charges)),
         income: money(feeCents),
         incomeType,
+      } satisfies CashTransactionRow;
+    }),
+    ...(interest ?? []).map((row) => {
+      const amountCents = toCents(row.amount);
+
+      return {
+        id: row.id,
+        kind: 'interest',
+        day: asDay(row.transaction_date),
+        transactionNumber: asReference(row.transaction_number),
+        referenceNumber: asReferenceNumber(row.reference_number),
+        accountName: asText(row.account_name),
+        branchName: asText(row.branch_name),
+        description: asText(row.type_name),
+        direction: null,
+        amount: money(amountCents),
+        // An interest credit carries no charges — nothing was billed alongside
+        // it, the provider simply paid the company.
+        charges: 0,
+        income: money(amountCents),
+        incomeType: 'provider-interest',
       } satisfies CashTransactionRow;
     }),
     ...loading.map((row) => {
@@ -216,10 +260,11 @@ export function buildCashTransactionsReport(
     if (a.day === null) return 1;
     if (b.day === null) return -1;
     if (a.day !== b.day) return a.day < b.day ? 1 : -1;
-    // Same day: cash before loading, then by the system's own number, so the
-    // order is reproducible between renders rather than depending on query
-    // arrival.
-    if (a.kind !== b.kind) return a.kind === 'cash' ? -1 : 1;
+    // Same day: the transactions before the loading sales that share it, with
+    // interest credit sitting beside the movement it resembles rather than
+    // after it — then by the system's own number, so the order is reproducible
+    // between renders instead of depending on query arrival.
+    if (a.kind !== b.kind) return KIND_RANK[a.kind] - KIND_RANK[b.kind];
     return (a.transactionNumber ?? '').localeCompare(b.transactionNumber ?? '');
   });
 
@@ -229,16 +274,24 @@ export function buildCashTransactionsReport(
   let insideCount = 0;
   let loadingCents = 0;
   let loadingCount = 0;
+  let interestCents = 0;
+  let interestCount = 0;
   let chargesCents = 0;
   for (const row of rows) {
     const cents = toCents(row.income);
     chargesCents += toCents(row.charges);
+    // Named on the last branch rather than left as a bare `else`: a fifth type
+    // added later would otherwise land in whichever bucket happened to be
+    // final, and the summary would total it under a name that is not its own.
     if (row.incomeType === 'on-top') {
       onTopCents += cents;
       onTopCount += 1;
     } else if (row.incomeType === 'inside') {
       insideCents += cents;
       insideCount += 1;
+    } else if (row.incomeType === 'provider-interest') {
+      interestCents += cents;
+      interestCount += 1;
     } else {
       loadingCents += cents;
       loadingCount += 1;
@@ -251,11 +304,13 @@ export function buildCashTransactionsReport(
       feeOnTop: { total: money(onTopCents), count: onTopCount },
       feeInside: { total: money(insideCents), count: insideCount },
       loadingMargin: { total: money(loadingCents), count: loadingCount },
-      // The three income types are disjoint — a fee is either on top or inside,
-      // a loading sale is neither — so their sum is the whole of what the period
-      // earned and never double-counts a peso. This is the figure the
-      // dashboard's two cards add back to.
-      totalIncome: money(onTopCents + insideCents + loadingCents),
+      providerInterest: { total: money(interestCents), count: interestCount },
+      // The four income types are disjoint — a fee is either on top or inside,
+      // a loading sale is neither, and interest is a credit rather than a
+      // charge — so their sum is the whole of what the period earned and never
+      // double-counts a peso. This is the figure the dashboard's two cards add
+      // back to.
+      totalIncome: money(onTopCents + insideCents + loadingCents + interestCents),
       charges: money(chargesCents),
     },
   };

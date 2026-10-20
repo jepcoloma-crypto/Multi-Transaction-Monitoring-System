@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildCashTransactionsReport,
   type CashSourceRow,
+  type InterestSourceRow,
   type LoadingSourceRow,
 } from '../services/cashTransactionsReport';
 
@@ -284,4 +285,83 @@ test('a cash row never counts toward the loading total and vice versa', () => {
   assert.equal(rows.filter((r) => r.incomeType === 'on-top').length, summary.feeOnTop.count);
   assert.equal(rows.filter((r) => r.incomeType === 'loading').length, summary.loadingMargin.count);
   assert.equal(summary.feeOnTop.count + summary.feeInside.count + summary.loadingMargin.count, rows.length);
+});
+
+const interest = (overrides: Partial<InterestSourceRow> = {}): InterestSourceRow => ({
+  id: 'i1',
+  transaction_number: '44',
+  transaction_date: '2026-10-19T08:00:00Z',
+  amount: '10.00',
+  type_name: 'Owner Funding',
+  account_name: 'Joyce Bautista',
+  branch_name: 'Main Branch',
+  ...overrides,
+});
+
+test('provider interest is a fourth income type and joins totalIncome', () => {
+  const { summary } = buildCashTransactionsReport(
+    [
+      cash({ id: 'c1', fee: '60.00', fee_added_to_balance: true }), // on-top
+      cash({ id: 'c2', fee: '40.00', fee_added_to_balance: false }), // inside
+    ],
+    [loading({ id: 'l1', profit: '67.00' })],
+    null,
+    [interest({ amount: '10.00' })],
+  );
+
+  // Four disjoint types: a fee is either on top or inside, a loading sale is
+  // neither, and an interest credit is a credit rather than a charge — so the
+  // sum is the whole of what the period earned and no peso is counted twice.
+  assert.equal(summary.providerInterest.total, 10);
+  assert.equal(summary.providerInterest.count, 1);
+  assert.equal(summary.totalIncome, 177);
+});
+
+test('the handling filter narrows to interest on its own', () => {
+  const only = buildCashTransactionsReport(
+    [cash({ id: 'c1', fee: '60.00' })],
+    [loading({ id: 'l1', profit: '67.00' })],
+    'provider-interest',
+    [interest({ id: 'i1', amount: '10.00' }), interest({ id: 'i2', amount: '5.96' })],
+  );
+
+  assert.deepEqual(only.rows.map((r) => r.id), ['i1', 'i2']);
+  assert.equal(only.summary.providerInterest.total, 15.96);
+  assert.equal(only.summary.totalIncome, 15.96, 'the summary follows the rows on screen, mid-filter');
+});
+
+test('an interest row carries its whole credit as income and no charges beside it', () => {
+  const { rows } = buildCashTransactionsReport([], [], null, [interest({ amount: '5.96' })]);
+
+  // Nothing was billed alongside a credit the provider simply made, so the
+  // charges column is zero rather than a figure a reader would have to explain
+  // away — and the amount and the income are the same figure on purpose.
+  assert.equal(rows[0].kind, 'interest');
+  assert.equal(rows[0].incomeType, 'provider-interest');
+  assert.equal(rows[0].amount, 5.96);
+  assert.equal(rows[0].income, 5.96);
+  assert.equal(rows[0].charges, 0);
+});
+
+test('interest sorts beside the transactions of its own day rather than after the sales', () => {
+  const { rows } = buildCashTransactionsReport(
+    [cash({ id: 'c1', transaction_number: '100', transaction_date: '2026-10-19T08:00:00Z' })],
+    [loading({ id: 'l1', transaction_number: '50', created_at: '2026-10-19T08:00:00Z' })],
+    null,
+    [interest({ id: 'i1', transaction_number: '44', transaction_date: '2026-10-19T08:00:00Z' })],
+  );
+
+  // A credit is a transaction, not a sale, so it belongs among the movements
+  // it resembles. Three kinds on one day means the old cash-before-loading
+  // comparison would have been undefined for one of them; the rank list is
+  // what keeps the page reproducible between renders.
+  assert.deepEqual(rows.map((r) => r.kind), ['cash', 'interest', 'loading']);
+});
+
+test('a caller that supplies no interest reports none rather than crashing', () => {
+  const { rows, summary } = buildCashTransactionsReport([cash({ id: 'c1', fee: '60.00' })], []);
+
+  assert.equal(rows.length, 1);
+  assert.equal(summary.providerInterest.total, 0);
+  assert.equal(summary.providerInterest.count, 0);
 });
