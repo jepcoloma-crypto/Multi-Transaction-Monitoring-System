@@ -504,10 +504,31 @@ const money = (cents: number): number => cents / 100;
 // transaction's type code is the more specific signal, so it wins whenever it
 // is present — including for adjustment rows, which post through the same path
 // as any other transaction even though their name suggests otherwise.
-export function bucketFor(sourceType: string | null | undefined, txnCode: string | null | undefined): CashBucket {
+export function bucketFor(
+  sourceType: string | null | undefined,
+  txnCode: string | null | undefined,
+  paymentMethod?: string | null,
+): CashBucket {
   if (txnCode) {
     switch (txnCode) {
+      // A provider's interest credit posts under `owner_funding`, because that
+      // is the only path money arrives from outside with no fee and no rule of
+      // its own. It is not the owner's money, though, and filing it as capital
+      // would make Sources and Uses answer "how much did the owner contribute"
+      // with what a provider paid.
+      //
+      // The code beside the row already knows this — Accounts.tsx skips the
+      // "Owner funding via" headline for exactly this method — so the bucket is
+      // merely being brought into agreement with it. The two would otherwise be
+      // read off one row and reach different answers about the same money.
+      //
+      // Judged on the route rather than the row: `owner_return` moves money
+      // *out*, so it can never be an interest credit and is left alone. A caller
+      // that cannot say how the money arrived gets ordinary owner capital — the
+      // historical reading, which a row predating `payment_method` deserves.
       case 'owner_funding':
+        if (paymentMethod === 'provider_interest') return 'other_income';
+        return 'owner_capital';
       case 'owner_return':
         return 'owner_capital';
       case 'transfer_in':
@@ -586,6 +607,11 @@ export interface LedgerFlowRow {
   amount: string | number;
   source_type: string | null;
   txn_code: string | null;
+  // Optional because the statement only needs it to tell an owner funding apart
+  // from a provider's interest credit. A row without one is either not a
+  // transaction at all or predates the column, and both read as ordinary owner
+  // money — the reading the system had before interest ever arrived.
+  payment_method?: string | null;
 }
 
 export interface BranchBalance {
@@ -642,7 +668,7 @@ export function buildCashStatement(rows: LedgerFlowRow[], branches: BranchBalanc
   const branchUses = new Map<string, number>();
 
   for (const row of rows) {
-    const bucket = bucketFor(row.source_type, row.txn_code);
+    const bucket = bucketFor(row.source_type, row.txn_code, row.payment_method);
     const cents = toCents(row.amount);
     const isCredit = row.entry_type === 'credit';
 
@@ -805,7 +831,7 @@ export interface CashRecordRow {
 const moneyString = (value: unknown): string => (toCents(value) / 100).toFixed(2);
 
 export function toCashRecordRow(raw: CashRecordRaw): CashRecordRow {
-  const bucket = bucketFor(raw.source_type, raw.txn_code);
+  const bucket = bucketFor(raw.source_type, raw.txn_code, raw.payment_method);
   const number = raw.transaction_number === null || raw.transaction_number === undefined || raw.transaction_number === ''
     ? null
     : Number(raw.transaction_number);

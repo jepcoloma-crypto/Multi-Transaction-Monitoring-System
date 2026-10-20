@@ -14,6 +14,20 @@ test('an operating expense lands in its own bucket, never the provider charge bu
 test('a transaction type code outranks the generic source type', () => {
   assert.equal(bucketFor('transaction', 'owner_funding'), 'owner_capital');
   assert.equal(bucketFor('transaction', 'owner_return'), 'owner_capital');
+  // A provider's interest credit posts under `owner_funding` — it has no type
+  // of its own — but it is not the owner's money, and filing it as capital made
+  // Sources and Uses answer "how much did the owner contribute" with what a
+  // provider paid. The row's own description already said otherwise: the form
+  // beside it skips the "Owner funding via" headline for this exact method.
+  assert.equal(bucketFor('transaction', 'owner_funding', 'provider_interest'), 'other_income');
+  // Everything else the owner hands over stays capital, and a caller that cannot
+  // say how the money arrived keeps the historical reading.
+  assert.equal(bucketFor('transaction', 'owner_funding', 'cash'), 'owner_capital');
+  assert.equal(bucketFor('transaction', 'owner_funding', null), 'owner_capital');
+  assert.equal(bucketFor('transaction', 'owner_funding', 'gcash'), 'owner_capital');
+  // The outward code is never judged on the method: money leaving the company
+  // cannot be a credit the provider paid in.
+  assert.equal(bucketFor('transaction', 'owner_return', 'provider_interest'), 'owner_capital');
   assert.equal(bucketFor('transaction', 'adjustment_in'), 'adjustments');
   assert.equal(bucketFor('transaction', 'transfer_out'), 'transfers');
 });
@@ -97,6 +111,35 @@ test('each branch keeps its own sources and uses', () => {
   assert.equal(main.closing, 150);
   assert.equal(rm.closing, 80);
   assert.equal(statement.totals.closing, 230);
+  assert.equal(statement.totals.balanced, true);
+});
+
+test('interest moves to Other Income without leaving the sources side or changing a total', () => {
+  const branches: BranchBalance[] = [
+    { id: 'b1', code: 'MAIN', name: 'Main Branch', opening: 100, current: 115.96 },
+  ];
+  const rows: LedgerFlowRow[] = [
+    { branch_id: 'b1', entry_type: 'credit', amount: '10.00', source_type: 'transaction', txn_code: 'owner_funding', payment_method: 'provider_interest' },
+    { branch_id: 'b1', entry_type: 'credit', amount: '5.96', source_type: 'transaction', txn_code: 'owner_funding', payment_method: 'provider_interest' },
+  ];
+
+  const statement = buildCashStatement(rows, branches);
+
+  // The whole point of the correction: Owner Capital must stop claiming an
+  // interest credit as an owner contribution.
+  assert.equal(statement.sources.find((l) => l.bucket === 'owner_capital'), undefined);
+  const other = statement.sources.find((l) => l.bucket === 'other_income');
+  assert.ok(other, 'interest missing from Other Income');
+  assert.equal(other.amount, 15.96);
+  assert.equal(other.count, 2);
+  assert.equal(other.label, 'Other Income');
+
+  // And it stays a source under the new label — sources and uses follow the
+  // entry's direction, never the bucket — so opening + sources - uses still
+  // ties to the balance beside it.
+  assert.equal(statement.totals.sources, 15.96);
+  assert.equal(statement.totals.uses, 0);
+  assert.equal(statement.totals.closing, 115.96);
   assert.equal(statement.totals.balanced, true);
 });
 

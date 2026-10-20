@@ -114,7 +114,8 @@ router.get('/statement', authorize('reports.read'), async (req: Request, res: Re
     }
 
     const flowRows = await query<LedgerFlowRow & { branch_id: string }>(
-      `SELECT a.branch_id, l.entry_type, l.amount, l.source_type, tt.code AS txn_code
+      `SELECT a.branch_id, l.entry_type, l.amount, l.source_type, tt.code AS txn_code,
+              t.payment_method
        FROM ledger_entries l
        JOIN accounts a ON a.id = l.account_id
        LEFT JOIN transactions t ON t.id = l.transaction_id
@@ -378,7 +379,7 @@ router.get('/statement/drill', authorize('reports.read'), async (req: Request, r
       `SELECT l.id, l.entry_date, l.entry_type, l.amount, l.balance_after, l.source_type,
               l.reference_number, l.description, l.account_id,
               a.name AS account_name, b.code AS branch_code,
-              t.transaction_number, t.payee, tt.code AS txn_code
+              t.transaction_number, t.payee, t.payment_method, tt.code AS txn_code
        FROM ledger_entries l
        JOIN accounts a ON a.id = l.account_id
        JOIN branches b ON b.id = a.branch_id
@@ -391,7 +392,7 @@ router.get('/statement/drill', authorize('reports.read'), async (req: Request, r
     );
 
     const matches = rows
-      .filter((row) => row.entry_type === direction && bucketFor(row.source_type, row.txn_code) === bucket)
+      .filter((row) => row.entry_type === direction && bucketFor(row.source_type, row.txn_code, row.payment_method) === bucket)
       .slice(0, DRILL_RETURN_LIMIT);
 
     res.json({
