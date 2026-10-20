@@ -27,7 +27,17 @@ const num = (v: unknown): number => (v == null ? 0 : Math.round(parseFloat(Strin
 const str = (v: unknown): string | null => (v == null ? null : String(v));
 
 router.get(
-  '/movements/:transactionId/history',
+  // The remainder of the path, not the whole URL. This router is mounted at
+  // /movements (routes/index.ts) and Express strips that prefix before handing
+  // the path over, so spelling the prefix here doubled it: the route registered
+  // as /api/movements/movements/:id/history and /api/movements/:id/history
+  // matched nothing at all. authenticate still ran -- router.use covers every
+  // path beneath the mount -- so an unauthenticated probe answered 401 and
+  // looked mounted, while an authenticated caller fell through to Express's
+  // default 404, which is HTML. The client parsed it as JSON and failed with
+  // "Unexpected token '<'". The check that appeared to pass was checking the
+  // auth middleware, not this route.
+  '/:transactionId/history',
   authorize('reconciliation.read'),
   async (req: Request, res: Response, next: NextFunction) => {
     try {
