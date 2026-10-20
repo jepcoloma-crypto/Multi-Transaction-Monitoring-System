@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
-import { formatCurrency, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, transactionTypeLabel } from '../lib/format';
+import { formatCurrency, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, paymentMethodCell, transactionTypeLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale, HandCoins } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 import { ExpenseDetailPanel } from '../components/ExpenseDetail';
 import { CashStatementPanel } from '../components/CashStatement';
@@ -10,7 +10,7 @@ import { statementTotals } from '../lib/statementTotals';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement' | 'cash-transactions';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement' | 'cash-transactions' | 'owner-funds-report';
 
 // One report module, two tabs. They are separate queries with separate
 // endpoints rather than one payload split in the browser: the income side
@@ -81,7 +81,7 @@ export default function Reports() {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
-  const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '', branchId: '', shiftStatus: '', varianceOnly: false, handling: '' });
+  const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '', branchId: '', shiftStatus: '', varianceOnly: false, handling: '', fundKind: '' });
 
   // Stated on the printed sheet, because the header badge that normally says
   // it is inside a print:hidden region. A PDF filed without knowing which
@@ -153,6 +153,9 @@ export default function Reports() {
         if (filters.varianceOnly) params.append('varianceOnly', '1');
       }
       if (activeReport === 'cash-transactions' && filters.handling) params.append('handling', filters.handling);
+      if (activeReport === 'owner-funds-report' && filters.fundKind) {
+        params.append('kind', filters.fundKind);
+      }
       const qs = params.toString();
       // The merged module runs two endpoints rather than one payload split in
       // the browser. Only the side on screen is fetched, so switching tabs
@@ -218,6 +221,7 @@ export default function Reports() {
       case 'loading-report': return 'loading';
       case 'reversal-report': return 'reversals';
       case 'shift-report': return 'shifts';
+      case 'owner-funds-report': return 'owner-funds';
       case 'income-expense': return incomeExpenseTab === 'income' ? 'income' : 'expense';
       case 'cash-transactions': return 'cash-transactions';
       default: return null;
@@ -246,6 +250,9 @@ export default function Reports() {
         if (filters.varianceOnly) params.append('varianceOnly', '1');
       }
       if (activeReport === 'cash-transactions' && filters.handling) params.append('handling', filters.handling);
+      if (activeReport === 'owner-funds-report' && filters.fundKind) {
+        params.append('kind', filters.fundKind);
+      }
       params.append('format', 'csv');
       const res = await fetch(`${API_BASE}/reports/export/${type}?${params.toString()}`, {
         headers: { Authorization: `Bearer ${localStorage.getItem('accessToken')}` }
@@ -287,6 +294,7 @@ export default function Reports() {
     { id: 'loading-report' as ReportType, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
     { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
     { id: 'shift-report' as ReportType, name: 'Shift & Cash Count', icon: Coins, desc: 'Drawer counts per shift: float, expected vs counted, and variance' },
+    { id: 'owner-funds-report' as ReportType, name: 'Owner Funds', icon: HandCoins, desc: 'Approved add-funds and return-funds: who put money in, who took it out, and who signed off' },
     { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, in two tabs' },
     { id: 'cash-transactions' as ReportType, name: 'Cash Transactions', icon: Coins, desc: 'Cash-in/out and loading sales, split by fee on top vs inside' },
     { id: 'cash-statement' as ReportType, name: 'Sources & Uses', icon: Scale, desc: 'Opening + sources − uses = closing for a period, per branch' },
@@ -418,7 +426,7 @@ export default function Reports() {
                 <label className="text-xs text-gray-500">To</label>
                 <input type="date" value={filters.endDate} onChange={e => setFilters({ ...filters, endDate: e.target.value })} className="input-field text-sm" />
               </div>
-              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || activeReport === 'income-expense') && (
+              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || activeReport === 'income-expense' || activeReport === 'owner-funds-report') && (
                 <div>
                   <label className="text-xs text-gray-500">Account</label>
                   <select value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })} className="input-field text-sm">
@@ -475,6 +483,16 @@ export default function Reports() {
                     <option value="inside">Inside</option>
                     <option value="loading">Loading margin</option>
                     <option value="provider-interest">Provider interest</option>
+                  </select>
+                </div>
+              )}
+              {activeReport === 'owner-funds-report' && (
+                <div>
+                  <label className="text-xs text-gray-500">Movement</label>
+                  <select value={filters.fundKind} onChange={e => setFilters({ ...filters, fundKind: e.target.value })} className="input-field text-sm">
+                    <option value="">All</option>
+                    <option value="funding">Add Funds</option>
+                    <option value="return">Return Funds</option>
                   </select>
                 </div>
               )}
@@ -1298,6 +1316,93 @@ export default function Reports() {
                           </td>
                           <td className="px-4 py-3.5 text-sm whitespace-nowrap">{s.closedByUsername || <span className="text-gray-400">—</span>}</td>
                           <td className="px-4 py-3.5 text-sm text-gray-700 max-w-[16rem] truncate" title={s.notes || undefined}>{s.notes || <span className="text-gray-400">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'owner-funds-report' && reportData.movements ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
+                <div className="card">
+                  <p className="text-gray-500">Added by the Owner</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.summary?.totalFunded || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.fundedCount || 0} movement{(reportData.summary?.fundedCount || 0) === 1 ? '' : 's'}</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Returned to the Owner</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-red">{formatCurrency(reportData.summary?.totalReturned || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.returnedCount || 0} movement{(reportData.summary?.returnedCount || 0) === 1 ? '' : 's'}</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Net into the Books</p>
+                  <p className={`text-2xl font-bold mt-1 ${(reportData.summary?.netToAccounts || 0) < 0 ? 'text-finance-red' : ''}`}>
+                    {formatCurrency(reportData.summary?.netToAccounts || 0)}
+                  </p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.accountsTouched || 0} account{(reportData.summary?.accountsTouched || 0) === 1 ? '' : 's'} touched</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Settled Without a Second Signature</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.settledDirectly || 0}</p>
+                  <p className="text-sm text-gray-500">{formatCurrency(reportData.summary?.settledDirectlyAmount || 0)} recorded directly by an administrator</p>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Owner Fund Movements</h4>
+                  <p className="text-xs text-gray-500">Settled movements only — a request still waiting for approval has moved no money, and a refused one never will. The business day is the date the operator picked; the small line beneath each name is when that step actually happened.</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1250px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Number</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Business Day</th>
+                        {branches.length > 1 && (
+                          <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
+                        )}
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Movement</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Method</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Requested By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Signed Off By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.movements.length === 0 ? (
+                        <tr><td colSpan={branches.length > 1 ? 10 : 9} className="px-4 py-8 text-center text-sm text-gray-500">No settled owner fund movements for these filters.</td></tr>
+                      ) : reportData.movements.map((m: any) => (
+                        <tr key={m.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{m.transactionNumber}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{m.transactionDate ? manilaDayLabel(m.transactionDate) : <span className="text-gray-400">—</span>}</td>
+                          {branches.length > 1 && (
+                            <td className="px-4 py-3.5 text-sm whitespace-nowrap">{m.branchName} <span className="text-gray-400">({m.branchCode})</span></td>
+                          )}
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{m.accountName || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${m.kind === 'return' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                              {m.kind === 'return' ? 'Return Funds' : 'Add Funds'}
+                            </span>
+                          </td>
+                          <td className={`px-4 py-3.5 text-sm text-right whitespace-nowrap font-medium ${m.kind === 'return' ? 'text-finance-red' : 'text-finance-green'}`}>
+                            {m.kind === 'return' ? '−' : '+'}{formatCurrency(m.amount)}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{paymentMethodCell(m.paymentMethod)}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{m.requestedBy || <span className="text-gray-400">—</span>}
+                            <span className="block text-xs text-gray-400">{m.requestedAt ? manilaDateTimeLabel(m.requestedAt) : ''}</span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">
+                            {m.settledDirectly
+                              ? <span className="text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600" title="An administrator recorded this movement, so it settled at once with nobody to sign off a second time">Recorded directly</span>
+                              : (m.approvedBy || <span className="text-gray-400">—</span>)}
+                            <span className="block text-xs text-gray-400">{m.approvedAt ? manilaDateTimeLabel(m.approvedAt) : ''}</span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm text-gray-700 max-w-[16rem] truncate" title={m.description || undefined}>{m.description || <span className="text-gray-400">—</span>}</td>
                         </tr>
                       ))}
                     </tbody>
