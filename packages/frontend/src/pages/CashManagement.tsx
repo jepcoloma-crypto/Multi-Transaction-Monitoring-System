@@ -240,13 +240,13 @@ const emptyForm = {
 const CASH_EVENT_TYPES = [
   {
     code: 'loan_received',
-    label: 'Borrowed cash received',
-    hint: 'Cash taken into the drawer from a lender. It is the company\u2019s cash to hold but not to keep \u2014 Sources and Uses files it under Borrowings so what is still owed reads off the statement.',
+    label: 'Borrowed funds received',
+    hint: 'Money taken from a lender — cash across the counter or a transfer into any wallet. It is the company\u2019s to hold but not to keep \u2014 Sources and Uses files it under Borrowings so what is still owed reads off the statement.',
   },
   {
     code: 'loan_repayment',
     label: 'Loan repaid',
-    hint: 'Principal handed back to the lender out of the drawer. Not a running cost, so it stays out of the expense totals.',
+    hint: 'Principal handed back to the lender, by whichever route it was given. Not a running cost, so it stays out of the expense totals.',
   },
   {
     code: 'other_income',
@@ -280,6 +280,12 @@ const emptyEventForm = {
   description: '',
   referenceNumber: '',
   transactionDate: manilaDateValue(),
+  // Set rather than blank because the form opens on the drawer, and a cash
+  // account can only ever have been paid in cash. Picking another account
+  // clears it again: inheriting "Cash" from the drawer would record a bank
+  // advance as money that crossed the till, and a drawer leg nobody chose is
+  // worse than an empty field the operator has to answer.
+  paymentMethod: 'cash',
 };
 
 // Cash handed out that is not the business spending on itself: stock bought
@@ -1144,6 +1150,14 @@ export default function CashManagement() {
     if (!eventForm.accountId) { setEventError('Choose the wallet this belongs to.'); return; }
     if (!eventForm.amount || Number(eventForm.amount) <= 0) { setEventError('Enter an amount greater than zero.'); return; }
     if (!eventForm.description.trim()) { setEventError('Describe what happened.'); return; }
+    // Only a borrowing is asked, and only because a loan's whole job is to be
+    // repayable: "how much is owed" is answerable, "in what form was it given"
+    // is not, once the route has been left empty.
+    const isBorrowing = eventForm.code === 'loan_received' || eventForm.code === 'loan_repayment';
+    if (isBorrowing && !eventForm.paymentMethod) {
+      setEventError('Say how the money actually reached this account.');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -1155,6 +1169,10 @@ export default function CashManagement() {
         payee: eventForm.payee.trim() || null,
         referenceNumber: eventForm.referenceNumber.trim() || null,
         transactionDate: eventForm.transactionDate,
+        // Sent for a borrowing only. The other four events here are drawer
+        // events that have never carried a method, and offering one now would
+        // hand a wallet refund a drawer leg it never had.
+        ...(isBorrowing ? { paymentMethod: eventForm.paymentMethod } : {}),
       });
       setShowEventForm(false);
       await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity(), loadRecords()]);
@@ -3070,15 +3088,47 @@ export default function CashManagement() {
                   <AccountSelect
                     accounts={accounts}
                     value={eventForm.accountId}
-                    onChange={(v) => setEventForm((f) => ({ ...f, accountId: v }))}
+                    onChange={(v) => setEventForm((f) => ({
+                      ...f,
+                      accountId: v,
+                      // A cash account can only have been paid in cash, so it is
+                      // set rather than offered — the way the expense and payment
+                      // forms beside this one settle it. Any other account starts
+                      // blank, for the reason `emptyEventForm` gives: the drawer's
+                      // default must not survive a change of destination.
+                      paymentMethod: accounts.find((a) => a.id === v)?.type_code === 'cash' ? 'cash' : '',
+                    }))}
                     placeholder="Select the wallet this belongs to"
                     className="form-input"
                   />
                   <p className="text-xs text-gray-500 mt-1.5">
-                    Borrowed cash lands in the drawer, so the revolving fund is already selected.
-                    Any visible wallet may be used.
+                    The drawer is preselected because a borrowing can be handed across the
+                    counter. Any visible wallet may be used instead — say below how it arrived.
                   </p>
                 </section>
+
+                {eventIsBorrowing && (
+                  <section>
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">
+                      How it arrived
+                    </h4>
+                    <select
+                      required
+                      className="form-input"
+                      value={eventForm.paymentMethod}
+                      onChange={(e) => setEventForm((f) => ({ ...f, paymentMethod: e.target.value }))}
+                    >
+                      <option value="">Select a route</option>
+                      {movementPaymentMethodOptions.map((o) => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      Cash puts it through the till; a transfer moves only the balance of the
+                      account it lands on. Without this the two are indistinguishable later.
+                    </p>
+                  </section>
+                )}
 
                 <section>
                   <h4 className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-2">

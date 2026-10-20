@@ -327,3 +327,70 @@ test('a fee taken inside the amount still cannot exceed it', () => {
     false
   );
 });
+
+// The contract the cash-event form's "How it arrived" field relies on. A
+// borrowing is not a cash movement (migration 041 / D11), so nothing here is
+// newly required by the planner — what is being pinned is that stating a route
+// on one stays harmless, and that a route a cash account cannot have had is
+// still refused rather than quietly rewritten.
+const borrow = (overrides: Record<string, unknown> = {}) =>
+  paymentPlan({
+    direction: 'in',
+    code: 'loan_received',
+    accountTypeCode: 'bank',
+    amount: 5000,
+    fee: 0,
+    feeAddedToBalance: true,
+    paymentMethod: 'bank',
+    expenseThreshold: THRESHOLD,
+    isAdminCreator: true,
+    ...overrides,
+  });
+
+test('a borrowing into a wallet keeps its route and plans no counterparty leg', () => {
+  // This is why the field was worth adding: a loan that arrived as a transfer
+  // touches only the balance it landed on, so no leg may be planned for the
+  // till. If one ever were, borrowing 5,000 would show the books 10,000 apart
+  // from the debt that explains it.
+  const plan = borrow();
+
+  assert.deepEqual(plan.problems, [], 'a route on a borrowing is legal');
+  assert.equal(plan.paymentMethod, 'bank', 'the route the operator chose is what gets stored');
+  assert.equal(plan.drawerLeg, null, 'a transfer into a wallet never crosses the till');
+  assert.equal(plan.finalStatus, 'completed');
+});
+
+test('a borrowing may not claim a route the account could not have had', () => {
+  // Refused with the account named, because a cash account holds physical
+  // cash. The alternative — overwriting it to 'cash' — would record a
+  // movement nobody chose, which is the rule this system refuses everywhere.
+  const plan = borrow({ accountTypeCode: 'cash', paymentMethod: 'bank' });
+
+  assert.equal(plan.problems.length, 1, 'exactly one refusal, not a silent correction');
+  assert.match(plan.problems[0], /cash account holds physical cash/);
+  assert.match(plan.problems[0], /bank/, 'the message says which route was impossible');
+});
+
+test('a repayment plans the opposite leg to the advance it hands back', () => {
+  const advance = borrow({ accountTypeCode: 'cash', paymentMethod: 'cash' });
+  const repayment = borrow({ code: 'loan_repayment', direction: 'out', accountTypeCode: 'cash', paymentMethod: 'cash' });
+
+  assert.deepEqual(repayment.problems, []);
+  assert.equal(repayment.entryType, 'debit', 'paying a lender debits the account it comes from');
+  assert.equal(advance.entryType, 'credit', 'receiving the advance credits it');
+  assert.equal(repayment.drawerLeg?.entryType, 'credit', 'cash handed back leaves the till as a credit to it');
+  assert.equal(advance.drawerLeg?.entryType, 'debit');
+});
+
+test('the planner still permits a borrowing with no route, so the form is what enforces one', () => {
+  // Deliberate, and worth saying out loud: migration 041 kept borrowings out
+  // of D11, so the server does not require a tender for them. The cash-event
+  // form does — otherwise the route is lost and "what form was it given in"
+  // becomes unrecoverable. If this assertion ever fails, someone has moved the
+  // rule server-side, which is a decision to make, not an accident to discover.
+  const plan = borrow({ paymentMethod: null });
+
+  assert.deepEqual(plan.problems, []);
+  assert.equal(plan.paymentMethod, null);
+  assert.equal(plan.drawerLeg, null, 'a blank route still plans no counterparty leg');
+});
