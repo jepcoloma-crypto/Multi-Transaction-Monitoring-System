@@ -191,7 +191,11 @@ export function checkFeeRowPlacement(rows: FeePlacementRow[]): IntegrityCheck {
       detail:
         `The tender records this fee as ${r.feeAddedToBalance ? 'collected on top' : 'cut from the amount'}, ` +
         `so its row belongs in the ${side === 'drawer' ? 'till' : "customer's account"} — ` +
-        `the till carries ${money(r.drawerFeeNet / 100)} and the account ${money(r.accountFeeNet / 100)}.`,
+        // These two are pesos already: the route sums `ledger_entries.amount`,
+        // a NUMERIC in pesos. Check 1's figures are summed in cents and do
+        // divide here, which is what made dividing here look right — a ₱10 fee
+        // reported as ₱0.10 in the one message an operator reads to act on.
+        `the till carries ${money(r.drawerFeeNet)} and the account ${money(r.accountFeeNet)}.`,
     });
   }
 

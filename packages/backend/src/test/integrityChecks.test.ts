@@ -152,6 +152,22 @@ test('the backwards tender flag is caught even though the pesos match', () => {
   assert.match(check.findings[0].detail, /belongs in the till/);
 });
 
+test('the placement message reports pesos, not a hundredth of them', () => {
+  // Transaction 44 (reference 59724): a cash-in whose fee now reads as cut from
+  // the amount while the till still holds its row. The figures in this message
+  // are what an operator reads to decide where the money is, and they were
+  // being divided by a second time — a ₱10.00 fee reported as ₱0.10, in the
+  // one sentence naming the discrepancy. Check 1's figures are summed in cents
+  // and do divide, which is what made dividing look right here.
+  const rows: FeePlacementRow[] = [
+    { ...base, transactionNumber: 44, referenceNumber: '59724', feeAddedToBalance: false, accountFeeNet: 0, drawerFeeNet: 10 },
+  ];
+
+  const check = checkFeeRowPlacement(rows);
+  assert.equal(check.status, 'findings');
+  assert.match(check.findings[0].detail, /the till carries ₱10\.00 and the account ₱0\.00/);
+});
+
 test('a corrected movement passes placement, because the sides net to one', () => {
   // After a re-post both sides hold a ₱10 row — the original fee on the account
   // and the correction in the till. Only the net says where it finally landed,
