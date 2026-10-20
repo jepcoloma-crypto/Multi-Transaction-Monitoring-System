@@ -715,7 +715,14 @@ export default function Transactions() {
                       dropped onto its own row -- the column read as a small
                       pile rather than as actions. nowrap also makes the column
                       size itself to fit all four instead of squeezing them. */}
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <td className="px-4 py-3">
+                    {/* A flex row with flex-nowrap. white-space: nowrap only
+                        asks the inline formatting context not to break, which
+                        every other rule touching these buttons still has to
+                        leave alone; a flex container does not lay out on lines
+                        unless flex-wrap is asked for, so one line is a property
+                        of this cell rather than a shared assumption. */}
+                    <div className="flex flex-nowrap items-center justify-end gap-1">
                     {/* Same two-door rule as the detail modal and the Loading
                         page: an administrator cancels on the spot, everyone
                         else files a request that waits in the Approvals queue.
@@ -748,6 +755,7 @@ export default function Transactions() {
                     {isAdmin && (
                       <button onClick={() => handleDelete(tx.id)} className="p-1 text-gray-400 hover:text-red-600"><Trash2 className="w-4 h-4" /></button>
                     )}
+                    </div>
                   </td>
                 </tr>
               ))
