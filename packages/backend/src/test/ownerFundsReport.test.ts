@@ -169,3 +169,54 @@ test('charges recorded as numbers rather than strings are summed the same way', 
 
   assert.equal(report.movements[0].amount, 1100.5);
 });
+
+// A provider's interest credit is booked under the owner_funding type code
+// and told apart only by its payment method. Counted here it would report the
+// provider's money as the owner's and put Owner Capital at odds with the
+// statement, which already files the same row as other income (2292e91).
+test('a provider interest credit is not the owner money and is left out entirely', () => {
+  const report = buildOwnerFundReport([
+    baseRow({ payment_method: 'provider_interest', net_amount: '10.00' }),
+  ]);
+
+  assert.equal(report.movements.length, 0);
+  assert.equal(report.summary.movements, 0);
+  assert.equal(report.summary.fundedCount, 0);
+  assert.equal(report.summary.totalFunded, 0);
+  assert.equal(report.summary.netToAccounts, 0);
+  assert.equal(report.summary.accountsTouched, 0);
+});
+
+// The count printed above the totals has to be the same set the totals were
+// summed from, so a dropped row must take its amount with it rather than
+// leaving a figure nobody can attribute.
+test('a mixed period counts only the owner rows and totals the same set', () => {
+  const report = buildOwnerFundReport([
+    baseRow({ transaction_number: 301, net_amount: '100.00', payment_method: 'cash' }),
+    baseRow({ transaction_number: 302, net_amount: '10.00', payment_method: 'provider_interest' }),
+    baseRow({ transaction_number: 303, kind: 'owner_return', net_amount: '40.00', payment_method: 'gcash' }),
+    baseRow({ transaction_number: 304, net_amount: '5.96', payment_method: 'provider_interest' }),
+  ]);
+
+  assert.equal(report.movements.length, 2);
+  assert.deepEqual(report.movements.map((m) => m.transactionNumber), [301, 303]);
+  assert.equal(report.summary.movements, 2);
+  assert.equal(report.summary.totalFunded, 100);
+  assert.equal(report.summary.totalReturned, 40);
+  assert.equal(report.summary.netToAccounts, 60);
+  assert.equal(report.summary.fundedCount, 1);
+  assert.equal(report.summary.returnedCount, 1);
+  // The dropped rows named accounts that the surviving rows also name, so the
+  // account count must not double-count them or grow by a row that is gone.
+  assert.equal(report.summary.accountsTouched, 1);
+});
+
+// Only provider_interest is excluded — an owner handing over physical cash or
+// a transfer is still owner money, and refusing those would empty the report.
+test('every other tender still counts as the owner money', () => {
+  for (const method of ['cash', 'gcash', 'maya', 'bank_transfer', 'bank', null, undefined]) {
+    const report = buildOwnerFundReport([baseRow({ payment_method: method as any })]);
+    assert.equal(report.movements.length, 1, `payment_method ${String(method)} should count`);
+    assert.equal(report.summary.totalFunded, 50000, `payment_method ${String(method)} should total`);
+  }
+});

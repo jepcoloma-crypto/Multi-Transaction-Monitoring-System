@@ -147,7 +147,22 @@ export interface OwnerFundReport {
 // make the totals disagree with the count printed above them.
 const asKind = (code: unknown): OwnerFundKind => (code === 'owner_return' ? 'return' : 'funding');
 
+// Whether the row is the owner's own money. A provider's interest credit is
+// booked under the `owner_funding` type code and told apart only by its
+// payment method (2292e91), so the code alone would report the provider's
+// money as the owner's — naming a provider as someone who put cash in. The
+// statement already counts the same row as other income, so leaving it in
+// here would put Owner Capital at odds with the report sitting beside it.
+//
+// Judged here rather than left to the caller's WHERE clause because this is
+// what the report means, and the payment method is the only field that can
+// say it. Dropped before the map, not inside it, so the count printed above
+// the totals is the same set the totals were summed from.
+const isOwnerMoney = (row: OwnerFundSourceRow): boolean =>
+  asText(row.payment_method) !== 'provider_interest';
+
 export function buildOwnerFundReport(rows: OwnerFundSourceRow[]): OwnerFundReport {
+  const owned = rows.filter(isOwnerMoney);
   let fundedCents = 0;
   let returnedCents = 0;
   let directCents = 0;
@@ -156,7 +171,7 @@ export function buildOwnerFundReport(rows: OwnerFundSourceRow[]): OwnerFundRepor
   let settledDirectly = 0;
   const accounts = new Set<string>();
 
-  const movements = rows.map((row) => {
+  const movements = owned.map((row) => {
     const kind = asKind(row.kind);
     // Charges ride with the amount because that is the figure the approval path
     // posts to the account. Reporting net alone would understate what moved.
