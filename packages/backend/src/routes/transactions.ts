@@ -460,11 +460,17 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
     let resolvedCategoryId = transactionCategoryId || null;
 
     if (feeRuleId) {
-      const feeRule = await queryOne<{ transaction_type_id: string; transaction_category_id: string | null }>(
-        'SELECT transaction_type_id, transaction_category_id FROM transaction_fees WHERE id = $1',
+      const feeRule = await queryOne<{ transaction_type_id: string; transaction_category_id: string | null; name: string; is_active: boolean }>(
+        'SELECT transaction_type_id, transaction_category_id, name, is_active FROM transaction_fees WHERE id = $1',
         [feeRuleId]
       );
       if (!feeRule) throw createError(404, 'Fee rule not found');
+      // The fee-rule endpoint lists deactivated rules too, so a rule taken out
+      // of service can still be named here. resolveMovementFee reads active
+      // rules only and would find none, handing the charge back to the figure
+      // the form typed — a booking no rule set, arrived at silently. Refusing
+      // names the rule instead of guessing what it meant.
+      if (!feeRule.is_active) throw createError(400, `Fee rule "${feeRule.name}" is no longer active`);
       resolvedTypeId = feeRule.transaction_type_id;
       resolvedCategoryId = feeRule.transaction_category_id;
     }
@@ -720,11 +726,15 @@ router.post('/preview', authorize('transactions.write'), async (req: Request, re
     let resolvedTypeId = transactionTypeId;
     let resolvedCategoryId = transactionCategoryId || null;
     if (feeRuleId) {
-      const feeRule = await queryOne<{ transaction_type_id: string; transaction_category_id: string | null }>(
-        'SELECT transaction_type_id, transaction_category_id FROM transaction_fees WHERE id = $1',
+      const feeRule = await queryOne<{ transaction_type_id: string; transaction_category_id: string | null; name: string; is_active: boolean }>(
+        'SELECT transaction_type_id, transaction_category_id, name, is_active FROM transaction_fees WHERE id = $1',
         [feeRuleId]
       );
       if (!feeRule) throw createError(404, 'Fee rule not found');
+      // Same refusal as the commit: a preview that priced a deactivated rule
+      // would quote a figure the save then refused, which is the drift this
+      // whole route exists to make impossible.
+      if (!feeRule.is_active) throw createError(400, `Fee rule "${feeRule.name}" is no longer active`);
       resolvedTypeId = feeRule.transaction_type_id;
       resolvedCategoryId = feeRule.transaction_category_id;
     }

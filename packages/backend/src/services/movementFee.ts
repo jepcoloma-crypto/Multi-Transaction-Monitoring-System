@@ -33,8 +33,16 @@ export async function resolveMovementFee(input: MovementFeeInput): Promise<numbe
     min_fee: number;
     max_fee: number | null;
     calculation_method: string;
+    // Selected because the calculator reads them: a flat_per_step rule is
+    // priced by these three, and they were absent from this SELECT for as long
+    // as they have been absent from feeCalc. A column the fee path cannot see
+    // is a column the fee path cannot charge by.
+    base_amount: number | null;
+    step_amount: number | null;
+    step_fee: number | null;
   }>(
-    `SELECT id, fee_type, fee_value, min_fee, max_fee, calculation_method FROM transaction_fees
+    `SELECT id, fee_type, fee_value, min_fee, max_fee, calculation_method,
+            base_amount, step_amount, step_fee FROM transaction_fees
      WHERE transaction_type_id = $1 AND is_active = true
      AND (transaction_category_id IS NULL OR transaction_category_id = $2)`,
     [input.typeId, input.categoryId]
