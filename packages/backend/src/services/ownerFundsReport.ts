@@ -24,6 +24,12 @@
 // report does: a total a centavo off from its own rows is a total nobody
 // trusts.
 
+// The one dependency, and it is a pure function: `bucketFor` decides what a
+// row means from three strings and touches no database, so this file keeps
+// the contract its header claims — no network, no database, testable without
+// either. Everything else here is arithmetic on the rows it is handed.
+import { bucketFor } from './cashManagement';
+
 const NUMERIC = /^-?\d+(\.\d+)?$/;
 
 const toCents = (value: unknown): number => {
@@ -147,19 +153,35 @@ export interface OwnerFundReport {
 // make the totals disagree with the count printed above them.
 const asKind = (code: unknown): OwnerFundKind => (code === 'owner_return' ? 'return' : 'funding');
 
-// Whether the row is the owner's own money. A provider's interest credit is
-// booked under the `owner_funding` type code and told apart only by its
-// payment method (2292e91), so the code alone would report the provider's
-// money as the owner's — naming a provider as someone who put cash in. The
-// statement already counts the same row as other income, so leaving it in
-// here would put Owner Capital at odds with the report sitting beside it.
+// Whether the row is the owner's own money.
 //
-// Judged here rather than left to the caller's WHERE clause because this is
-// what the report means, and the payment method is the only field that can
-// say it. Dropped before the map, not inside it, so the count printed above
-// the totals is the same set the totals were summed from.
-const isOwnerMoney = (row: OwnerFundSourceRow): boolean =>
-  asText(row.payment_method) !== 'provider_interest';
+// Two rules, and only one of them belongs to this report.
+//
+// The report's own rule is scope. Its query only ever asks for the two
+// controlled codes, so anything else arriving here is an anomaly — and it is
+// kept rather than dropped, because a row dropped before the map would make
+// the headline count disagree with the summed column beneath it, which is a
+// worse outcome than classifying a row nobody predicted.
+//
+// The second rule is not this report's to hold. Whether an `owner_funding`
+// row is really the owner's money is settled by `bucketFor`, the statement's
+// authority on what a ledger row means: a provider's interest credit posts
+// under `owner_funding` because that is the only route money arrives from
+// outside with no fee, but it is other income and never the owner's (2292e91).
+// Reading that as a string comparison here would put the rule in a second
+// place, which is how the two screens first came to disagree at all — a rule
+// taught to one reader and not the other, disagreeing silently about the same
+// row (a0fd34c). Asking the function that already knows means the next method
+// that turns out not to be the owner's is handled without anyone remembering
+// this report exists.
+//
+// `bucketFor` takes its answer from three strings and touches no database, so
+// this stays a pure function of the rows it is handed.
+const isOwnerMoney = (row: OwnerFundSourceRow): boolean => {
+  const kind = asText(row.kind);
+  if (kind !== 'owner_funding' && kind !== 'owner_return') return true;
+  return bucketFor('transaction', kind, asText(row.payment_method)) === 'owner_capital';
+};
 
 export function buildOwnerFundReport(rows: OwnerFundSourceRow[]): OwnerFundReport {
   const owned = rows.filter(isOwnerMoney);
