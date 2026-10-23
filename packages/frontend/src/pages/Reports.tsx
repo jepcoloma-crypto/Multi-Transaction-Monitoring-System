@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, paymentMethodCell, transactionTypeLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale, HandCoins } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale, HandCoins, ClipboardList, PiggyBank, Banknote, History, ArrowUpRight } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 import { ExpenseDetailPanel } from '../components/ExpenseDetail';
 import { CashStatementPanel } from '../components/CashStatement';
@@ -10,7 +10,7 @@ import { statementTotals } from '../lib/statementTotals';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement' | 'cash-transactions' | 'owner-funds-report';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement' | 'cash-transactions' | 'owner-funds-report' | 'adjustments-report' | 'borrowings-report' | 'cash-position' | 'cash-events-report' | 'outgoings-report';
 
 // One report module, two tabs. They are separate queries with separate
 // endpoints rather than one payload split in the browser: the income side
@@ -299,6 +299,11 @@ export default function Reports() {
     { id: 'cash-transactions' as ReportType, name: 'Cash Transactions', icon: Coins, desc: 'Cash-in/out and loading sales, split by fee on top vs inside' },
     { id: 'cash-statement' as ReportType, name: 'Sources & Uses', icon: Scale, desc: 'Opening + sources − uses = closing for a period, per branch' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
+    { id: 'adjustments-report' as ReportType, name: 'Adjustments Register', icon: ClipboardList, desc: 'Every till adjustment in and out: amount, reference, who recorded it, and which are still awaiting a signature' },
+    { id: 'cash-events-report' as ReportType, name: 'Cash Events', icon: History, desc: 'Borrowings received, income, refunds and adjustments recorded per branch in a period' },
+    { id: 'outgoings-report' as ReportType, name: 'Outgoings by Purpose', icon: ArrowUpRight, desc: 'What a branch paid out — operating expenses vs supplier and other payments, one line per purpose' },
+    { id: 'borrowings-report' as ReportType, name: 'Borrowings & Repayments', icon: PiggyBank, desc: 'Per lender: borrowed, repaid and net, plus the company\u2019s outstanding as of the period end' },
+    { id: 'cash-position' as ReportType, name: 'Branch Cash Position', icon: Banknote, desc: 'A snapshot of the tills right now: drawer balance, open shift float, last count and variance' },
   ];
 
   // Picking a branch narrows the accounts offered beneath it. Left
@@ -418,14 +423,21 @@ export default function Reports() {
                   </select>
                 </div>
               )}
-              <div>
-                <label className="text-xs text-gray-500">From</label>
-                <input type="date" value={filters.startDate} onChange={e => setFilters({ ...filters, startDate: e.target.value })} className="input-field text-sm" />
-              </div>
-              <div>
-                <label className="text-xs text-gray-500">To</label>
-                <input type="date" value={filters.endDate} onChange={e => setFilters({ ...filters, endDate: e.target.value })} className="input-field text-sm" />
-              </div>
+              {/* The cash-position report is a snapshot: it has no window, so
+                  asking for one here would imply a range the endpoint does not
+                  have. Every other report takes From/To. */}
+              {activeReport !== 'cash-position' && (
+                <>
+                  <div>
+                    <label className="text-xs text-gray-500">From</label>
+                    <input type="date" value={filters.startDate} onChange={e => setFilters({ ...filters, startDate: e.target.value })} className="input-field text-sm" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500">To</label>
+                    <input type="date" value={filters.endDate} onChange={e => setFilters({ ...filters, endDate: e.target.value })} className="input-field text-sm" />
+                  </div>
+                </>
+              )}
               {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || activeReport === 'income-expense' || activeReport === 'owner-funds-report') && (
                 <div>
                   <label className="text-xs text-gray-500">Account</label>
@@ -1641,6 +1653,493 @@ export default function Reports() {
                         </tr>
                       </tfoot>
                     )}
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'adjustments-report' && reportData.rows ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 text-sm print:grid-cols-5">
+                <div className="card">
+                  <p className="text-gray-500">Adjusted In</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.summary?.totalIn || 0)}</p>
+                  <p className="text-sm text-gray-500">money added to the tills</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Adjusted Out</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-red">{formatCurrency(reportData.summary?.totalOut || 0)}</p>
+                  <p className="text-sm text-gray-500">money taken out of the tills</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Net</p>
+                  <p className={`text-2xl font-bold mt-1 ${(reportData.summary?.net || 0) < 0 ? 'text-finance-red' : 'text-finance-green'}`}>{formatCurrency(reportData.summary?.net || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.count || 0} adjustments in the period</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Awaiting a Signature</p>
+                  <p className={`text-2xl font-bold mt-1 ${(reportData.summary?.pendingCount || 0) > 0 ? 'text-amber-600' : ''}`}>{reportData.summary?.pendingCount || 0}</p>
+                  <p className="text-sm text-gray-500">pending rows have not moved a till yet</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Reversal Counter-rows</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.reversalCount || 0}</p>
+                  <p className="text-sm text-gray-500">bookkeeping unwinds, not corrections</p>
+                </div>
+              </div>
+
+              {reportData.branches?.length > 0 && (
+                <div className="card overflow-hidden">
+                  <div className="px-4 pt-4 pb-1">
+                    <h4 className="font-medium">Per Branch</h4>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[600px]">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Adjusted In</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Adjusted Out</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Net</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Count</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {reportData.branches.map((br: any) => (
+                          <tr key={br.branchId} className="hover:bg-gray-50">
+                            <td className="px-4 py-3.5 text-sm whitespace-nowrap">{br.name || <span className="text-gray-400">—</span>}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono text-finance-green">{formatCurrency(br.in || 0)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono text-finance-red">{formatCurrency(br.out || 0)}</td>
+                            <td className={`px-4 py-3.5 text-sm text-right font-mono font-medium ${(br.net || 0) < 0 ? 'text-finance-red' : 'text-finance-green'}`}>{formatCurrency(br.net || 0)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right">{br.count || 0}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Adjustments Register</h4>
+                  <p className="text-xs text-gray-500">Every till adjustment in the period, newest first. A pending row is a request that has not moved the drawer yet; a row marked reversal is the counter-row a reversal posted, not a correction.</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1250px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Day</th>
+                        {branches.length > 1 && <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>}
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Reference</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Payee</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Recorded By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.rows.length === 0 ? (
+                        <tr><td colSpan={branches.length > 1 ? 10 : 9} className="px-4 py-8 text-center text-sm text-gray-500">No adjustments for these filters.</td></tr>
+                      ) : reportData.rows.map((r: any) => (
+                        <tr key={r.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.day ? dateKeyLabel(r.day) : <span className="text-gray-400">—</span>}</td>
+                          {branches.length > 1 && <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.branchName || <span className="text-gray-400">—</span>}</td>}
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.accountName || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${r.direction === 'in' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                              {r.direction === 'in' ? 'In' : 'Out'}
+                            </span>
+                            {r.role === 'reversal' && <span className="ml-1.5 text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600" title="The counter-row a reversal posted — bookkeeping, not a correction">Reversal</span>}
+                          </td>
+                          <td className={`px-4 py-3.5 text-sm text-right whitespace-nowrap font-medium ${r.direction === 'in' ? 'text-finance-green' : 'text-finance-red'}`}>
+                            {r.direction === 'in' ? '+' : '−'}{formatCurrency(Math.abs(r.amount))}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap font-mono">{r.referenceNumber || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.payee || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.recordedBy || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${r.status === 'pending' ? 'bg-amber-100 text-amber-700' : r.status === 'reversed' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                              {r.status === 'pending' ? 'Pending' : r.status === 'reversed' ? 'Reversed' : 'Completed'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm text-gray-700 max-w-[16rem] truncate" title={r.description || undefined}>{r.description || <span className="text-gray-400">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'cash-events-report' && reportData.rows ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 text-sm print:grid-cols-5">
+                <div className="card">
+                  <p className="text-gray-500">Borrowed</p>
+                  <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.borrowed || 0)}</p>
+                  <p className="text-sm text-gray-500">loans received into the branch</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Repaid</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-red">{formatCurrency(reportData.summary?.repaid || 0)}</p>
+                  <p className="text-sm text-gray-500">loan repayments made</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Other Events</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency((reportData.summary?.net || 0) - (reportData.summary?.borrowingsNet || 0))}</p>
+                  <p className="text-sm text-gray-500">income, refunds and adjustments</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Events</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.count || 0}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.manualCount || 0} manual · {reportData.summary?.reversalCount || 0} reversal counter-rows</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Net to the Drawer</p>
+                  <p className={`text-2xl font-bold mt-1 ${(reportData.summary?.net || 0) < 0 ? 'text-finance-red' : 'text-finance-green'}`}>{formatCurrency(reportData.summary?.net || 0)}</p>
+                  <p className="text-sm text-gray-500">across all event types</p>
+                </div>
+              </div>
+
+              {reportData.note && <p className="text-xs text-gray-500">{reportData.note}</p>}
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Events by Type</h4>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[600px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Direction</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Count</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.kinds?.map((k: any) => (
+                        <tr key={k.kind} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{k.label}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${k.direction === 'in' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{k.direction === 'in' ? 'In' : 'Out'}</span>
+                          </td>
+                          <td className={`px-4 py-3.5 text-sm text-right font-mono ${k.direction === 'in' ? 'text-finance-green' : 'text-finance-red'}`}>{formatCurrency(k.amount)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right">{k.count}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Cash Events</h4>
+                  <p className="text-xs text-gray-500">Every event the cash forms recorded in the period, newest first. Rows marked reversal are the counter-rows reversals posted — they moved money, but nobody recorded them by hand.</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1150px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Day</th>
+                        {branches.length > 1 && <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>}
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Number</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Payee</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Recorded By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.rows.length === 0 ? (
+                        <tr><td colSpan={branches.length > 1 ? 8 : 7} className="px-4 py-8 text-center text-sm text-gray-500">No cash events for these filters.</td></tr>
+                      ) : reportData.rows.map((r: any) => (
+                        <tr key={r.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.day ? dateKeyLabel(r.day) : <span className="text-gray-400">—</span>}</td>
+                          {branches.length > 1 && <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.branchName || <span className="text-gray-400">—</span>}</td>}
+                          <td className="px-4 py-3.5">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${r.direction === 'in' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{r.label}</span>
+                            {r.role === 'reversal' && <span className="ml-1.5 text-xs font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">Reversal</span>}
+                          </td>
+                          <td className={`px-4 py-3.5 text-sm text-right whitespace-nowrap font-medium ${r.direction === 'in' ? 'text-finance-green' : 'text-finance-red'}`}>
+                            {r.direction === 'in' ? '+' : '−'}{formatCurrency(Math.abs(r.amount))}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap font-mono">{r.transactionNumber || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.payee || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.recordedBy || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-700 max-w-[16rem] truncate" title={r.description || undefined}>{r.description || <span className="text-gray-400">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'outgoings-report' && reportData.rows ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm print:grid-cols-3">
+                <div className="card">
+                  <p className="text-gray-500">Total Outgoings</p>
+                  <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.totalOutgoings || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.count || 0} payments · {reportData.summary?.branchCount || 0} branches</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Operating Expenses</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-red">{formatCurrency(reportData.summary?.expenseTotal || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.expenseCount || 0} rows — the cost of running the business</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Cash Payments</p>
+                  <p className="text-2xl font-bold mt-1 text-amber-600">{formatCurrency(reportData.summary?.paymentTotal || 0)}</p>
+                  <p className="text-sm text-gray-500">{reportData.summary?.paymentCount || 0} rows — cash out that was never a cost</p>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Outgoings by Purpose</h4>
+                  <p className="text-xs text-gray-500">The same purpose categories, read side by side across the two forms that pay money out. The operating-expense half reaches the expense reports; the cash-payment half deliberately does not.</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[900px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Purpose</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Operating Expense</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Cash Payment</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Count</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.rows.length === 0 ? (
+                        <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-500">No outgoings for these filters.</td></tr>
+                      ) : reportData.rows.map((r: any) => (
+                        <tr key={r.categoryId ?? r.category} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.category}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono text-finance-red">{formatCurrency(r.expense || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono text-amber-600">{formatCurrency(r.payment || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-medium">{formatCurrency(r.total || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right">{r.count || 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {reportData.branches?.length > 1 && (
+                <div className="card overflow-hidden">
+                  <div className="px-4 pt-4 pb-1"><h4 className="font-medium">Per Branch</h4></div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[600px]">
+                      <thead className="bg-gray-50">
+                        <tr>
+                          <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Operating Expense</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Cash Payment</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total</th>
+                          <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Count</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {reportData.branches.map((br: any) => (
+                          <tr key={br.branchId} className="hover:bg-gray-50">
+                            <td className="px-4 py-3.5 text-sm whitespace-nowrap">{br.name || <span className="text-gray-400">—</span>}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono text-finance-red">{formatCurrency(br.expense || 0)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono text-amber-600">{formatCurrency(br.payment || 0)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right font-mono font-medium">{formatCurrency(br.total || 0)}</td>
+                            <td className="px-4 py-3.5 text-sm text-right">{br.count || 0}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : activeReport === 'borrowings-report' && reportData.rows ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 text-sm print:grid-cols-5">
+                <div className="card">
+                  <p className="text-gray-500">Borrowed</p>
+                  <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.received || 0)}</p>
+                  <p className="text-sm text-gray-500">loan_received in the period</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Repaid</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.summary?.repaid || 0)}</p>
+                  <p className="text-sm text-gray-500">loan_repayment in the period</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Net Moved</p>
+                  <p className={`text-2xl font-bold mt-1 ${(reportData.summary?.net || 0) < 0 ? 'text-finance-red' : ''}`}>{formatCurrency(reportData.summary?.net || 0)}</p>
+                  <p className="text-sm text-gray-500">received − repaid</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Outstanding to Date</p>
+                  <p className="text-2xl font-bold mt-1 text-amber-600">{formatCurrency(reportData.summary?.outstandingToDate || 0)}</p>
+                  <p className="text-sm text-gray-500">the ledger's figure, start of books to period end</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Awaiting a Signature</p>
+                  <p className={`text-2xl font-bold mt-1 ${(reportData.summary?.pendingCount || 0) > 0 ? 'text-amber-600' : ''}`}>{reportData.summary?.pendingCount || 0}</p>
+                  <p className="text-sm text-gray-500">pending rows have not moved money yet</p>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">By Lender</h4>
+                  <p className="text-xs text-gray-500">Each lender's received and repaid in the period, netting to what that lender's debt moved by. The statement's outstanding stays company-wide — the ledger cannot tell lenders apart, which is exactly why this sheet exists.</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[700px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Lender</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Borrowed</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Repaid</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Net</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Count</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.lenders.length === 0 ? (
+                        <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-500">No borrowings or repayments for these filters.</td></tr>
+                      ) : reportData.lenders.map((l: any) => (
+                        <tr key={l.lender} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{l.lender}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono">{formatCurrency(l.received || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono text-finance-green">{formatCurrency(l.repaid || 0)}</td>
+                          <td className={`px-4 py-3.5 text-sm text-right font-mono font-medium ${(l.net || 0) > 0 ? 'text-amber-600' : ''}`}>{formatCurrency(l.net || 0)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right">{l.count || 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Register</h4>
+                  <p className="text-xs text-gray-500">Every borrowing and repayment in the period, newest first. A pending row was recorded but still awaits a second signature — the money has not moved.</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1150px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Day</th>
+                        {branches.length > 1 && <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>}
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Lender</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Route</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Status</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Recorded By</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.rows.length === 0 ? (
+                        <tr><td colSpan={branches.length > 1 ? 9 : 8} className="px-4 py-8 text-center text-sm text-gray-500">No borrowings or repayments for these filters.</td></tr>
+                      ) : reportData.rows.map((r: any) => (
+                        <tr key={r.id} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.day ? dateKeyLabel(r.day) : <span className="text-gray-400">—</span>}</td>
+                          {branches.length > 1 && <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.branchName || <span className="text-gray-400">—</span>}</td>}
+                          <td className="px-4 py-3.5">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${r.code === 'loan_received' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>{r.label}</span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.lender}</td>
+                          <td className={`px-4 py-3.5 text-sm text-right whitespace-nowrap font-medium ${r.code === 'loan_received' ? 'text-finance-green' : 'text-finance-red'}`}>
+                            {r.code === 'loan_received' ? '+' : '−'}{formatCurrency(Math.abs(r.amount))}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{paymentMethodCell(r.route)}</td>
+                          <td className="px-4 py-3.5">
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${r.status === 'pending' ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}`}>
+                              {r.status === 'pending' ? 'Pending' : 'Completed'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{r.recordedBy || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm text-gray-700 max-w-[16rem] truncate" title={r.description || undefined}>{r.description || <span className="text-gray-400">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'cash-position' && reportData.branches ? (
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-sm print:grid-cols-4">
+                <div className="card">
+                  <p className="text-gray-500">In the Tills</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.summary?.totalDrawerBalance || 0)}</p>
+                  <p className="text-sm text-gray-500">across {reportData.branches.filter((br: any) => br.drawerAccountId).length} tracked tills</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Open Shifts</p>
+                  <p className="text-2xl font-bold mt-1">{reportData.summary?.openShiftCount || 0}</p>
+                  <p className="text-sm text-gray-500">branches with a count in progress</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Unanswered Variances</p>
+                  <p className={`text-2xl font-bold mt-1 ${(reportData.summary?.unresolvedVarianceCount || 0) > 0 ? 'text-finance-red' : ''}`}>{reportData.summary?.unresolvedVarianceCount || 0}</p>
+                  <p className="text-sm text-gray-500">settled shifts nobody has answered for</p>
+                </div>
+                <div className="card">
+                  <p className="text-gray-500">Untracked Branches</p>
+                  <p className="text-2xl font-bold mt-1 text-gray-500">{reportData.summary?.untrackedCount || 0}</p>
+                  <p className="text-sm text-gray-500">no cash account — never in the total above</p>
+                </div>
+              </div>
+
+              <div className="card overflow-hidden">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Branch Cash Position</h4>
+                  <p className="text-xs text-gray-500">A snapshot, not a period: what the tills hold right now, what the open shift expects, and how the last settled count came in.</p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[1150px]">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Branch</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Drawer</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">In the Till</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Shift</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Opening Float</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Expected Closing</th>
+                        <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Opened By</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Last Count</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Last Variance</th>
+                        <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Unanswered</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {reportData.branches.map((br: any) => (
+                        <tr key={br.branchId} className="hover:bg-gray-50">
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{br.name || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{br.drawerAccountName || <span className="text-gray-400">No tracked till</span>}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono font-medium text-finance-green">{br.drawerBalance === null || br.drawerBalance === undefined ? <span className="text-gray-400">—</span> : formatCurrency(br.drawerBalance)}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">
+                            {br.hasOpenShift
+                              ? (br.shiftDate ? dateKeyLabel(br.shiftDate) : <span className="text-gray-400">open</span>)
+                              : <span className="text-gray-400">no shift open</span>}
+                          </td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono">{br.openingFloat === null || br.openingFloat === undefined ? <span className="text-gray-400">—</span> : formatCurrency(br.openingFloat)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono">{br.expectedClosing === null || br.expectedClosing === undefined ? <span className="text-gray-400">—</span> : formatCurrency(br.expectedClosing)}</td>
+                          <td className="px-4 py-3.5 text-sm whitespace-nowrap">{br.openedBy || <span className="text-gray-400">—</span>}</td>
+                          <td className="px-4 py-3.5 text-sm text-right font-mono">{br.lastCountedClosing === null || br.lastCountedClosing === undefined ? <span className="text-gray-400">—</span> : formatCurrency(br.lastCountedClosing)}</td>
+                          <td className={`px-4 py-3.5 text-sm text-right font-mono ${(br.lastVariance || 0) !== 0 ? 'text-finance-red' : ''}`}>{br.lastVariance === null || br.lastVariance === undefined ? <span className="text-gray-400">—</span> : formatCurrency(br.lastVariance)}</td>
+                          <td className="px-4 py-3.5 text-sm text-right">{br.unresolvedVarianceCount || 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
                   </table>
                 </div>
               </div>

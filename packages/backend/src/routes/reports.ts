@@ -19,6 +19,9 @@ import { buildShiftReport } from '../services/shiftReport';
 import { buildOwnerFundReport, type OwnerFundReport, type OwnerFundSourceRow } from '../services/ownerFundsReport';
 import { buildOutgoingsReport, OUTGOINGS_CODES, type OutgoingsSourceRow } from '../services/outgoingsReport';
 import { buildCashEventsReport, CASH_EVENT_CODES, type CashEventSourceRow } from '../services/cashEventsReport';
+import { buildAdjustmentsReport, ADJUSTMENT_CODES, type AdjustmentSourceRow } from '../services/adjustmentsReport';
+import { buildBorrowingsReport, BORROWING_CODES, type BorrowingSourceRow } from '../services/borrowingsReport';
+import { buildCashPositionReport, type CashPositionBranch } from '../services/cashPositionReport';
 
 const router = Router();
 router.use(authenticate);
@@ -1765,6 +1768,255 @@ router.get('/cash-events-report', authorize('reports.read'), async (req: Request
 
     const report = buildCashEventsReport(rows);
     res.json({ success: true, data: { ...report, note: CASH_EVENTS_NOTE } });
+  } catch (error) { next(error); }
+});
+
+// --------------------------------- adjustments register ---------------------------------
+//
+// The correction book for the drawers. Unlike the other cash reports it is
+// read from `transactions`, not ledger entries, and the reason is the whole
+// point: since D49 an adjustment recorded by anyone but an administrator sits
+// pending until a second signature, and a pending transaction has no ledger
+// rows. A register that only saw posted rows would hide exactly the rows that
+// still need a signature — the ones that have not touched the drawer yet.
+// Every row carries its status, and the summary keeps the pending count
+// separate so the sheet can say "four rows, one of them still waiting" rather
+// than pretending a pending row and a posted one are the same thing.
+router.get('/adjustments-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const start = parseReportDate(req.query.startDate, 'startDate');
+    const end = parseReportDate(req.query.endDate, 'endDate');
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+
+    const params: any[] = [];
+    let pi = 1;
+    const codePlaceholders = ADJUSTMENT_CODES.map(() => `$${pi++}`).join(', ');
+    const conds: string[] = [`tt.code IN (${codePlaceholders})`];
+    params.push(...ADJUSTMENT_CODES);
+
+    if (start) { conds.push(`t.transaction_date >= $${pi++}`); params.push(start); }
+    if (end) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(end); }
+
+    const scope = branchClause(req, 't', 'transactions.read_all', pi, 'account', branchId);
+    if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
+
+    const rows = await query<AdjustmentSourceRow>(
+      `SELECT t.id, a.branch_id, b.name AS branch_name, a.name AS account_name,
+              tt.code AS txn_code, t.amount, t.payment_method,
+              t.transaction_number, t.reference_number, t.payee, t.description,
+              t.status, u.username AS recorded_by_username, t.transaction_date
+         FROM transactions t
+         JOIN accounts a ON a.id = t.account_id
+         LEFT JOIN branches b ON b.id = a.branch_id
+         LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+         LEFT JOIN users u ON u.id = t.created_by
+        WHERE ${conds.join(' AND ')}
+        ORDER BY t.transaction_date DESC, t.transaction_number DESC`,
+      params,
+    );
+
+    res.json({ success: true, data: buildAdjustmentsReport(rows) });
+  } catch (error) { next(error); }
+});
+
+// --------------------------------- borrowings & repayments ---------------------------------
+//
+// The company's debt, lender by lender. The flows are read from transactions
+// (a pending borrowing has no ledger rows — the register must still show it
+// as agreed-but-not-yet-moved); the outstanding headline is the ledger's own
+// start-of-books-to-period-end sum, the same query and the same rules the
+// statement's `borrowingsOutstanding` uses, so the sheet and the statement can
+// never disagree about how much is owed. Only the period end bounds it: a loan
+// taken before the period is exactly when the operator wants to see it.
+router.get('/borrowings-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const start = parseReportDate(req.query.startDate, 'startDate');
+    const end = parseReportDate(req.query.endDate, 'endDate');
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+
+    const params: any[] = [];
+    let pi = 1;
+    const codePlaceholders = BORROWING_CODES.map(() => `$${pi++}`).join(', ');
+    const conds: string[] = [`tt.code IN (${codePlaceholders})`];
+    params.push(...BORROWING_CODES);
+
+    if (start) { conds.push(`t.transaction_date >= $${pi++}`); params.push(start); }
+    if (end) { conds.push(`t.transaction_date < ($${pi++}::date + INTERVAL '1 day')`); params.push(end); }
+
+    const scope = branchClause(req, 't', 'transactions.read_all', pi, 'account', branchId);
+    if (scope.clause) { conds.push(scope.clause); params.push(...scope.params); }
+
+    const rows = await query<BorrowingSourceRow>(
+      `SELECT t.id, a.branch_id, b.name AS branch_name, a.name AS account_name,
+              tt.code AS txn_code, t.amount, t.payment_method,
+              t.transaction_number, t.reference_number, t.payee, t.description,
+              t.status, u.username AS recorded_by_username, t.transaction_date
+         FROM transactions t
+         JOIN accounts a ON a.id = t.account_id
+         LEFT JOIN branches b ON b.id = a.branch_id
+         LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+         LEFT JOIN users u ON u.id = t.created_by
+        WHERE ${conds.join(' AND ')}
+        ORDER BY t.transaction_date DESC, t.transaction_number DESC`,
+      params,
+    );
+
+    // Outstanding at the period end, from the ledger — the statement's own
+    // figure, built here with its own placeholder sequence so the two can be
+    // composed independently.
+    const borrowParams: any[] = [];
+    let bpi = 1;
+    const borrowBounds = entryDateBounds('l', bpi, null, end);
+    const borrowConds: string[] = [`tt.code IN ('loan_received', 'loan_repayment')`, ...borrowBounds.conds];
+    bpi += borrowBounds.params.length;
+    borrowParams.push(...borrowBounds.params);
+    // A borrowing that has been reversed is not owed (the statement's rule).
+    borrowConds.push(`(t.status IS NULL OR t.status <> 'reversed')`);
+    const borrowScope = branchClause(req, 'l', 'accounts.read_all', bpi, 'account', branchId ?? null);
+    if (borrowScope.clause) { borrowConds.push(borrowScope.clause); borrowParams.push(...borrowScope.params); }
+
+    const borrowRow = await queryOne<{ outstanding: string }>(
+      `SELECT COALESCE(SUM(CASE WHEN l.entry_type = 'credit' THEN l.amount ELSE -l.amount END), 0) AS outstanding
+         FROM ledger_entries l
+         JOIN accounts a ON a.id = l.account_id
+         LEFT JOIN transactions t ON t.id = l.transaction_id
+         LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+        WHERE ${borrowConds.join(' AND ')}`,
+      borrowParams,
+    );
+
+    res.json({
+      success: true,
+      data: buildBorrowingsReport(rows, parseFloat(borrowRow?.outstanding ?? '0')),
+    });
+  } catch (error) { next(error); }
+});
+
+// --------------------------------- branch cash position ---------------------------------
+//
+// A snapshot, deliberately without a date window: where the company's cash is
+// *right now*. One open cash account per branch is its drawer (D29); the
+// drawer's ledger balance, the open shift's float and expected closing, the
+// last settled count and any variance nobody has answered for sit on one line
+// each. A branch with no cash account at all appears with its state rather
+// than vanishing, because an empty row is how the sheet says "this branch has
+// no tracked till".
+router.get('/cash-position', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+
+    // Every branch the caller may see, each with its drawer account if one
+    // exists. A branch with no cash account keeps its row — untracked is a
+    // state to report, not a branch to omit.
+    const branchScope = branchClause(req, 'b', 'accounts.read_all', 1, 'self', branchId);
+    const branchConds: string[] = [];
+    if (branchScope.clause) { branchConds.push(branchScope.clause); }
+
+    const cashRows = await query<{
+      branch_id: string;
+      name: string | null;
+      drawer_account_id: string | null;
+      drawer_account_name: string | null;
+      drawer_balance: string | null;
+    }>(
+      `SELECT b.id AS branch_id, b.name AS name,
+              drawer.id AS drawer_account_id, drawer.name AS drawer_account_name,
+              drawer.current_balance AS drawer_balance
+         FROM branches b
+         LEFT JOIN LATERAL (
+           SELECT a.id, a.name, a.current_balance
+           FROM accounts a
+           JOIN account_types at ON at.id = a.account_type_id
+           WHERE a.branch_id = b.id AND at.code = 'cash'
+           ORDER BY a.created_at ASC
+           LIMIT 1
+         ) drawer ON true
+        WHERE ${branchConds.join(' AND ') || 'TRUE'}
+        ORDER BY b.name`,
+      branchScope.params,
+    );
+
+    // Open shift and the last settled one per branch, plus how many settled
+    // variances are still unanswered. All read from the shifts table, scoped
+    // by branch_id — the same dimension every other query in this route
+    // resolves a branch from.
+    const shiftParams: any[] = [];
+    let spi = 1;
+    const shiftScope = branchClause(req, 's', 'accounts.read_all', spi, 'self', branchId);
+    const shiftConds: string[] = [];
+    if (shiftScope.clause) { shiftConds.push(shiftScope.clause); shiftParams.push(...shiftScope.params); }
+
+    const shiftRows = await query<{
+      branch_id: string;
+      has_open_shift: boolean;
+      shift_date: string | null;
+      opening_float: string | null;
+      expected_closing: string | null;
+      opened_by: string | null;
+      last_counted: string | null;
+      last_variance: string | null;
+      last_shift_date: string | null;
+      unresolved: string | null;
+    }>(
+      `SELECT s.branch_id,
+              (s.status = 'open') AS has_open_shift,
+              s.shift_date, s.opening_float, s.expected_closing,
+              ou.username AS opened_by,
+              closed.counted_closing AS last_counted,
+              closed.variance AS last_variance,
+              closed.shift_date AS last_shift_date,
+              (SELECT COUNT(*)::text
+                 FROM shifts u
+                WHERE u.branch_id = s.branch_id
+                  AND u.status = 'closed'
+                  AND u.variance IS NOT NULL AND u.variance <> 0
+                  AND u.variance_resolved_at IS NULL) AS unresolved
+         FROM shifts s
+         LEFT JOIN users ou ON ou.id = s.opened_by
+         LEFT JOIN LATERAL (
+           SELECT x.counted_closing, x.variance, x.shift_date
+           FROM shifts x
+           WHERE x.branch_id = s.branch_id AND x.status = 'closed'
+             AND x.counted_closing IS NOT NULL
+           ORDER BY x.shift_date DESC, x.closed_at DESC
+           LIMIT 1
+         ) closed ON true
+        WHERE ${shiftConds.join(' AND ') || 'TRUE'}
+          AND s.status = 'open'`,
+      shiftParams,
+    );
+
+    const openByBranch = new Map<string, typeof shiftRows[number]>();
+    for (const row of shiftRows) openByBranch.set(row.branch_id, row);
+
+    const branches: CashPositionBranch[] = cashRows.map((row) => {
+      const shift = openByBranch.get(row.branch_id);
+      return {
+        branchId: row.branch_id,
+        name: row.name,
+        drawerAccountId: row.drawer_account_id,
+        drawerAccountName: row.drawer_account_name,
+        drawerBalance: row.drawer_balance === null || row.drawer_balance === undefined
+          ? null
+          : parseFloat(String(row.drawer_balance)),
+        hasOpenShift: shift?.has_open_shift ?? false,
+        shiftDate: shift?.shift_date ?? null,
+        openingFloat: shift?.opening_float === null || shift?.opening_float === undefined
+          ? null : parseFloat(String(shift.opening_float)),
+        expectedClosing: shift?.expected_closing === null || shift?.expected_closing === undefined
+          ? null : parseFloat(String(shift.expected_closing)),
+        openedBy: shift?.opened_by ?? null,
+        lastCountedClosing: shift?.last_counted === null || shift?.last_counted === undefined
+          ? null : parseFloat(String(shift.last_counted)),
+        lastVariance: shift?.last_variance === null || shift?.last_variance === undefined
+          ? null : parseFloat(String(shift.last_variance)),
+        lastShiftDate: shift?.last_shift_date ?? null,
+        unresolvedVarianceCount: parseInt(shift?.unresolved ?? '0', 10) || 0,
+        frozenBalance: null,
+      };
+    });
+
+    res.json({ success: true, data: buildCashPositionReport(branches) });
   } catch (error) { next(error); }
 });
 
