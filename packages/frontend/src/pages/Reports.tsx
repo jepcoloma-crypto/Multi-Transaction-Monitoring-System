@@ -76,6 +76,22 @@ const INCOME_EXPENSE_TABS: { id: IncomeExpenseTab; label: string }[] = [
   { id: 'cash', label: 'Cash Income' },
 ];
 
+// The sidebar's five groups, in the order a reader walks them: the headline
+// picture first, then what the business earned and spent, then the tills,
+// then the transaction detail behind the figures, then the books of record
+// for each kind of money movement. Ordering and membership follow the reports
+// audit: Registers are the "one peso, one register" books — adjustments,
+// borrowings, cash events and owner funds.
+type ReportGroup = 'overview' | 'income' | 'cash' | 'transactions' | 'registers';
+
+const REPORT_GROUPS: { id: ReportGroup; label: string }[] = [
+  { id: 'overview', label: 'Overview & Trends' },
+  { id: 'income', label: 'Income & Expense' },
+  { id: 'cash', label: 'Cash & Till' },
+  { id: 'transactions', label: 'Transactions & Ledger' },
+  { id: 'registers', label: 'Registers' },
+];
+
 export default function Reports() {
   const { user } = useAuth();
   const [activeReport, setActiveReport] = useState<ReportType>('consolidated');
@@ -85,6 +101,10 @@ export default function Reports() {
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState<any>(null);
   const [filters, setFilters] = useState({ startDate: '', endDate: '', accountId: '', typeId: '', status: '', providerId: '', branchId: '', shiftStatus: '', varianceOnly: false, handling: '', fundKind: '' });
+  // Which sidebar groups are folded up. Every group starts open so nothing is
+  // hidden on first visit; picking a report opens its group even if a reader
+  // had folded it, so the report they chose is never buried.
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
   // Stated on the printed sheet, because the header badge that normally says
   // it is inside a print:hidden region. A PDF filed without knowing which
@@ -289,23 +309,29 @@ export default function Reports() {
     : 0;
 
   const reports = [
-    { id: 'consolidated' as ReportType, name: 'Consolidated Overview', icon: BarChart3, desc: 'All accounts, transactions, transfers, and loading summary' },
-    { id: 'balance-trends' as ReportType, name: 'Balance Trends', icon: TrendingUp, desc: 'Daily closing balances per account, income vs expense, and monthly flows over the last 30/90 days' },
-    { id: 'account-statement' as ReportType, name: 'Account Statement', icon: FileText, desc: 'Detailed ledger entries for a specific account' },
-    { id: 'transaction-report' as ReportType, name: 'Transaction Report', icon: FileText, desc: 'Transaction history with filters' },
-    { id: 'transfer-report' as ReportType, name: 'Transfer Report', icon: ArrowLeftRight, desc: 'Fund transfer history' },
-    { id: 'loading-report' as ReportType, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
-    { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
-    { id: 'shift-report' as ReportType, name: 'Shift & Cash Count', icon: Coins, desc: 'Drawer counts per shift: float, expected vs counted, and variance' },
-    { id: 'owner-funds-report' as ReportType, name: 'Owner Funds', icon: HandCoins, desc: 'Approved add-funds and return-funds: who put money in, who took it out, and who signed off' },
-    { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, with the cash income detail, in three tabs' },
-    { id: 'cash-statement' as ReportType, name: 'Sources & Uses', icon: Scale, desc: 'Opening + sources − uses = closing for a period, per branch' },
-    { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
-    { id: 'adjustments-report' as ReportType, name: 'Adjustments Register', icon: ClipboardList, desc: 'Every till adjustment in and out: amount, reference, who recorded it, and which are still awaiting a signature' },
-    { id: 'cash-events-report' as ReportType, name: 'Cash Events', icon: History, desc: 'Income, refunds received and refunds paid recorded per branch in a period — borrowings and adjustments have registers of their own' },
-    { id: 'outgoings-report' as ReportType, name: 'Outgoings by Purpose', icon: ArrowUpRight, desc: 'What a branch paid out — operating expenses vs supplier and other payments, one line per purpose' },
-    { id: 'borrowings-report' as ReportType, name: 'Borrowings & Repayments', icon: PiggyBank, desc: 'Per lender: borrowed, repaid and net, plus the company\u2019s outstanding as of the period end' },
-    { id: 'cash-position' as ReportType, name: 'Branch Cash Position', icon: Banknote, desc: 'A snapshot of the tills right now: drawer balance, open shift float, last count and variance' },
+    // Overview & Trends — the headline picture and the health of the books.
+    { id: 'consolidated' as ReportType, group: 'overview' as ReportGroup, name: 'Consolidated Overview', icon: BarChart3, desc: 'All accounts, transactions, transfers, and loading summary' },
+    { id: 'balance-trends' as ReportType, group: 'overview' as ReportGroup, name: 'Balance Trends', icon: TrendingUp, desc: 'Daily closing balances per account, income vs expense, and monthly flows over the last 30/90 days' },
+    { id: 'balance-reconciliation' as ReportType, group: 'overview' as ReportGroup, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
+    // Income & Expense — what the business earned and spent.
+    { id: 'income-expense' as ReportType, group: 'income' as ReportGroup, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, with the cash income detail, in three tabs' },
+    { id: 'outgoings-report' as ReportType, group: 'income' as ReportGroup, name: 'Outgoings by Purpose', icon: ArrowUpRight, desc: 'What a branch paid out — operating expenses vs supplier and other payments, one line per purpose' },
+    // Cash & Till — the cash-management trio.
+    { id: 'cash-statement' as ReportType, group: 'cash' as ReportGroup, name: 'Sources & Uses', icon: Scale, desc: 'Opening + sources − uses = closing for a period, per branch' },
+    { id: 'cash-position' as ReportType, group: 'cash' as ReportGroup, name: 'Branch Cash Position', icon: Banknote, desc: 'A snapshot of the tills right now: drawer balance, open shift float, last count and variance' },
+    { id: 'shift-report' as ReportType, group: 'cash' as ReportGroup, name: 'Shift & Cash Count', icon: Coins, desc: 'Drawer counts per shift: float, expected vs counted, and variance' },
+    // Transactions & Ledger — the detail behind the figures.
+    { id: 'account-statement' as ReportType, group: 'transactions' as ReportGroup, name: 'Account Statement', icon: FileText, desc: 'Detailed ledger entries for a specific account' },
+    { id: 'transaction-report' as ReportType, group: 'transactions' as ReportGroup, name: 'Transaction Report', icon: FileText, desc: 'Transaction history with filters' },
+    { id: 'transfer-report' as ReportType, group: 'transactions' as ReportGroup, name: 'Transfer Report', icon: ArrowLeftRight, desc: 'Fund transfer history' },
+    { id: 'loading-report' as ReportType, group: 'transactions' as ReportGroup, name: 'Loading Report', icon: Smartphone, desc: 'Loading sales and profit analysis' },
+    { id: 'reversal-report' as ReportType, group: 'transactions' as ReportGroup, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
+    // Registers — one peso, one register: each kind of money movement owned by
+    // a single book of record.
+    { id: 'adjustments-report' as ReportType, group: 'registers' as ReportGroup, name: 'Adjustments Register', icon: ClipboardList, desc: 'Every till adjustment in and out: amount, reference, who recorded it, and which are still awaiting a signature' },
+    { id: 'borrowings-report' as ReportType, group: 'registers' as ReportGroup, name: 'Borrowings & Repayments', icon: PiggyBank, desc: 'Per lender: borrowed, repaid and net, plus the company\u2019s outstanding as of the period end' },
+    { id: 'cash-events-report' as ReportType, group: 'registers' as ReportGroup, name: 'Cash Events', icon: History, desc: 'Income, refunds received and refunds paid recorded per branch in a period — borrowings and adjustments have registers of their own' },
+    { id: 'owner-funds-report' as ReportType, group: 'registers' as ReportGroup, name: 'Owner Funds', icon: HandCoins, desc: 'Approved add-funds and return-funds: who put money in, who took it out, and who signed off' },
   ];
 
   // Picking a branch narrows the accounts offered beneath it. Left
@@ -376,19 +402,39 @@ export default function Reports() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-1 space-y-2 print:hidden">
-          {reports.map(r => (
-            <button key={r.id} onClick={() => { if (r.id !== activeReport) { setActiveReport(r.id); setReportData(null); } setExportError(''); }}
-              className={`w-full text-left p-3 rounded-lg transition-colors ${activeReport === r.id ? 'bg-primary-100 text-primary-700 border border-primary-200' : 'text-gray-700 hover:bg-gray-100'}`}>
-              <div className="flex items-center gap-3">
-                <r.icon className="w-5 h-5" />
-                <div>
-                  <p className="text-sm font-medium">{r.name}</p>
-                  <p className="text-xs text-gray-500">{r.desc}</p>
-                </div>
+        <div className="lg:col-span-1 space-y-4 print:hidden">
+          {REPORT_GROUPS.map(group => {
+            const groupReports = reports.filter(r => r.group === group.id);
+            const collapsed = !!collapsedGroups[group.id];
+            return (
+              <div key={group.id} className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setCollapsedGroups(prev => ({ ...prev, [group.id]: !prev[group.id] }))}
+                  aria-expanded={!collapsed}
+                  className="w-full flex items-center justify-between px-2 py-1.5 text-xs font-semibold uppercase tracking-wide text-gray-500 hover:text-gray-700"
+                >
+                  <span>{group.label}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-medium text-gray-400">{groupReports.length}</span>
+                    <ChevronRight className={`h-3.5 w-3.5 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+                  </span>
+                </button>
+                {!collapsed && groupReports.map(r => (
+                  <button key={r.id} onClick={() => { if (r.id !== activeReport) { setActiveReport(r.id); setReportData(null); } setCollapsedGroups(prev => ({ ...prev, [r.group]: false })); setExportError(''); }}
+                    className={`w-full text-left p-3 rounded-lg transition-colors ${activeReport === r.id ? 'bg-primary-100 text-primary-700 border border-primary-200' : 'text-gray-700 hover:bg-gray-100'}`}>
+                    <div className="flex items-center gap-3">
+                      <r.icon className="w-5 h-5" />
+                      <div>
+                        <p className="text-sm font-medium">{r.name}</p>
+                        <p className="text-xs text-gray-500">{r.desc}</p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
               </div>
-            </button>
-          ))}
+            );
+          })}
         </div>
 
         <div className="lg:col-span-3 space-y-4 print-full-width">
