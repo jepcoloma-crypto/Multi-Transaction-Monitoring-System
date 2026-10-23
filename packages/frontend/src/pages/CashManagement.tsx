@@ -1174,7 +1174,7 @@ export default function CashManagement() {
         payee: eventForm.payee.trim() || null,
         referenceNumber: eventForm.referenceNumber.trim() || null,
         transactionDate: eventForm.transactionDate,
-        // Sent for a borrowing only. The other four events here are drawer
+        // Sent for a borrowing only. The other events here are drawer
         // events that have never carried a method, and offering one now would
         // hand a wallet refund a drawer leg it never had.
         ...(isBorrowing ? { paymentMethod: eventForm.paymentMethod } : {}),
@@ -1300,16 +1300,21 @@ export default function CashManagement() {
     enteredAmount <= threshold;
 
   // What the cash-event form will tell the operator, mirroring the expense
-  // banner. A borrowing waits for a second signature when anyone other than an
-  // administrator records it: a loan creates a debt the company has to repay,
-  // and D6's two-person rule does not stop at the administrator. An
-  // administrator takes it at once, exactly as owner funding already does.
+  // banner. Two kinds wait for a second signature when anyone other than an
+  // administrator records them: a borrowing, because it creates a debt the
+  // company has to repay; and an adjustment, because it is the one entry with
+  // no customer or lender behind it, and `transactions.write` is held by
+  // operators — so a till a counter could refill or empty alone is what the
+  // second signature exists to stop. An administrator takes either at once,
+  // exactly as owner funding already does.
   const eventIsBorrowing = eventForm.code === 'loan_received' || eventForm.code === 'loan_repayment';
-  const eventSettlesNow = !eventIsBorrowing || isAdmin;
+  const eventIsAdjustment = eventForm.code === 'adjustment_in' || eventForm.code === 'adjustment_out';
+  const eventSettlesNow = !(eventIsBorrowing || eventIsAdjustment) || isAdmin;
   const eventIsMoneyIn =
     eventForm.code === 'loan_received' ||
     eventForm.code === 'other_income' ||
-    eventForm.code === 'refund_received';
+    eventForm.code === 'refund_received' ||
+    eventForm.code === 'adjustment_in';
 
   // The payment banner answers the same question the expense banner does,
   // off the same threshold — one setting governs both ways cash walks out of
@@ -3039,9 +3044,13 @@ export default function CashManagement() {
                     {eventSettlesNow
                       ? <>Recorded <span className="font-semibold">now</span> — this reaches the books and the
                         drawer the moment you save, and counts in the current shift. Check the figure first.</>
-                      : <>Saved as a <span className="font-semibold">request</span>. A borrowing creates a debt the
-                        company has to repay, so a second person signs before it counts — nobody approves
-                        their own request.</>}
+                      : eventIsBorrowing
+                        ? <>Saved as a <span className="font-semibold">request</span>. A borrowing creates a debt the
+                          company has to repay, so a second person signs before it counts — nobody approves
+                          their own request.</>
+                        : <>Saved as a <span className="font-semibold">request</span>. An adjustment has no customer
+                          or lender behind it, so a second person signs before it moves the till — nobody
+                          approves their own request.</>}
                   </p>
                 </div>
 
