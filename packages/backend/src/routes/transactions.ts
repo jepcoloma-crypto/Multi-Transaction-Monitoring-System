@@ -7,7 +7,7 @@ import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
 import type { CounterpartyLeg } from '../services/balance';
-import { drawerLeg, drawerLegs, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod } from '../services/cashManagement';
+import { drawerLeg, drawerLegs, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod, isControlledType, HEAD_OFFICE_APPROVAL_CODES, approvalAuditAction } from '../services/cashManagement';
 import type { RecordedLedgerRow } from '../services/cashManagement';
 import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, feeOnDrawerOf } from '../services/movementPlan';
 import { resolveMovementFee } from '../services/movementFee';
@@ -1333,20 +1333,21 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
   }
 });
 
-type ControlledCode = 'owner_funding' | 'owner_return' | 'operating_expense' | 'cash_payment';
-
 // The movements whose release is a head-office decision rather than a branch
-// one. They share the administrator-only bar on approve and reject, and they
-// share an expense's audit action rather than an owner-fund one — a payment
-// approved under `transaction.owner_fund_approved` would file it as capital.
-const HEAD_OFFICE_CODES = new Set<string>(['operating_expense', 'cash_payment']);
+// one: expenses and cash payments as before, plus the adjustments and
+// borrowings the business keeps behind the same administrator-only bar (the
+// list itself lives beside `controlledApproval`, so creation and settlement
+// share it). Each kind still writes its own audit action — a payment approved
+// under `transaction.owner_fund_approved` would file it as capital, so
+// `approvalAuditAction` tells the three apart.
+const HEAD_OFFICE_CODES = HEAD_OFFICE_APPROVAL_CODES;
 
 // The movements that may only ever be created as `pending` and must be
 // settled by a second person. Everything else completes on creation or runs its
 // own workflow (transfers, reversals).
-function assertControlledType(code: string): asserts code is ControlledCode {
-  if (code !== 'owner_funding' && code !== 'owner_return' && code !== 'operating_expense' && code !== 'cash_payment') {
-    throw createError(400, 'Only owner fund movements, operating expenses and cash payments require approval');
+function assertControlledType(code: string): void {
+  if (!isControlledType(code)) {
+    throw createError(400, 'Only owner fund movements, operating expenses, cash payments, adjustments and borrowings require approval');
   }
 }
 
@@ -1404,13 +1405,13 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     // count towards a shift that never gated it.
     await assertOpenShift(row.account_id, row.code, { eventDate: row.transaction_date });
     assertControlledType(row.code);
-    // Releasing an outflow the branch chose to make is a head-office decision,
-    // so expenses and payments sit behind administrator-only on top of the
-    // two-person rule — the same bar reversals already clear. Owner funds keep
-    // their wider approver set untouched; changing it here would alter live
-    // behaviour unrelated to this feature.
+    // Releasing a movement the branch chose to make is a head-office decision,
+    // so expenses, cash payments, adjustments and borrowings sit behind
+    // administrator-only on top of the two-person rule — the same bar reversals
+    // already clear. Owner funds keep their wider approver set untouched;
+    // changing it here would alter live behaviour unrelated to this feature.
     if (HEAD_OFFICE_CODES.has(row.code) && !req.user!.roles.includes('administrator')) {
-      throw createError(403, 'Only administrators can approve operating expenses and cash payments');
+      throw createError(403, 'Only administrators can approve operating expenses, cash payments, adjustments and borrowings');
     }
     if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be approved');
     if (row.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own request');
@@ -1473,9 +1474,7 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
 
     await createAuditLog({
       userId: req.user!.userId,
-      action: HEAD_OFFICE_CODES.has(row.code)
-        ? 'transaction.expense_approved'
-        : 'transaction.owner_fund_approved',
+      action: approvalAuditAction(row.code, 'approved'),
       entity: 'transaction',
       entityId: req.params.id,
       ipAddress: req.ip,
@@ -1514,7 +1513,7 @@ router.post('/:id/reject', authorize('transactions.approve'), async (req: Reques
     // Same head-office gate as approval — declining a payment is the same
     // decision as releasing one.
     if (HEAD_OFFICE_CODES.has(row.code) && !req.user!.roles.includes('administrator')) {
-      throw createError(403, 'Only administrators can reject operating expenses and cash payments');
+      throw createError(403, 'Only administrators can reject operating expenses, cash payments, adjustments and borrowings');
     }
     if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be rejected');
     if (row.created_by === req.user!.userId) throw createError(400, 'You cannot reject your own request');
@@ -1528,9 +1527,7 @@ router.post('/:id/reject', authorize('transactions.approve'), async (req: Reques
 
     await createAuditLog({
       userId: req.user!.userId,
-      action: HEAD_OFFICE_CODES.has(row.code)
-        ? 'transaction.expense_rejected'
-        : 'transaction.owner_fund_rejected',
+      action: approvalAuditAction(row.code, 'rejected'),
       entity: 'transaction',
       entityId: req.params.id,
       ipAddress: req.ip,

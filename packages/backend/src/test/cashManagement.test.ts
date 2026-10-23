@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bucketFor, buildCashStatement, BUCKET_LABELS, EXPENSE_BUCKETS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, drawerLegs, feeRowDescription, isFeeLedgerRow, unwindDrawerLeg, chargeDrawerLeg, drawerAccountId, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval } from '../services/cashManagement';
+import { bucketFor, buildCashStatement, BUCKET_LABELS, EXPENSE_BUCKETS, isCashMovement, isPaymentMethod, isMovementPaymentMethod, importTypeRefusal, touchesDrawer, drawerLeg, drawerLegs, feeRowDescription, isFeeLedgerRow, unwindDrawerLeg, chargeDrawerLeg, drawerAccountId, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, resolveCashAccountMethod, directTypeRefusal, expenseFeeRefusal, controlledApproval, CONTROLLED_TXN_CODES, CASH_EVENT_APPROVAL_CODES, HEAD_OFFICE_APPROVAL_CODES, isControlledType, approvalAuditAction } from '../services/cashManagement';
 import { feeOnDrawerOf } from '../services/movementPlan';
 import type { BranchBalance, LedgerFlowRow, CashRecordRaw } from '../services/cashManagement';
 
@@ -1084,4 +1084,43 @@ test('a fee on a cost would report the company as having earned from an expense'
   for (const code of ['operating_expense', 'cash_in', 'bill_payment', null, undefined]) {
     assert.equal(expenseFeeRefusal(code, 10), null, `${String(code)} may carry a fee`);
   }
+});
+
+// The controlled-code list is one set, shared by creation and settlement — the
+// drift between the two (creation knew eight codes, approval knew four) is
+// exactly the bug this consolidation exists to prevent, so the test pins the
+// whole set and the boundary around it.
+test('CONTROLLED_TXN_CODES names every movement that needs a second person', () => {
+  assert.deepEqual(
+    [...CONTROLLED_TXN_CODES].sort(),
+    ['adjustment_in', 'adjustment_out', 'cash_payment', 'loan_received', 'loan_repayment', 'operating_expense', 'owner_funding', 'owner_return'],
+  );
+});
+
+test('isControlledType agrees with controlledApproval about the eight codes', () => {
+  for (const code of CONTROLLED_TXN_CODES) {
+    assert.equal(isControlledType(code), true, `${code} is controlled`);
+    assert.equal(controlledApproval(code, 1, 3000, false).controlled, true, `${code} is controlled by controlledApproval too`);
+  }
+  for (const code of ['cash_in', 'cash_out', 'transfer_in', 'expense', 'refund', 'other_income', 'load_purchase', null, undefined]) {
+    assert.equal(isControlledType(code), false, `${String(code)} is not controlled`);
+  }
+});
+
+test('adjustments and borrowings sit behind the administrator-only bar', () => {
+  for (const code of CASH_EVENT_APPROVAL_CODES) {
+    assert.equal(HEAD_OFFICE_APPROVAL_CODES.has(code), true, `${code} is a head-office release`);
+    assert.equal(approvalAuditAction(code, 'approved'), 'transaction.cash_event_approved');
+    assert.equal(approvalAuditAction(code, 'rejected'), 'transaction.cash_event_rejected');
+  }
+  assert.equal(HEAD_OFFICE_APPROVAL_CODES.has('owner_funding'), false);
+  assert.equal(HEAD_OFFICE_APPROVAL_CODES.has('owner_return'), false);
+});
+
+test('approval audit actions keep the three kinds apart', () => {
+  assert.equal(approvalAuditAction('operating_expense', 'approved'), 'transaction.expense_approved');
+  assert.equal(approvalAuditAction('cash_payment', 'approved'), 'transaction.expense_approved');
+  assert.equal(approvalAuditAction('operating_expense', 'rejected'), 'transaction.expense_rejected');
+  assert.equal(approvalAuditAction('owner_funding', 'approved'), 'transaction.owner_fund_approved');
+  assert.equal(approvalAuditAction('owner_return', 'rejected'), 'transaction.owner_fund_rejected');
 });

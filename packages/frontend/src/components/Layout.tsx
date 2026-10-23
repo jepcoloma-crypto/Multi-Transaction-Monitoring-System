@@ -187,13 +187,15 @@ export default function Layout() {
         api.get<{ pagination?: { total?: number } }>('/transfers?status=pending&limit=1'),
         api.get<unknown>('/transactions/owner-funds/pending?status=pending'),
         api.get<unknown>('/transactions/reversals/pending?status=pending'),
+        api.get<unknown>('/cash-management/events/pending?status=pending'),
       ]);
       if (cancelled) return;
-      const [transfers, funds, rev] = results;
+      const [transfers, funds, rev, cashEvents] = results;
       let total = 0;
       if (transfers.status === 'fulfilled') total += transfers.value.pagination?.total || 0;
       if (funds.status === 'fulfilled') total += unwrapRows(funds.value).length;
       if (rev.status === 'fulfilled') total += unwrapRows(rev.value).length;
+      if (cashEvents.status === 'fulfilled') total += unwrapRows(cashEvents.value).length;
       setPendingApprovals(total);
     };
     load();

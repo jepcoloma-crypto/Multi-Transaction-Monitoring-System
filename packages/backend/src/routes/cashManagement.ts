@@ -4,7 +4,7 @@ import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { createError } from '../middleware/error';
 import { branchClause, canSeeAll, resolveBranchFilter } from '../middleware/scope';
-import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal } from '../services/cashManagement';
+import { buildCashStatement, bucketFor, BUCKET_LABELS, toCashRecordRow, cashRecordsCsv, cashExpenseTotal, CASH_EVENT_APPROVAL_CODES } from '../services/cashManagement';
 import { drawerMovements, drawerBalance, drawerMovementRows, drawerFlagSql, splitCashRows } from '../services/drawerQuery';
 import type { ClassifiedCashRow } from '../services/drawerQuery';
 import { classifyVariance, expectedClosing, netMovement, drawerDifference, openingReasonError, openShiftDateProblem, VARIANCE_LABELS, countDetailError, normalizeCountDetail, varianceReasonError, VARIANCE_REASONS, DENOMINATIONS } from '../services/shifts';
@@ -449,6 +449,57 @@ router.get('/expenses/pending', authorize('transactions.approve'), async (req: R
        LEFT JOIN users au ON au.id = t.approved_by
        LEFT JOIN users ru ON ru.id = t.rejected_by
        WHERE tt.code IN ('operating_expense', 'cash_payment') AND ${conds.join(' AND ')}
+       ORDER BY t.created_at ASC`,
+      params,
+    );
+
+    res.json({ success: true, data: { data: rows } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The other pending queue: the cash events a non-administrator recorded that
+// now wait for a second signature (adjustments and borrowings, per
+// `controlledApproval`). Kept separate from `/expenses/pending` for two
+// reasons — these rows are not threshold-gated (every one of them was pending
+// from the moment it was written, no amount decides it), and only an
+// administrator may release or decline them, where the expenses queue already
+// carries its own admin-only bar. `direction` is returned so the screen can
+// say whether approving moves money in or out, and `type_code` so it can name
+// the event. The code list comes from the same set the approve route enforces,
+// so a row this queue shows can always be signed.
+router.get('/events/pending', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const status = req.query.status === 'rejected' ? 'rejected' : 'pending';
+    const codes = [...CASH_EVENT_APPROVAL_CODES].sort();
+
+    const params: any[] = [status];
+    const conds = [`t.status = $1`, `tt.code IN (${codes.map((_, i) => `$${i + 2}`).join(', ')})`];
+    params.push(...codes);
+    const scope = branchClause(req, 't', 'transactions.read_all', params.length + 1, 'account');
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+    }
+
+    const rows = await query(
+      `SELECT t.id, t.transaction_number, t.amount, t.net_amount, t.status, t.transaction_date,
+              t.description, t.notes, t.reference_number, t.payee, t.created_at,
+              t.rejection_reason, t.created_by, t.approved_by,
+              tt.code AS type_code, tt.name AS type_name, tt.direction,
+              a.name AS account_name, a.current_balance, b.code AS branch_code, b.name AS branch_name,
+              u.username AS requested_by_username,
+              au.username AS approved_by_username,
+              ru.username AS rejected_by_username
+       FROM transactions t
+       JOIN transaction_types tt ON tt.id = t.transaction_type_id
+       JOIN accounts a ON a.id = t.account_id
+       JOIN branches b ON b.id = a.branch_id
+       LEFT JOIN users u ON u.id = t.created_by
+       LEFT JOIN users au ON au.id = t.approved_by
+       LEFT JOIN users ru ON ru.id = t.rejected_by
+       WHERE ${conds.join(' AND ')}
        ORDER BY t.created_at ASC`,
       params,
     );

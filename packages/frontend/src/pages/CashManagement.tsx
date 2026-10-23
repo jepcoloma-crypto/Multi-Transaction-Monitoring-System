@@ -205,6 +205,9 @@ interface PendingExpense {
   branch_code: string;
   branch_name: string;
   requested_by_username: string | null;
+  // Only the cash-event queue carries this: 'in' / 'adjustment' means approving
+  // credits the account, 'out' debits it. The expenses queue has no direction.
+  direction?: string | null;
 }
 
 interface Category {
@@ -276,6 +279,16 @@ const CASH_EVENT_TYPES = [
 ] as const;
 
 type CashEventCode = (typeof CASH_EVENT_TYPES)[number]['code'];
+
+// What the approval queue calls each cash event it can release. `adjustment_in`
+// is not on the entry form (that picker never offers it), so it needs a label
+// here even though the other three are reachable from the form.
+const CASH_EVENT_QUEUE_LABELS: Record<string, string> = {
+  adjustment_in: 'Adjustment in',
+  adjustment_out: 'Adjustment out',
+  loan_received: 'Borrowed funds received',
+  loan_repayment: 'Loan repaid',
+};
 
 const emptyEventForm = {
   code: 'loan_received' as CashEventCode,
@@ -488,6 +501,9 @@ export default function CashManagement() {
 
   const [expenses, setExpenses] = useState<PendingExpense[]>([]);
   const [loadingExpenses, setLoadingExpenses] = useState(false);
+
+  const [cashEvents, setCashEvents] = useState<PendingExpense[]>([]);
+  const [loadingCashEvents, setLoadingCashEvents] = useState(false);
 
   const [branches, setBranches] = useState<{ id: string; code: string; name: string }[]>([]);
   const [accounts, setAccounts] = useState<AccountOption[]>([]);
@@ -723,6 +739,19 @@ export default function CashManagement() {
     }
   }, [isApprover]);
 
+  const loadCashEvents = useCallback(async () => {
+    if (!isApprover) return;
+    setLoadingCashEvents(true);
+    try {
+      const value = await api.get<{ data: PendingExpense[] } | PendingExpense[]>('/cash-management/events/pending?status=pending');
+      setCashEvents(unwrapRows<PendingExpense>(value));
+    } catch {
+      setCashEvents([]);
+    } finally {
+      setLoadingCashEvents(false);
+    }
+  }, [isApprover]);
+
   const loadShifts = useCallback(async () => {
     setLoadingShifts(true);
     try {
@@ -795,6 +824,7 @@ export default function CashManagement() {
   useEffect(() => { loadShiftActivity(); }, [loadShiftActivity]);
   useEffect(() => { loadReconStatus(); }, [loadReconStatus]);
   useEffect(() => { loadExpenses(); }, [loadExpenses]);
+  useEffect(() => { loadCashEvents(); }, [loadCashEvents]);
   useEffect(() => { loadShifts(); }, [loadShifts]);
   useEffect(() => { loadRecords(); }, [loadRecords]);
 
@@ -1180,7 +1210,7 @@ export default function CashManagement() {
         ...(isBorrowing ? { paymentMethod: eventForm.paymentMethod } : {}),
       });
       setShowEventForm(false);
-      await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity(), loadRecords()]);
+      await Promise.all([loadStatement(), loadExpenses(), loadCashEvents(), loadShifts(), loadShiftActivity(), loadRecords()]);
       window.dispatchEvent(new Event('approvals-changed'));
     } catch (err) {
       setEventError(err instanceof Error ? err.message : 'Could not record the cash event');
@@ -1265,6 +1295,48 @@ export default function CashManagement() {
     try {
       await api.post(`/transactions/${expense.id}/approve`);
       await Promise.all([loadStatement(), loadExpenses(), loadShifts(), loadShiftActivity()]);
+      window.dispatchEvent(new Event('approvals-changed'));
+    } catch (err) {
+      alert(err instanceof Error ? err.message : `${verb} failed`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The cash-event queue's own decision, because its confirm has to say which
+  // way the money moves: an adjustment in or a loan received *credits* the
+  // account, an adjustment out or a loan repayment debits it, and warning an
+  // administrator with the wrong direction on the prompt is how the wrong
+  // signature gets given.
+  const decideCashEvent = async (row: PendingExpense, action: 'approve' | 'reject') => {
+    const verb = action === 'approve' ? 'Approve' : 'Reject';
+    const credit = row.direction === 'in' || row.direction === 'adjustment';
+    if (action === 'approve') {
+      const ok = window.confirm(
+        credit
+          ? `Approve ${formatCurrency(Number(row.amount))} — this will be credited to ${row.account_name} now?`
+          : `Approve ${formatCurrency(Number(row.amount))} — this will be deducted from ${row.account_name} now?`
+      );
+      if (!ok) return;
+    } else {
+      const reason = window.prompt('Reason for rejecting this cash event:');
+      if (reason === null) return;
+      if (!reason.trim()) { alert('A reason is required.'); return; }
+      try {
+        await api.post(`/transactions/${row.id}/reject`, { reason: reason.trim() });
+        await Promise.all([loadStatement(), loadCashEvents(), loadShifts(), loadShiftActivity()]);
+        window.dispatchEvent(new Event('approvals-changed'));
+        return;
+      } catch (err) {
+        alert(err instanceof Error ? err.message : `${verb} failed`);
+        return;
+      }
+    }
+
+    setBusy(true);
+    try {
+      await api.post(`/transactions/${row.id}/approve`);
+      await Promise.all([loadStatement(), loadCashEvents(), loadShifts(), loadShiftActivity()]);
       window.dispatchEvent(new Event('approvals-changed'));
     } catch (err) {
       alert(err instanceof Error ? err.message : `${verb} failed`);
@@ -2560,6 +2632,110 @@ export default function CashManagement() {
                     </tr>
                   </Fragment>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {isApprover && (
+        <div className="card overflow-hidden">
+          <div className="px-4 pt-4 pb-1">
+            <h4 className="font-medium">Cash events awaiting a second signature</h4>
+            <p className="text-xs text-gray-500">
+              Adjustments and borrowings recorded by anyone but an administrator.
+              Only an administrator may release or decline one, and nobody approves
+              their own request — the money does not move until this row is signed.
+            </p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[900px]">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Txn #</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Date</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Account</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Type</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Payee</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Description</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Amount</th>
+                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-200">
+                {loadingCashEvents ? (
+                  <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-gray-500">Loading...</td></tr>
+                ) : cashEvents.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-8 text-center">
+                      <Inbox className="w-6 h-6 text-gray-300 mx-auto mb-2" />
+                      <p className="text-sm text-gray-500">Nothing is waiting for a decision.</p>
+                    </td>
+                  </tr>
+                ) : cashEvents.map((row) => {
+                  const credit = row.direction === 'in' || row.direction === 'adjustment';
+                  const label = CASH_EVENT_QUEUE_LABELS[row.type_code] || row.type_name || row.type_code;
+                  return (
+                    <Fragment key={row.id}>
+                      <tr className="hover:bg-gray-50">
+                        <td className="px-4 py-3.5 text-sm font-mono text-xs font-medium whitespace-nowrap">TXN #{row.transaction_number}</td>
+                        <td className="px-4 py-3.5 text-sm whitespace-nowrap">{manilaDayLabel(row.transaction_date)}</td>
+                        <td className="px-4 py-3.5 text-sm whitespace-nowrap">
+                          {row.account_name}
+                          <span className="text-gray-400"> · {row.branch_name}</span>
+                        </td>
+                        <td className="px-4 py-3.5">
+                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${credit ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                            {label}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3.5 text-sm text-gray-600 whitespace-nowrap">{row.payee || '—'}</td>
+                        <td className="px-4 py-3.5 text-sm text-gray-600 max-w-[260px] truncate" title={row.description || ''}>
+                          {row.description || '—'}
+                        </td>
+                        <td className={`px-4 py-3.5 text-sm text-right font-mono font-semibold ${credit ? 'text-finance-green' : 'text-finance-red'}`}>
+                          {credit ? '+' : '−'}{formatCurrency(Number(row.amount))}
+                        </td>
+                        <td className="px-4 py-3.5 text-sm text-right whitespace-nowrap">
+                          {isAdmin ? (
+                            <div className="inline-flex gap-2">
+                              <button
+                                type="button"
+                                className="btn-primary"
+                                disabled={busy}
+                                onClick={() => decideCashEvent(row, 'approve')}
+                              >
+                                <Check className="w-4 h-4" /> Approve
+                              </button>
+                              <button
+                                type="button"
+                                className="btn-secondary"
+                                disabled={busy}
+                                onClick={() => decideCashEvent(row, 'reject')}
+                              >
+                                <X className="w-4 h-4" /> Reject
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">Administrator decides</span>
+                          )}
+                        </td>
+                      </tr>
+                      <tr className="bg-gray-50 detail-row">
+                        <td colSpan={8} className="px-4 py-2 text-xs text-gray-500">
+                          Requested by <strong>{row.requested_by_username || '—'}</strong> on{' '}
+                          {manilaDateTimeLabel(row.created_at)}
+                          {row.reference_number && <> · voucher <span className="font-mono">{row.reference_number}</span></>}
+                          {' '}· balance before decision {formatCurrency(Number(row.current_balance))}
+                          <span className="ml-2 inline-flex items-center gap-1 text-gray-400">
+                            <AlertTriangle className="w-3 h-3" />
+                            {credit ? 'approving credits this account' : 'approving debits this account'}
+                          </span>
+                        </td>
+                      </tr>
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

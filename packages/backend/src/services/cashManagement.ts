@@ -490,14 +490,7 @@ export function controlledApproval(
   isAdminCreator: boolean,
 ): { controlled: boolean; requiresApproval: boolean } {
   const isThresholdGated = typeCode === 'operating_expense' || typeCode === 'cash_payment';
-  const isAdjustment = typeCode === 'adjustment_in' || typeCode === 'adjustment_out';
-  const controlled =
-    typeCode === 'owner_funding' ||
-    typeCode === 'owner_return' ||
-    isThresholdGated ||
-    isAdjustment ||
-    typeCode === 'loan_received' ||
-    typeCode === 'loan_repayment';
+  const controlled = isControlledType(typeCode);
   // Both threshold-gated codes share one setting deliberately: they are the two
   // ways cash walks out of the drawer as a outflow somebody chose to make, and
   // a second threshold would only ever drift away from the first.
@@ -505,6 +498,46 @@ export function controlledApproval(
     ? amount > expenseThreshold
     : controlled && !isAdminCreator;
   return { controlled, requiresApproval };
+}
+
+// The movements that may only ever be created as `pending` and must be settled
+// by a second person. One list, kept beside `controlledApproval` so creation
+// and the approve/reject routes can never disagree about which codes are
+// controlled again — they drifted once (creation knew eight codes, approval
+// knew four), and the drift stranded every pending adjustment and borrowing
+// with no way to be signed off.
+export const CONTROLLED_TXN_CODES = new Set<string>([
+  'owner_funding', 'owner_return',
+  'operating_expense', 'cash_payment',
+  'adjustment_in', 'adjustment_out',
+  'loan_received', 'loan_repayment',
+]);
+
+// The cash-event codes the business keeps behind the administrator-only bar on
+// approve and reject, beside expenses and cash payments. An adjustment touches
+// a till nobody and nothing can vouch for, and a borrowing takes on company
+// debt, so a manager who recorded the movement does not get to release it.
+export const CASH_EVENT_APPROVAL_CODES = new Set<string>([
+  'adjustment_in', 'adjustment_out', 'loan_received', 'loan_repayment',
+]);
+
+// Everything whose release is a head-office decision: expenses, cash payments,
+// and the cash events above. Owner funds keep their wider approver set.
+export const HEAD_OFFICE_APPROVAL_CODES = new Set<string>([
+  'operating_expense', 'cash_payment', ...CASH_EVENT_APPROVAL_CODES,
+]);
+
+export function isControlledType(typeCode: string | null | undefined): boolean {
+  return !!typeCode && CONTROLLED_TXN_CODES.has(typeCode);
+}
+
+// What an approval or rejection writes to the audit log, so a released
+// adjustment is never filed as owner capital and an approved payment is never
+// filed as a fund. The expense pair keeps the historical action names.
+export function approvalAuditAction(code: string, outcome: 'approved' | 'rejected'): string {
+  if (code === 'operating_expense' || code === 'cash_payment') return `transaction.expense_${outcome}`;
+  if (CASH_EVENT_APPROVAL_CODES.has(code)) return `transaction.cash_event_${outcome}`;
+  return `transaction.owner_fund_${outcome}`;
 }
 
 const money = (cents: number): number => cents / 100;
