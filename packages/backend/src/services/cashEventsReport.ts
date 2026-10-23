@@ -1,31 +1,23 @@
-// R2 — Cash Events: the six things the module's cash-event form records, plus
-// the one code that looks like one and is not.
+// R2 — Cash Events: the event form's "other" events — the things an operator
+// records that are neither borrowings nor till corrections.
 //
-//   loan_received, loan_repayment, other_income, refund, refund_received,
-//   adjustment_out — the six the form offers (CashManagement.tsx
-//   CASH_EVENT_TYPES) — and adjustment_in, which the form never offers.
+//   other_income, refund_received, refund — the three the module's cash-event
+//   form offers beyond loans and adjustments (CashManagement.tsx
+//   CASH_EVENT_TYPES), and the only codes this report reads.
 //
-// `adjustment_in` is included for one reason, found by probing the live ledger
-// rather than by reading the code: on 2026-10-19 two reversed cash-ins posted
-// their unwind as `adjustment_out` transactions (transactions.ts picks
-// adjustment_out/in to cancel an in/out original). `adjustment_out` is therefore
-// BOTH a thing an operator records by hand AND the code the books use to undo
-// something else. A report that filtered on the code and printed the result as
-// "adjustments" would show those two unwinds as though somebody had taken cash
-// out of the till by hand — the precise kind of self-consistent-but-wrong
-// figure the integrity checks were written to catch.
+// Ownership, after the reports audit (R1): a loan or an adjustment no longer
+// appears here, because each has a register that owns it outright —
+// Borrowings & Repayments (per lender, received/repaid/net, outstanding) and
+// the Adjustments Register (in/out, pending included). What used to show on
+// three cards at once now shows on exactly one.
 //
-// So every row is classified, not trusted: a transaction whose reference is
-// `REV-<number>` is a reversal's counter-row and is labelled `reversal`. It is
-// still listed and still summed — the cash really did move, and the statement's
-// Adjustments bucket counts it too — but a reader can tell it apart, and the
-// summary counts manual events separately from bookkeeping.
-//
-// Borrowings are summed as flows (received, repaid, net) rather than as a
-// balance on purpose: "what is still owed" is already answered by the position
-// statement's `borrowingsOutstanding`, which knows to exclude reversed rows and
-// to run to the end of the period rather than across it. Rebuilding that figure
-// here would be a second opinion on the same debt.
+// Every row is still classified, not trusted: a transaction whose reference is
+// `REV-<number>` is a reversal's counter-row and is labelled `reversal`. The
+// counter-rows reversals post fall under the adjustment codes, so the
+// adjustments register is where they are actually read (it documents the R2
+// probe that found the reversed cash-ins unwinding as adjustment_out) — but a
+// row that reaches this report carrying a reversal reference is marked rather
+// than silently counted as a manual event.
 //
 // Built on ledger rows for the same reason as Sources and Uses: the statement
 // has no status filter, so counting `transactions` instead would drop reversed
@@ -44,28 +36,19 @@ const cents = (value: unknown): number => {
 const money = (value: number): number => value / 100;
 
 export const CASH_EVENT_KINDS = [
-  'loan_received',
-  'loan_repayment',
   'other_income',
   'refund_received',
   'refund',
-  'adjustment_in',
-  'adjustment_out',
 ] as const;
 
 export type CashEventKind = (typeof CASH_EVENT_KINDS)[number];
 
 // The labels the module's own form uses, so an event reads the same on the
-// report as it did on the button that recorded it. The two adjustment lines are
-// named plainly; the row beside them says whether it was recorded by hand.
+// report as it did on the button that recorded it.
 export const CASH_EVENT_LABELS: Record<CashEventKind, string> = {
-  loan_received: 'Borrowed funds received',
-  loan_repayment: 'Loan repaid',
   other_income: 'Other income received',
   refund_received: 'Refund received back',
   refund: 'Refund paid out',
-  adjustment_in: 'Adjustment in',
-  adjustment_out: 'Adjustment out',
 };
 
 // The route each event takes, as the type itself declares it. Read from the
@@ -73,13 +56,9 @@ export const CASH_EVENT_LABELS: Record<CashEventKind, string> = {
 // adjustment's direction as 'adjustment' — neither in nor out — and posting
 // decides it (movementPlan forces adjustment_out to a debit).
 const DIRECTION: Record<CashEventKind, 'in' | 'out'> = {
-  loan_received: 'in',
   other_income: 'in',
   refund_received: 'in',
-  adjustment_in: 'in',
-  loan_repayment: 'out',
   refund: 'out',
-  adjustment_out: 'out',
 };
 
 /** The transaction type codes this report reads, for the route's WHERE clause. */
@@ -160,9 +139,6 @@ export interface CashEventsReport {
   kinds: CashEventKindLine[];
   summary: {
     net: number;
-    borrowed: number;
-    repaid: number;
-    borrowingsNet: number;
     count: number;
     manualCount: number;
     reversalCount: number;
@@ -189,15 +165,13 @@ export function buildCashEventsReport(rows: CashEventSourceRow[]): CashEventsRep
   const kindTotals = new Map<CashEventKind, { cents: number; count: number }>();
 
   let net = 0;
-  let borrowed = 0;
-  let repaid = 0;
   let manualCount = 0;
   let reversalCount = 0;
 
   for (const row of rows) {
     const kind = KIND_BY_CODE.get(String(row.txn_code ?? ''));
     // A row this report was not asked for is ignored rather than guessed at: the
-    // route selects on the seven codes, and anything else reaching here is a
+    // route selects on the three codes, and anything else reaching here is a
     // caller's mistake that must not land in a total.
     if (!kind) continue;
 
@@ -205,8 +179,6 @@ export function buildCashEventsReport(rows: CashEventSourceRow[]): CashEventsRep
     const role: 'manual' | 'reversal' = isReversalRow(row) ? 'reversal' : 'manual';
 
     net += signed;
-    if (kind === 'loan_received') borrowed += signed;
-    if (kind === 'loan_repayment') repaid += -signed;
     if (role === 'manual') manualCount += 1;
     else reversalCount += 1;
 
@@ -255,9 +227,6 @@ export function buildCashEventsReport(rows: CashEventSourceRow[]): CashEventsRep
     kinds,
     summary: {
       net: money(net),
-      borrowed: money(borrowed),
-      repaid: money(repaid),
-      borrowingsNet: money(borrowed - repaid),
       count: listed.length,
       manualCount,
       reversalCount,

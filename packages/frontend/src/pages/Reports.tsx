@@ -2,22 +2,24 @@ import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, dateKeyLabel, manilaDayLabel, manilaDateTimeLabel, paymentMethodCell, transactionTypeLabel } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
-import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale, HandCoins, ClipboardList, PiggyBank, Banknote, History, ArrowUpRight } from 'lucide-react';
+import { BarChart3, FileText, ArrowLeftRight, Smartphone, Download, ShieldCheck, RotateCcw, Wallet, ChevronRight, Printer, Coins, Scale, HandCoins, ClipboardList, PiggyBank, Banknote, History, ArrowUpRight, TrendingUp } from 'lucide-react';
 import { IncomeDetailPanel, type IncomeDetailTab } from '../components/IncomeDetail';
 import { ExpenseDetailPanel } from '../components/ExpenseDetail';
 import { CashStatementPanel } from '../components/CashStatement';
+import { BalanceTrendChart, IncomeExpenseChart, MonthlyComparisonChart } from '../components/Charts';
 import { statementTotals } from '../lib/statementTotals';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
-type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement' | 'cash-transactions' | 'owner-funds-report' | 'adjustments-report' | 'borrowings-report' | 'cash-position' | 'cash-events-report' | 'outgoings-report';
+type ReportType = 'account-statement' | 'transaction-report' | 'transfer-report' | 'loading-report' | 'consolidated' | 'balance-reconciliation' | 'reversal-report' | 'income-expense' | 'shift-report' | 'cash-statement' | 'balance-trends' | 'owner-funds-report' | 'adjustments-report' | 'borrowings-report' | 'cash-position' | 'cash-events-report' | 'outgoings-report';
 
-// One report module, two tabs. They are separate queries with separate
+// One report module, three tabs. They are separate queries with separate
 // endpoints rather than one payload split in the browser: the income side
 // aggregates transactions, loading and transfers, the expense side aggregates
-// transfers alone, and fetching only the side on screen keeps a tab switch
-// from costing the other side's three queries.
-type IncomeExpenseTab = 'income' | 'expense';
+// transfers alone, and the cash side is the row-level income detail behind the
+// two income cards. Fetching only the side on screen keeps a tab switch from
+// costing the other sides' queries.
+type IncomeExpenseTab = 'income' | 'expense' | 'cash';
 
 interface Account { id: string; name: string; masked_account_number: string; branch_id: string; }
 
@@ -71,6 +73,7 @@ const statementStatusLabel = (status: string | null, entrySource: string | null)
 const INCOME_EXPENSE_TABS: { id: IncomeExpenseTab; label: string }[] = [
   { id: 'income', label: 'Income' },
   { id: 'expense', label: 'Expense' },
+  { id: 'cash', label: 'Cash Income' },
 ];
 
 export default function Reports() {
@@ -152,14 +155,14 @@ export default function Reports() {
         if (filters.shiftStatus) params.append('status', filters.shiftStatus);
         if (filters.varianceOnly) params.append('varianceOnly', '1');
       }
-      if (activeReport === 'cash-transactions' && filters.handling) params.append('handling', filters.handling);
+      if (activeReport === 'income-expense' && incomeExpenseTab === 'cash' && filters.handling) params.append('handling', filters.handling);
       if (activeReport === 'owner-funds-report' && filters.fundKind) {
         params.append('kind', filters.fundKind);
       }
       const qs = params.toString();
-      // The merged module runs two endpoints rather than one payload split in
+      // The merged module runs three endpoints rather than one payload split in
       // the browser. Only the side on screen is fetched, so switching tabs
-      // costs one query and clears the cached drill-down — the two sides hold
+      // costs one query and clears the cached drill-down — the sides hold
       // different shapes of detail and must never sit in the same cache.
       // The statement is the one report that is not served from /reports:
       // D18/R3 moved its *reporting* to this screen and left the arithmetic
@@ -168,7 +171,7 @@ export default function Reports() {
       const path = activeReport === 'cash-statement'
         ? 'cash-management/statement'
         : activeReport === 'income-expense'
-          ? `reports/${incomeExpenseTab === 'income' ? 'income-report' : 'expense-report'}`
+          ? `reports/${incomeExpenseTab === 'income' ? 'income-report' : incomeExpenseTab === 'expense' ? 'expense-report' : 'cash-transactions'}`
           : `reports/${activeReport}`;
       const url = `/${path}${qs ? `?${qs}` : ''}`;
       const data = await api.get(url);
@@ -222,8 +225,7 @@ export default function Reports() {
       case 'reversal-report': return 'reversals';
       case 'shift-report': return 'shifts';
       case 'owner-funds-report': return 'owner-funds';
-      case 'income-expense': return incomeExpenseTab === 'income' ? 'income' : 'expense';
-      case 'cash-transactions': return 'cash-transactions';
+      case 'income-expense': return incomeExpenseTab === 'income' ? 'income' : incomeExpenseTab === 'expense' ? 'expense' : 'cash-transactions';
       default: return null;
     }
   };
@@ -249,7 +251,7 @@ export default function Reports() {
         if (filters.shiftStatus) params.append('status', filters.shiftStatus);
         if (filters.varianceOnly) params.append('varianceOnly', '1');
       }
-      if (activeReport === 'cash-transactions' && filters.handling) params.append('handling', filters.handling);
+      if (activeReport === 'income-expense' && incomeExpenseTab === 'cash' && filters.handling) params.append('handling', filters.handling);
       if (activeReport === 'owner-funds-report' && filters.fundKind) {
         params.append('kind', filters.fundKind);
       }
@@ -288,6 +290,7 @@ export default function Reports() {
 
   const reports = [
     { id: 'consolidated' as ReportType, name: 'Consolidated Overview', icon: BarChart3, desc: 'All accounts, transactions, transfers, and loading summary' },
+    { id: 'balance-trends' as ReportType, name: 'Balance Trends', icon: TrendingUp, desc: 'Daily closing balances per account, income vs expense, and monthly flows over the last 30/90 days' },
     { id: 'account-statement' as ReportType, name: 'Account Statement', icon: FileText, desc: 'Detailed ledger entries for a specific account' },
     { id: 'transaction-report' as ReportType, name: 'Transaction Report', icon: FileText, desc: 'Transaction history with filters' },
     { id: 'transfer-report' as ReportType, name: 'Transfer Report', icon: ArrowLeftRight, desc: 'Fund transfer history' },
@@ -295,12 +298,11 @@ export default function Reports() {
     { id: 'reversal-report' as ReportType, name: 'Reversal Report', icon: RotateCcw, desc: 'Reversed transactions and reversal requests' },
     { id: 'shift-report' as ReportType, name: 'Shift & Cash Count', icon: Coins, desc: 'Drawer counts per shift: float, expected vs counted, and variance' },
     { id: 'owner-funds-report' as ReportType, name: 'Owner Funds', icon: HandCoins, desc: 'Approved add-funds and return-funds: who put money in, who took it out, and who signed off' },
-    { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, in two tabs' },
-    { id: 'cash-transactions' as ReportType, name: 'Cash Transactions', icon: Coins, desc: 'Cash-in/out and loading sales, split by fee on top vs inside' },
+    { id: 'income-expense' as ReportType, name: 'Income & Expense Report', icon: Wallet, desc: 'Income earned and expense paid per account, with the cash income detail, in three tabs' },
     { id: 'cash-statement' as ReportType, name: 'Sources & Uses', icon: Scale, desc: 'Opening + sources − uses = closing for a period, per branch' },
     { id: 'balance-reconciliation' as ReportType, name: 'Balance Reconciliation', icon: ShieldCheck, desc: 'Verify every account balance against its ledger' },
     { id: 'adjustments-report' as ReportType, name: 'Adjustments Register', icon: ClipboardList, desc: 'Every till adjustment in and out: amount, reference, who recorded it, and which are still awaiting a signature' },
-    { id: 'cash-events-report' as ReportType, name: 'Cash Events', icon: History, desc: 'Borrowings received, income, refunds and adjustments recorded per branch in a period' },
+    { id: 'cash-events-report' as ReportType, name: 'Cash Events', icon: History, desc: 'Income, refunds received and refunds paid recorded per branch in a period — borrowings and adjustments have registers of their own' },
     { id: 'outgoings-report' as ReportType, name: 'Outgoings by Purpose', icon: ArrowUpRight, desc: 'What a branch paid out — operating expenses vs supplier and other payments, one line per purpose' },
     { id: 'borrowings-report' as ReportType, name: 'Borrowings & Repayments', icon: PiggyBank, desc: 'Per lender: borrowed, repaid and net, plus the company\u2019s outstanding as of the period end' },
     { id: 'cash-position' as ReportType, name: 'Branch Cash Position', icon: Banknote, desc: 'A snapshot of the tills right now: drawer balance, open shift float, last count and variance' },
@@ -361,7 +363,7 @@ export default function Reports() {
           {reports.find(r => r.id === activeReport)?.name}
           {/* Only the chosen tab is on screen, so only it is printed; naming
               it stops the sheet reading as both halves of the module. */}
-          {activeReport === 'income-expense' && ` — ${incomeExpenseTab === 'income' ? 'Income' : 'Expense'}`}
+          {activeReport === 'income-expense' && ` — ${incomeExpenseTab === 'income' ? 'Income' : incomeExpenseTab === 'expense' ? 'Expense' : 'Cash Income'}`}
         </h2>
         <p className="text-sm text-gray-700">
           {branchScope && <>Scope: {branchScope} · </>}
@@ -423,10 +425,11 @@ export default function Reports() {
                   </select>
                 </div>
               )}
-              {/* The cash-position report is a snapshot: it has no window, so
-                  asking for one here would imply a range the endpoint does not
-                  have. Every other report takes From/To. */}
-              {activeReport !== 'cash-position' && (
+              {/* The cash-position report is a snapshot and balance-trends reads
+                  a fixed 30/90-day window, so neither takes From/To: asking for
+                  one here would imply a range the endpoint does not have. Every
+                  other report takes From/To. */}
+              {activeReport !== 'cash-position' && activeReport !== 'balance-trends' && (
                 <>
                   <div>
                     <label className="text-xs text-gray-500">From</label>
@@ -438,7 +441,7 @@ export default function Reports() {
                   </div>
                 </>
               )}
-              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || activeReport === 'income-expense' || activeReport === 'owner-funds-report') && (
+              {(activeReport === 'account-statement' || activeReport === 'transaction-report' || activeReport === 'reversal-report' || (activeReport === 'income-expense' && incomeExpenseTab !== 'cash') || activeReport === 'balance-trends' || activeReport === 'owner-funds-report') && (
                 <div>
                   <label className="text-xs text-gray-500">Account</label>
                   <select value={filters.accountId} onChange={e => setFilters({ ...filters, accountId: e.target.value })} className="input-field text-sm">
@@ -486,7 +489,7 @@ export default function Reports() {
                   </div>
                 </>
               )}
-              {activeReport === 'cash-transactions' && (
+              {activeReport === 'income-expense' && incomeExpenseTab === 'cash' && (
                 <div>
                   <label className="text-xs text-gray-500">Handling</label>
                   <select value={filters.handling} onChange={e => setFilters({ ...filters, handling: e.target.value })} className="input-field text-sm">
@@ -1558,7 +1561,7 @@ export default function Reports() {
             </div>
           ) : activeReport === 'cash-statement' && reportData.branches ? (
             <CashStatementPanel statement={reportData} branchId={filters.branchId} />
-          ) : activeReport === 'cash-transactions' && reportData.rows ? (
+          ) : activeReport === 'income-expense' && incomeExpenseTab === 'cash' && reportData.rows ? (
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 text-sm print:grid-cols-5">
                 <div className="card">
@@ -1590,7 +1593,7 @@ export default function Reports() {
 
               <div className="card overflow-hidden">
                 <div className="px-4 pt-4 pb-1">
-                  <h4 className="font-medium">Cash Transactions</h4>
+                  <h4 className="font-medium">Cash Income Detail</h4>
                   <p className="text-xs text-gray-500">
                     {(reportData.summary?.feeOnTop?.count || 0) + (reportData.summary?.feeInside?.count || 0)} cash movements · {reportData.summary?.providerInterest?.count || 0} interest credits · {reportData.summary?.loadingMargin?.count || 0} loading sales · newest first
                   </p>
@@ -1777,19 +1780,19 @@ export default function Reports() {
             <div className="space-y-4">
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 text-sm print:grid-cols-5">
                 <div className="card">
-                  <p className="text-gray-500">Borrowed</p>
-                  <p className="text-2xl font-bold mt-1">{formatCurrency(reportData.summary?.borrowed || 0)}</p>
-                  <p className="text-sm text-gray-500">loans received into the branch</p>
+                  <p className="text-gray-500">Income Received</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.kinds?.find((k: any) => k.kind === 'other_income')?.amount || 0)}</p>
+                  <p className="text-sm text-gray-500">other income recorded by hand</p>
                 </div>
                 <div className="card">
-                  <p className="text-gray-500">Repaid</p>
-                  <p className="text-2xl font-bold mt-1 text-finance-red">{formatCurrency(reportData.summary?.repaid || 0)}</p>
-                  <p className="text-sm text-gray-500">loan repayments made</p>
+                  <p className="text-gray-500">Refunds Received</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency(reportData.kinds?.find((k: any) => k.kind === 'refund_received')?.amount || 0)}</p>
+                  <p className="text-sm text-gray-500">money handed back to the branch</p>
                 </div>
                 <div className="card">
-                  <p className="text-gray-500">Other Events</p>
-                  <p className="text-2xl font-bold mt-1 text-finance-green">{formatCurrency((reportData.summary?.net || 0) - (reportData.summary?.borrowingsNet || 0))}</p>
-                  <p className="text-sm text-gray-500">income, refunds and adjustments</p>
+                  <p className="text-gray-500">Refunds Paid</p>
+                  <p className="text-2xl font-bold mt-1 text-finance-red">{formatCurrency(Math.abs(reportData.kinds?.find((k: any) => k.kind === 'refund')?.amount || 0))}</p>
+                  <p className="text-sm text-gray-500">money handed back to a customer</p>
                 </div>
                 <div className="card">
                   <p className="text-gray-500">Events</p>
@@ -2141,6 +2144,36 @@ export default function Reports() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            </div>
+          ) : activeReport === 'balance-trends' ? (
+            <div className="space-y-4">
+              <div className="card">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Closing Balance — Last 30 Days</h4>
+                  <p className="text-xs text-gray-500">One line per account, from the ledger&apos;s daily closing balance</p>
+                </div>
+                <div className="px-2 pb-2">
+                  <BalanceTrendChart accountId={filters.accountId || undefined} />
+                </div>
+              </div>
+              <div className="card">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Income vs Expense — Last 30 Days</h4>
+                  <p className="text-xs text-gray-500">Daily credits and debits across the ledger</p>
+                </div>
+                <div className="px-2 pb-2">
+                  <IncomeExpenseChart />
+                </div>
+              </div>
+              <div className="card">
+                <div className="px-4 pt-4 pb-1">
+                  <h4 className="font-medium">Monthly Inflow vs Outflow — Last 90 Days</h4>
+                  <p className="text-xs text-gray-500">Credits in, debits out, and the net, grouped by month</p>
+                </div>
+                <div className="px-2 pb-2">
+                  <MonthlyComparisonChart />
                 </div>
               </div>
             </div>

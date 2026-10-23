@@ -1721,11 +1721,12 @@ router.get('/outgoings-report', authorize('reports.read'), async (req: Request, 
 // The window, the scope and the row shape are the statement's own, so the two
 // reports read one period the same way.
 const CASH_EVENTS_NOTE =
-  'Totals cover the recorded events listed here. They are not the Sources and Uses '
-  + 'bucket lines: those also carry rows this report does not list — a transfer fee, a '
-  + 'provider interest credit, an administrator balance edit. Borrowed, repaid and the '
-  + 'borrowings net do match the Borrowings line exactly, and what is still owed stays '
-  + 'owned by the position statement.';
+  'Totals cover the events listed here: income, refunds received and refunds paid. '
+  + 'Borrowings belong to Borrowings & Repayments and till corrections to the '
+  + 'Adjustments Register, so neither is counted here too — one peso, one register. '
+  + 'These are not the Sources and Uses bucket lines: those also carry rows this '
+  + 'report does not list — a transfer fee, a provider interest credit, an '
+  + 'administrator balance edit.';
 
 router.get('/cash-events-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
