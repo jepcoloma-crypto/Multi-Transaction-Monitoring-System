@@ -1107,20 +1107,36 @@ test('isControlledType agrees with controlledApproval about the eight codes', ()
   }
 });
 
-test('adjustments and borrowings sit behind the administrator-only bar', () => {
+test('HEAD_OFFICE_APPROVAL_CODES holds the expenses and the cash events, never owner funds', () => {
+  // The full membership, pinned: the two expense codes and the four cash-event
+  // codes, and no owner fund in the set. Owner funds keep their wider approver
+  // set, so a manager who recorded the movement does not get to release it.
+  assert.deepEqual(
+    [...HEAD_OFFICE_APPROVAL_CODES].sort(),
+    ['adjustment_in', 'adjustment_out', 'cash_payment', 'loan_received', 'loan_repayment', 'operating_expense'],
+  );
   for (const code of CASH_EVENT_APPROVAL_CODES) {
     assert.equal(HEAD_OFFICE_APPROVAL_CODES.has(code), true, `${code} is a head-office release`);
     assert.equal(approvalAuditAction(code, 'approved'), 'transaction.cash_event_approved');
     assert.equal(approvalAuditAction(code, 'rejected'), 'transaction.cash_event_rejected');
   }
-  assert.equal(HEAD_OFFICE_APPROVAL_CODES.has('owner_funding'), false);
-  assert.equal(HEAD_OFFICE_APPROVAL_CODES.has('owner_return'), false);
+  assert.equal(HEAD_OFFICE_APPROVAL_CODES.has('operating_expense'), true, 'operating expense is a head-office release');
+  assert.equal(HEAD_OFFICE_APPROVAL_CODES.has('cash_payment'), true, 'cash payment is a head-office release');
+  assert.equal(HEAD_OFFICE_APPROVAL_CODES.has('owner_funding'), false, 'owner funding keeps its wider approver set');
+  assert.equal(HEAD_OFFICE_APPROVAL_CODES.has('owner_return'), false, 'owner return keeps its wider approver set');
 });
 
 test('approval audit actions keep the three kinds apart', () => {
   assert.equal(approvalAuditAction('operating_expense', 'approved'), 'transaction.expense_approved');
-  assert.equal(approvalAuditAction('cash_payment', 'approved'), 'transaction.expense_approved');
   assert.equal(approvalAuditAction('operating_expense', 'rejected'), 'transaction.expense_rejected');
+  assert.equal(approvalAuditAction('cash_payment', 'approved'), 'transaction.expense_approved');
+  assert.equal(approvalAuditAction('cash_payment', 'rejected'), 'transaction.expense_rejected');
+  for (const code of CASH_EVENT_APPROVAL_CODES) {
+    assert.equal(approvalAuditAction(code, 'approved'), 'transaction.cash_event_approved');
+    assert.equal(approvalAuditAction(code, 'rejected'), 'transaction.cash_event_rejected');
+  }
   assert.equal(approvalAuditAction('owner_funding', 'approved'), 'transaction.owner_fund_approved');
+  assert.equal(approvalAuditAction('owner_funding', 'rejected'), 'transaction.owner_fund_rejected');
+  assert.equal(approvalAuditAction('owner_return', 'approved'), 'transaction.owner_fund_approved');
   assert.equal(approvalAuditAction('owner_return', 'rejected'), 'transaction.owner_fund_rejected');
 });
