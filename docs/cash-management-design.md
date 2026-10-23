@@ -9,6 +9,10 @@ live/period split of §19 — are **pushed and running in production**: `git log
 is empty, and migrations 036–039 are applied (036/037 on 6 Oct 2026, 038/039 in the same
 week). The order below is kept as the record of *why* it was forced, not as work outstanding:
 
+Section 39 — inter-branch handovers and the `adjustment_in` door — was implemented in
+`1fc5741` and `7ab9ec5`, and deployed to production (backend rebuild + PM2 restart) on
+23 Oct 2026.
+
 1. **Fund the revolving funds first**, using the code as it runs today. F3 gives the drawer
    a ledger leg, and a leg that cannot be paid is refused: with both drawers at ₱0 every
    cash movement reaching them would fail the moment it is deployed. Owner funding does not
@@ -2311,3 +2315,71 @@ Considered alongside it and rejected for the same deferral:
 Deferred, not rejected. Both `loan_received` and `loan_repayment` still carry **0 rows**, so
 there is nothing yet to be wrong about and nothing to correct. The moment the first one is
 written is the moment this section is worth reopening.
+
+## 39. A handover between branches, and the drawer that never saw it
+
+Main hands Reina Mercedes ₱15,150 in cash on 22 October 2026. The transfer half is booked —
+TRF-2026-000002, fee 0, completed 10:04 — so RM's wallet holds the ₱15,150 and its statement
+shows it. The cash half is not: the till that handed the money over was never asked to give it
+up, and nothing on the entry form could have asked. The six cash-event codes had a door for
+money leaving a drawer the books had never seen (`adjustment_out` — three rows, all recorded by
+`admin`) but none for the mirror. The money existed twice — in RM's wallet, and in Main's till —
+and only one of those was true.
+
+### D49 — an inter-branch handover is a transfer; only against an untracked drawer is it an adjustment
+
+The primitive that records a handover *as itself* is the one the system already has for value
+moving between two of the company's own accounts: **a Fund Transfer between the two branches'
+cash accounts.** `moveTransferFunds` never checks an account's type, so Main's drawer → RM's
+drawer is a legal posting, and it is the only one that leaves both sets of books true at once —
+the giver's till falls by ₱15,150, the receiver's rises by it, and the company nets to zero.
+
+It is blocked for exactly one reason, and it is the right reason: **D17**. A transfer debits the
+source branch's drawer, and the source needs an open shift to carry that. Main's 10-22 shift is
+open; Reina Mercedes has never had a shift at all — drawer ₱0, not a ledger row ever — and
+nothing in this design creates one retroactively. RM's drawer is *untracked*, and against an
+untracked drawer no paired entry can be correct: the other half of the transfer would land in a
+till the books know nothing about.
+
+So the one-sided booking is `adjustment_in`, and its shape was chosen deliberately:
+
+| recorded as | result | why not |
+|---|---|---|
+| `adjustment_in` on Main's drawer | +₱15,150 on the till, filed under **Adjustments** | the truth: the drawer physically gained the money the books never saw |
+| a `cash_in` | debit on the till | a Cash-In is a channel-funding movement; booked here it would push Main's 10-22 close to **OVER ₱15,150** |
+| `loan_received` on RM's wallet | double-credits RM | the transfer already credited it — the pair would read ₱30,300 |
+| `other_income` | books a movement as earnings | the company is not earning from itself, and income distorts the totals |
+| nothing | close reads OVER ₱15,150 | this is the state the system was in |
+
+The picker's hint states the rule the operator needs to tell the cases apart: *only* for cash
+whose other branch does not track its drawer; where both drawers are tracked, transfer between
+them instead.
+
+**Both directions now wait for a second signature.** An adjustment is the only entry with no
+customer or lender behind it — nothing and nobody exists to vouch for the figure — and four
+non-administrator accounts hold `transactions.write`. Before this change `adjustment_out` let a
+counter refill or empty a till on one signature; now either direction posts as a request from
+anyone but an administrator, who settles it at once because the cash has already moved by the
+time the row is written. The rule lives in `controlledApproval`, beside the same rule for
+borrowings, so the two cannot drift apart.
+
+**This is not a borrowing, and borrowings cannot express it.** `borrowingsOutstanding` is one
+company-wide running net — credits minus debits, all lenders mixed, from the start of the books
+to the end of the period. It answers what the company owes people *outside* it, so an internal
+handover would fail to net to zero at the company level, inflate the figure an operator reads as
+"what we owe" with no way to tell internal from external, and have no home for Main's side — the
+system models borrowed money but has no "we lent money" code. The `loan_received` /
+`loan_repayment` pair stays for genuine outside lenders, and it already handles the
+borrowed-by-transfer, repaid-in-cash combination (D47). One counter shape, three recordings: own
+branch with both drawers tracked → transfer; own branch with the other drawer untracked →
+`adjustment_in`; an outside lender → the borrowed pair.
+
+**Implemented** in `1fc5741` (the code, the picker entry, `controlledApproval`, and the tests)
+and `7ab9ec5` (the form mirror — the amount header, the payee field and the settlement banner
+now read "in" and "awaiting approval" like the entry they describe). Both deployed to production;
+backend rebuild + PM2 restart on 23 Oct 2026.
+
+What remains is the operator's, not the code's: **Record cash event → Adjustment in → ₱15,150 on
+Main's drawer, reference TRF-2026-000002, dated 2026-10-22, before the 10-22 shift closes.**
+Expected closing absorbs the credit, and the count at close reads variance ₱0 instead of
+OVER ₱15,150.
