@@ -175,7 +175,24 @@ test('an Adjustment Out debits the account it lands on; an Adjustment In credits
   assert.equal(out.paymentMethod, 'cash', "the drawer's own account answers the tender question");
   assert.equal(out.entryType, 'debit', 'the drawer hands the money out');
   assert.equal(out.cashBehavior, 'out', 'the badge reads: cash leaves the drawer');
-  assert.equal(out.finalStatus, 'completed', 'an adjustment is not one of the controlled types — it settles at once');
+  // Controlled since the cash-event picker grew Adjustment In. The sign work
+  // above is untouched; what changed is who may settle one. An adjustment has
+  // no customer or lender behind it, so it is the only entry that moves the
+  // drawer on its own — `transactions.write` is held by operators as well as
+  // administrators, and a till a counter could refill or empty alone is what
+  // the second signature exists to stop.
+  assert.equal(out.finalStatus, 'pending', 'a counter cannot settle an adjustment alone');
+
+  const asAdministrator = walletPlan({
+    direction: 'adjustment',
+    code: 'adjustment_out',
+    accountTypeCode: 'cash',
+    amount: 20,
+    fee: 0,
+    isAdminCreator: true,
+    paymentMethod: undefined as unknown as string,
+  });
+  assert.equal(asAdministrator.finalStatus, 'completed', 'an administrator still takes it at once — the cash has already moved');
 
   const intoWallet = walletPlan({ direction: 'adjustment', code: 'adjustment_in', amount: 20, fee: 0 });
   assert.equal(intoWallet.entryType, 'credit', 'money in still credits the account it lands on');

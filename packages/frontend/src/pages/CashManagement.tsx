@@ -264,6 +264,11 @@ const CASH_EVENT_TYPES = [
     hint: 'Money returned to the company by a provider or partner.',
   },
   {
+    code: 'adjustment_in',
+    label: 'Adjustment in',
+    hint: 'Cash the till physically holds that the books never saw — another branch handing over cash whose transfer was already recorded, or a float counted in but never booked. Booked on the drawer (the form\u2019s default), it files under Adjustments and is never income. Only for cash whose other branch does not track its drawer; where both drawers are tracked, transfer between them instead.',
+  },
+  {
     code: 'adjustment_out',
     label: 'Adjustment out',
     hint: 'A correction taken out of the drawer: for a figure that overstated what the till holds \u2014 a reversal that handed back more than the original ever moved. Booked on the drawer (the form\u2019s default), it files under Adjustments and is never spending.',

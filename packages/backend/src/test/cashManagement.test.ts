@@ -893,6 +893,36 @@ test('a borrowing waits for a second signature unless an administrator records i
   });
 });
 
+test('an adjustment waits for a second signature in both directions', () => {
+  // The one type with no customer or lender behind it: an adjustment moves the
+  // drawer on its own. `adjustment_out` takes cash out of the till and
+  // `adjustment_in` puts it there, so a counter holding `transactions.write`
+  // could otherwise empty or refill a drawer alone. Both settle against cash
+  // that has already physically moved, so an administrator still takes one at
+  // once — the same borrowing rule, for the same reason.
+  assert.deepEqual(controlledApproval('adjustment_in', 15150, 3000, true), {
+    controlled: true,
+    requiresApproval: false,
+  });
+  assert.deepEqual(controlledApproval('adjustment_out', 15150, 3000, true), {
+    controlled: true,
+    requiresApproval: false,
+  });
+  assert.deepEqual(controlledApproval('adjustment_in', 15150, 3000, false), {
+    controlled: true,
+    requiresApproval: true,
+  });
+  assert.deepEqual(controlledApproval('adjustment_out', 1, 3000, false), {
+    controlled: true,
+    requiresApproval: true,
+  });
+  // Not threshold-gated. Size has nothing to do with it: a one-peso
+  // adjustment invents a peso exactly as a fifteen-thousand one does, so the
+  // question is only who signed for it.
+  assert.equal(controlledApproval('adjustment_in', 1, 3000, false).requiresApproval, true);
+  assert.equal(controlledApproval('adjustment_in', 1, 999999, true).requiresApproval, false);
+});
+
 test('only controlled types may be created as a pending request', () => {
   // `controlled` is the whole answer the create route needs before it either
   // accepts `status: 'pending'` or refuses it, and a borrowing has to be in

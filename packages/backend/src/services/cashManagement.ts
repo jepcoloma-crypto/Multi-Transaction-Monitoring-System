@@ -469,6 +469,15 @@ export function expenseFeeRefusal(typeCode: string | null | undefined, fee: numb
  *   already arrived in the drawer and leaving the row pending would put the
  *   shift's expected figure behind the physical count until someone approved
  *   it — a variance nobody created.
+ * - **Adjustments** follow that same rule in both directions, and for a
+ *   stronger version of the same reason. Every other type here has a customer
+ *   or a lender behind it; an adjustment has only the drawer, so it is the one
+ *   entry that can move cash with nobody else's money in view — `adjustment_out`
+ *   takes it out of the till and `adjustment_in` puts it there. Both settle
+ *   against cash that has already physically moved, so neither may wait (above).
+ *   But neither may run on one signature either: `transactions.write` is held by
+ *   operators as well as administrators, and a till that a counter can refill
+ *   or empty alone is the thing this queue exists to stop.
  *
  * `controlled` is the other half of the answer: only these types may be created
  * as pending at all, so it is what the create route checks against a caller
@@ -481,10 +490,12 @@ export function controlledApproval(
   isAdminCreator: boolean,
 ): { controlled: boolean; requiresApproval: boolean } {
   const isThresholdGated = typeCode === 'operating_expense' || typeCode === 'cash_payment';
+  const isAdjustment = typeCode === 'adjustment_in' || typeCode === 'adjustment_out';
   const controlled =
     typeCode === 'owner_funding' ||
     typeCode === 'owner_return' ||
     isThresholdGated ||
+    isAdjustment ||
     typeCode === 'loan_received' ||
     typeCode === 'loan_repayment';
   // Both threshold-gated codes share one setting deliberately: they are the two
