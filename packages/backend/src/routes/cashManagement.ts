@@ -485,7 +485,7 @@ router.get('/events/pending', authorize('transactions.approve'), async (req: Req
 
     const rows = await query(
       `SELECT t.id, t.transaction_number, t.amount, t.net_amount, t.status, t.transaction_date,
-              t.description, t.notes, t.reference_number, t.payee, t.created_at,
+              t.description, t.notes, t.reference_number, t.payee, t.created_at, t.updated_at,
               t.rejection_reason, t.created_by, t.approved_by,
               tt.code AS type_code, tt.name AS type_name, tt.direction,
               a.name AS account_name, a.current_balance, b.code AS branch_code, b.name AS branch_name,
