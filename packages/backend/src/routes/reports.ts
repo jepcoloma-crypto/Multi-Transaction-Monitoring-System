@@ -1,6 +1,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
+import { createError } from '../middleware/error';
 import type { AccountLink } from '../middleware/scope';
 import { branchClause, assertBranch, resolveBranchFilter } from '../middleware/scope';
 import { auditLedger } from '../services/ledgerAudit';
@@ -13,9 +14,11 @@ import { isFeeLedgerRow } from '../services/cashManagement';
 import { loadScopedLedger } from '../services/ledgerQuery';
 import { drawerMovements } from '../services/drawerQuery';
 import { netMovement, shiftCoverage } from '../services/shifts';
-import { manilaDateKey } from '../services/manilaTime';
+import { manilaDateKey, parseManilaDateTime, entryDateBounds } from '../services/manilaTime';
 import { buildShiftReport } from '../services/shiftReport';
 import { buildOwnerFundReport, type OwnerFundReport, type OwnerFundSourceRow } from '../services/ownerFundsReport';
+import { buildOutgoingsReport, OUTGOINGS_CODES, type OutgoingsSourceRow } from '../services/outgoingsReport';
+import { buildCashEventsReport, CASH_EVENT_CODES, type CashEventSourceRow } from '../services/cashEventsReport';
 
 const router = Router();
 router.use(authenticate);
@@ -1631,6 +1634,137 @@ router.get('/cash-transactions', authorize('reports.read'), async (req: Request,
       handling,
     });
     res.json({ success: true, data: report });
+  } catch (error) { next(error); }
+});
+
+// A calendar day the operator picked, read in Manila rather than in this host's
+// UTC+3 — taken locally, a window would open five hours before the day it names
+// and drop the last transactions of the day (same rule as the statement's).
+const parseReportDate = (value: unknown, field: string): Date | null => {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = parseManilaDateTime(String(value));
+  if (!parsed) throw createError(400, `${field} must be a valid date`);
+  return parsed;
+};
+
+// ---------------------------------- outgoings ----------------------------------
+//
+// The two forms that pay money out — Record expense (`operating_expense`) and
+// Payments (`cash_payment`) — offer the same categories and only one of them
+// counts as spending (migration 045 keeps cash payments out of EXPENSE_BUCKETS
+// because they are not the cost of running the business). Nothing reads both at
+// once: the expense report sees only the first, Sources and Uses totals them as
+// two bucket lines with no category under either. This is the report that can
+// answer "what did this branch pay out, and for what".
+//
+// Selecting on the two type codes is exactly the statement's two Uses lines and
+// not a second copy of the classifier: `bucketFor` maps nothing else to either
+// bucket, and that equivalence is pinned by a test rather than left to be
+// rediscovered. Ledger rows, not transactions, for the same reason the
+// statement reads them — it has no status filter, so a reversed original stays
+// in its bucket, and a report counting `transactions` would drop it.
+router.get('/outgoings-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const start = parseReportDate(req.query.startDate, 'startDate');
+    const end = parseReportDate(req.query.endDate, 'endDate');
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+
+    const params: any[] = [];
+    let pi = 1;
+    const codePlaceholders = OUTGOINGS_CODES.map(() => `$${pi++}`).join(', ');
+    const conds: string[] = [`tt.code IN (${codePlaceholders})`];
+    params.push(...OUTGOINGS_CODES);
+
+    const bounds = entryDateBounds('l', pi, start, end);
+    conds.push(...bounds.conds);
+    params.push(...bounds.params);
+    pi += bounds.params.length;
+
+    const scope = branchClause(req, 'l', 'accounts.read_all', pi, 'account', branchId ?? null);
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+    }
+
+    const rows = await query<OutgoingsSourceRow>(
+      `SELECT l.id, a.branch_id, b.name AS branch_name, l.entry_type, l.amount,
+              l.source_type, l.entry_date, tt.code AS txn_code, t.payment_method,
+              t.id AS transaction_id, t.transaction_number,
+              tc.id AS category_id, tc.name AS category_name,
+              t.payee, t.reference_number, t.description
+         FROM ledger_entries l
+         JOIN accounts a ON a.id = l.account_id
+         LEFT JOIN branches b ON b.id = a.branch_id
+         LEFT JOIN transactions t ON t.id = l.transaction_id
+         LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+         LEFT JOIN transaction_categories tc ON tc.id = t.transaction_category_id
+        WHERE ${conds.join(' AND ')}`,
+      params,
+    );
+
+    res.json({ success: true, data: buildOutgoingsReport(rows) });
+  } catch (error) { next(error); }
+});
+
+// --------------------------------- cash events ---------------------------------
+//
+// The six things the cash-event form records, plus `adjustment_in`, which that
+// form never offers and which exists as the counter-row a reversal posts: on
+// 2026-10-19 two reversed cash-ins cancelled themselves as `adjustment_out`
+// transactions (probed live). Without `adjustment_in` the Adjustments pair would
+// be reported half — the undoing shown, the undo not — and a reader would take
+// the difference for money that had left the drawer.
+//
+// The window, the scope and the row shape are the statement's own, so the two
+// reports read one period the same way.
+const CASH_EVENTS_NOTE =
+  'Totals cover the recorded events listed here. They are not the Sources and Uses '
+  + 'bucket lines: those also carry rows this report does not list — a transfer fee, a '
+  + 'provider interest credit, an administrator balance edit. Borrowed, repaid and the '
+  + 'borrowings net do match the Borrowings line exactly, and what is still owed stays '
+  + 'owned by the position statement.';
+
+router.get('/cash-events-report', authorize('reports.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const start = parseReportDate(req.query.startDate, 'startDate');
+    const end = parseReportDate(req.query.endDate, 'endDate');
+    const branchId = await resolveBranchFilter(req, req.query.branchId);
+
+    const params: any[] = [];
+    let pi = 1;
+    const codePlaceholders = CASH_EVENT_CODES.map(() => `$${pi++}`).join(', ');
+    const conds: string[] = [`tt.code IN (${codePlaceholders})`];
+    params.push(...CASH_EVENT_CODES);
+
+    const bounds = entryDateBounds('l', pi, start, end);
+    conds.push(...bounds.conds);
+    params.push(...bounds.params);
+    pi += bounds.params.length;
+
+    const scope = branchClause(req, 'l', 'accounts.read_all', pi, 'account', branchId ?? null);
+    if (scope.clause) {
+      conds.push(scope.clause);
+      params.push(...scope.params);
+    }
+
+    const rows = await query<CashEventSourceRow>(
+      `SELECT l.id, a.branch_id, b.name AS branch_name, l.entry_type, l.amount,
+              l.source_type, l.entry_date, tt.code AS txn_code, t.payment_method,
+              t.id AS transaction_id, t.transaction_number, t.status,
+              t.reference_number, t.payee, t.description,
+              u.username AS recorded_by_username
+         FROM ledger_entries l
+         JOIN accounts a ON a.id = l.account_id
+         LEFT JOIN branches b ON b.id = a.branch_id
+         LEFT JOIN transactions t ON t.id = l.transaction_id
+         LEFT JOIN transaction_types tt ON tt.id = t.transaction_type_id
+         LEFT JOIN users u ON u.id = t.created_by
+        WHERE ${conds.join(' AND ')}`,
+      params,
+    );
+
+    const report = buildCashEventsReport(rows);
+    res.json({ success: true, data: { ...report, note: CASH_EVENTS_NOTE } });
   } catch (error) { next(error); }
 });
 
