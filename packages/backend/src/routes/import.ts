@@ -1,10 +1,14 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
-import { resolveNewAccountBranch } from '../middleware/scope';
+import { createError } from '../middleware/error';
+import { assertBranch, resolveNewAccountBranch } from '../middleware/scope';
+import { assertOpenShift } from '../middleware/shiftGate';
 import { createAuditLog } from '../services/audit';
 import { importTypeRefusal } from '../services/cashManagement';
 import { loadingSaleLegs } from '../services/loadingPosting';
+import { netAmountOf, validateMovementInputs } from '../services/movementPlan';
+import { parseManilaDateTime } from '../services/manilaTime';
 import { lockAccounts, updateAccountBalance } from '../services/balance';
 import multer from 'multer';
 
@@ -58,6 +62,16 @@ router.post('/transactions', authorize('transactions.write'), upload.single('fil
     const results = { created: 0, failed: 0, errors: [] as string[] };
     const defaultAccountId = req.body.accountId;
 
+    // A single import may not flood the transaction: every row runs several
+    // queries (lookup, scope, shift gate, lock, insert, ledger) inside one
+    // open transaction, so the row count is capped the way the body-size cap
+    // is — one request should not be able to tie the database up for an
+    // unbounded stretch.
+    const MAX_IMPORT_ROWS = 5000;
+    if (rows.length > MAX_IMPORT_ROWS) {
+      throw createError(400, `Too many rows: an import may hold at most ${MAX_IMPORT_ROWS} rows`);
+    }
+
     for (const row of rows) {
       try {
         const typeName = row.type_name || row.type || row.transaction_type;
@@ -72,38 +86,73 @@ router.post('/transactions', authorize('transactions.write'), upload.single('fil
         if (refusal) { results.errors.push(refusal); results.failed++; continue; }
 
         const amount = parseFloat(row.amount || row.total || '0');
-        if (isNaN(amount) || amount <= 0) { results.errors.push(`Invalid amount: ${row.amount}`); results.failed++; continue; }
+        const fee = parseFloat(row.fee || '0');
+        // The same guards the entry route applies before any rule is consulted
+        // (`validateMovementInputs`), plus the finite-fee check that helper
+        // does not make: a NaN or Infinity fee would otherwise ride the
+        // balance arithmetic below and post nonsense rows.
+        const inputProblem = validateMovementInputs(amount, fee)
+          || (!Number.isFinite(fee) ? 'Fee must be a number' : null);
+        if (inputProblem) { results.errors.push(inputProblem); results.failed++; continue; }
+        if (amount <= 0) { results.errors.push(`Invalid amount: ${row.amount}`); results.failed++; continue; }
 
         const accountId = row.account_id || defaultAccountId;
         if (!accountId) { results.errors.push(`Missing account_id`); results.failed++; continue; }
 
-        const fee = parseFloat(row.fee || '0');
+        // The account has to sit in one of the caller's branches — the same
+        // check the create route makes. Without it, an import is the one path
+        // that can move money on an account in another branch (C2).
+        await assertBranch(req, accountId, 'transactions.write_all', 'Account not found');
+
         const description = row.description || row.note || row.notes || null;
         const reference = row.reference_number || row.reference || null;
-        const txDate = row.transaction_date || row.date || new Date().toISOString();
+        const txDate = row.transaction_date || row.date || null;
+        // Read in Manila the way the create route reads it, and refused here
+        // rather than left for Postgres to fail on, so a bad date is a clean
+        // per-row error instead of a 500.
+        const bookedAt = txDate ? parseManilaDateTime(String(txDate)) : null;
+        if (txDate && !bookedAt) { results.errors.push(`Invalid transaction date: ${txDate}`); results.failed++; continue; }
+
+        // D17: money moves only under an open shift. This is the second half
+        // of the guard the create route runs — a bulk import must not be the
+        // door that lets a closed branch record cash (C2).
+        await assertOpenShift(accountId, txType.code, { eventDate: bookedAt });
 
         const acct = await client.query('SELECT id, current_balance, status FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
         if (!acct.rows[0]) { results.errors.push(`Account not found: ${accountId}`); results.failed++; continue; }
         if (acct.rows[0].status !== 'active') { results.errors.push(`Account not active: ${accountId}`); results.failed++; continue; }
 
+        // The figure the row, its ledger and the balance must all agree on.
+        // Imports carry no fee_added_to_balance column, so the fee is taken as
+        // collected on top — the same default the entry route uses — and the
+        // account moves the net amount, exactly as the single-entry path moves
+        // it (D46): the fee on a cash-out belongs to the till, not to the
+        // account's balance, and this path has no drawer leg to carry it.
+        const netAmount = netAmountOf({
+          direction: txType.direction,
+          amount,
+          fee,
+          feeAddedToBalance: true,
+        }).netAmount;
+
         const prevBalance = parseFloat(acct.rows[0].current_balance);
         let newBalance = prevBalance;
-        if (txType.direction === 'in') newBalance += amount;
-        else if (txType.direction === 'out') newBalance -= amount + fee;
-        else if (txType.direction === 'adjustment') newBalance += (row.direction === 'in' ? amount : -amount);
+        if (txType.direction === 'in') newBalance += netAmount;
+        else if (txType.direction === 'out') newBalance -= netAmount;
+        else if (txType.direction === 'adjustment') newBalance += (row.direction === 'in' ? netAmount : -netAmount);
 
         const txNum = await client.query("SELECT nextval('transactions_transaction_number_seq') as nextval");
         const tx = (await client.query(
           `INSERT INTO transactions (transaction_number, account_id, transaction_type_id, amount, fee, net_amount, reference_number, description, transaction_date, created_by, status)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'completed') RETURNING id`,
-          [txNum.rows[0].nextval, accountId, txType.id, amount, fee, amount, reference, description, txDate, req.user!.userId]
+          [txNum.rows[0].nextval, accountId, txType.id, amount, fee, netAmount, reference, description, bookedAt ?? new Date(), req.user!.userId]
         )).rows[0];
 
         await client.query('UPDATE accounts SET current_balance = $1, updated_at = NOW() WHERE id = $2', [newBalance, accountId]);
         await client.query(
           `INSERT INTO ledger_entries (account_id, transaction_id, source_type, source_id, entry_type, amount, balance_after, description, entry_date)
            VALUES ($1, $2, 'transaction', $2, $3, $4, $5, $6, $7)`,
-          [accountId, tx.id, txType.direction === 'in' ? 'credit' : 'debit', amount, newBalance, description || `Imported ${typeName}`, txDate]
+          [accountId, tx.id, txType.direction === 'in' ? 'credit' : 'debit', netAmount, newBalance, description || `Imported ${typeName}`, bookedAt ?? new Date()]
         );
 
         results.created++;
@@ -218,6 +267,13 @@ router.post('/loading', authorize('loading.write'), upload.single('file'), async
     const results = { created: 0, failed: 0, errors: [] as string[] };
     const defaultAccountId = req.body.accountId;
 
+    // Same cap as the transactions import: every row runs several queries
+    // inside one open transaction.
+    const MAX_IMPORT_ROWS = 5000;
+    if (rows.length > MAX_IMPORT_ROWS) {
+      throw createError(400, `Too many rows: an import may hold at most ${MAX_IMPORT_ROWS} rows`);
+    }
+
     for (const row of rows) {
       try {
         const productName = row.product_name || row.product;
@@ -231,6 +287,14 @@ router.post('/loading', authorize('loading.write'), upload.single('file'), async
         const accountId = row.account_id || defaultAccountId;
         if (!accountId) { results.errors.push('Missing account_id'); results.failed++; continue; }
 
+        // Loading deducts cost from the account and raises the drawer at once,
+        // so the account must be the caller's and the branch's shift must be
+        // open — the same guards the single loading entry route applies (D17).
+        // Without them an import is the one path that can move another
+        // branch's money, or post cash with no drawer open to receive it (C2).
+        await assertBranch(req, accountId, 'loading.write_all', 'Account not found');
+        await assertOpenShift(accountId);
+
         // A bulk row is still a posting: active accounts only, same line the
         // entry route and the transactions import hold. The legacy fund must
         // stop receiving money the moment the cutover freezes it, however many
@@ -239,7 +303,12 @@ router.post('/loading', authorize('loading.write'), upload.single('file'), async
         if (!acctStatus.rows[0]) { results.errors.push(`Account not found: ${accountId}`); results.failed++; continue; }
         if (acctStatus.rows[0].status !== 'active') { results.errors.push(`Account not active: ${accountId}`); results.failed++; continue; }
 
-        const quantity = parseInt(row.quantity || '1');
+        const quantity = parseInt(row.quantity || '1', 10);
+        if (!Number.isInteger(quantity) || quantity <= 0) {
+          results.errors.push(`Invalid quantity: ${row.quantity}`);
+          results.failed++;
+          continue;
+        }
         const customerNumber = row.customer_number || row.customer;
         if (!customerNumber) { results.errors.push('Missing customer_number'); results.failed++; continue; }
 
