@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { manilaDateTimeLabel } from '../lib/format';
+import Pagination from '../components/Pagination';
 
 interface AuditLog {
   id: string;
@@ -127,21 +128,7 @@ export default function AuditLogs() {
         </table>
       </div>
 
-      {pagination.totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2">
-          {Array.from({ length: pagination.totalPages }, (_, i) => i + 1).map((page) => (
-            <button
-              key={page}
-              onClick={() => fetchLogs(page)}
-              className={`px-3 py-1 rounded-lg text-sm ${
-                page === pagination.page ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              {page}
-            </button>
-          ))}
-        </div>
-      )}
+      <Pagination page={pagination.page} totalPages={pagination.totalPages} total={pagination.total} onPageChange={fetchLogs} showTotal={false} />
     </div>
   );
 }

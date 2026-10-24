@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { api } from '../lib/api';
 import { manilaDayLabel } from '../lib/format';
+import Pagination from '../components/Pagination';
 import { Plus, Search, Edit2, Trash2, X } from 'lucide-react';
 
 interface User {
@@ -271,21 +272,7 @@ export default function Users() {
         </table>
       </div>
 
-      {pagination.totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2">
-          {Array.from({ length: pagination.totalPages }, (_, i) => i + 1).map((page) => (
-            <button
-              key={page}
-              onClick={() => fetchUsers(page)}
-              className={`px-3 py-1 rounded-lg text-sm ${
-                page === pagination.page ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}
-            >
-              {page}
-            </button>
-          ))}
-        </div>
-      )}
+      <Pagination page={pagination.page} totalPages={pagination.totalPages} total={pagination.total} onPageChange={fetchUsers} showTotal={false} />
 
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">

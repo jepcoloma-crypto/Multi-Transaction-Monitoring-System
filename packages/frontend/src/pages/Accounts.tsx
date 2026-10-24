@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, manilaDateValue, manilaDateTimeValue, paymentMethodLabel, paymentMethodOptions } from '../lib/format';
 import { useAuth } from '../contexts/AuthContext';
+import Pagination from '../components/Pagination';
 import { Plus, Search, Edit2, Eye, X, Wallet, DollarSign, Trash2, Undo2 } from 'lucide-react';
 
 interface Account {
@@ -433,16 +434,7 @@ export default function Accounts() {
         </table>
       </div>
 
-      {pagination.totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2">
-          {Array.from({ length: pagination.totalPages }, (_, i) => i + 1).map((page) => (
-            <button key={page} onClick={() => fetchAccounts(page)}
-              className={`px-3 py-1 rounded-lg text-sm ${page === pagination.page ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
-              {page}
-            </button>
-          ))}
-        </div>
-      )}
+      <Pagination page={pagination.page} totalPages={pagination.totalPages} total={pagination.total} onPageChange={fetchAccounts} showTotal={false} />
 
       {/* Account Detail Modal */}
       {showDetail && (
