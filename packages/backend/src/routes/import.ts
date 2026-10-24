@@ -9,6 +9,7 @@ import { importTypeRefusal } from '../services/cashManagement';
 import { loadingSaleLegs } from '../services/loadingPosting';
 import { netAmountOf, validateMovementInputs } from '../services/movementPlan';
 import { parseManilaDateTime } from '../services/manilaTime';
+import { assertReferenceIsNew } from '../services/referenceRule';
 import { lockAccounts, updateAccountBalance } from '../services/balance';
 import multer from 'multer';
 
@@ -105,7 +106,11 @@ router.post('/transactions', authorize('transactions.write'), upload.single('fil
         await assertBranch(req, accountId, 'transactions.write_all', 'Account not found');
 
         const description = row.description || row.note || row.notes || null;
-        const reference = row.reference_number || row.reference || null;
+        // Normalised to text here, not at the column: a JSON import can carry
+        // the reference as a number, and the rule reads only strings — the
+        // value stored and the value checked have to be the same one.
+        const referenceRaw = row.reference_number || row.reference || null;
+        const reference = referenceRaw == null ? null : String(referenceRaw).trim() || null;
         const txDate = row.transaction_date || row.date || null;
         // Read in Manila the way the create route reads it, and refused here
         // rather than left for Postgres to fail on, so a bad date is a clean
@@ -117,6 +122,11 @@ router.post('/transactions', authorize('transactions.write'), upload.single('fil
         // of the guard the create route runs — a bulk import must not be the
         // door that lets a closed branch record cash (C2).
         await assertOpenShift(accountId, txType.code, { eventDate: bookedAt });
+
+        // A bulk row is still one event, so it carries the same reference rule
+        // the form does. On this transaction's client, so a reference repeated
+        // inside the same file meets the row inserted above and is refused.
+        await assertReferenceIsNew(client, { accountId, referenceNumber: reference, eventDate: bookedAt });
 
         const acct = await client.query('SELECT id, current_balance, status FROM accounts WHERE id = $1 FOR UPDATE', [accountId]);
         if (!acct.rows[0]) { results.errors.push(`Account not found: ${accountId}`); results.failed++; continue; }

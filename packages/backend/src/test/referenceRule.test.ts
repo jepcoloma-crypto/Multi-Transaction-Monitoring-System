@@ -80,7 +80,22 @@ test('nothing is refused when no standing row is found', async () => {
 
   await assertReferenceIsNew(db, { accountId: 'acc-1', referenceNumber: '36855', eventDate: onDay });
 
-  assert.equal(calls.length, 1, 'exactly one lookup, not a read followed by a write');
+  assert.equal(calls.length, 2, 'one lock and one lookup, not a read followed by a write');
+  assert.match(calls[0].text, /pg_advisory_xact_lock/);
+  assert.match(calls[1].text, /FROM transactions t/);
+});
+
+test('the check is serialised on the account before it reads', async () => {
+  // Two submissions can both run the SELECT before either INSERT lands. The
+  // transaction-scoped advisory lock is what makes the second one wait for the
+  // first to commit. Keyed on the account — not the reference — so an import
+  // holds one lock per account it touches rather than one per row.
+  const { db, calls } = stub(null);
+  await assertReferenceIsNew(db, { accountId: 'acc-1', referenceNumber: '555', eventDate: onDay });
+
+  assert.match(calls[0].text, /pg_advisory_xact_lock\(hashtextextended\(\$1, 0\)\)/);
+  assert.deepEqual(calls[0].params, ['acc-1']);
+  assert.equal(calls[0].params.length, 1);
 });
 
 test('the window is the Manila day, not the server clock or UTC', async () => {
@@ -90,7 +105,7 @@ test('the window is the Manila day, not the server clock or UTC', async () => {
   const { db, calls } = stub(null);
   await assertReferenceIsNew(db, { accountId: 'acc-1', referenceNumber: '1', eventDate: '2026-10-06T00:30' });
 
-  const [, start, end] = calls[0].params;
+  const [, start, end] = calls[1].params;
   assert.equal(start, '2026-10-05T16:00:00.000Z', 'Manila midnight on the 6th, as an instant');
   assert.equal(end, '2026-10-06T16:00:00.000Z', 'a fixed 24 hours on, because the Philippines has no DST');
 });
@@ -99,7 +114,7 @@ test('the day is taken from the row being written, not from now', async () => {
   const { db, calls } = stub(null);
   await assertReferenceIsNew(db, { accountId: 'acc-1', referenceNumber: '1', eventDate: priorDay });
 
-  const [, start] = calls[0].params;
+  const [, start] = calls[1].params;
   assert.equal(start, '2026-10-04T16:00:00.000Z', 'the 5th, however far off today is');
 });
 
@@ -110,8 +125,8 @@ test('only the caller\'s own account is asked about', async () => {
   const { db, calls } = stub(null);
   await assertReferenceIsNew(db, { accountId: 'acc-1', referenceNumber: '68975', eventDate: onDay });
 
-  assert.match(calls[0].text, /t\.account_id = \$1/);
-  assert.equal(calls[0].params[0], 'acc-1');
+  assert.match(calls[1].text, /t\.account_id = \$1/);
+  assert.equal(calls[1].params[0], 'acc-1');
 });
 
 test('a reversed original does not stand in the way of its re-entry', async () => {
@@ -122,7 +137,7 @@ test('a reversed original does not stand in the way of its re-entry', async () =
   await assertReferenceIsNew(db, { accountId: 'acc-1', referenceNumber: '36855', eventDate: onDay });
 
   assert.match(
-    calls[0].text,
+    calls[1].text,
     /t\.status IS DISTINCT FROM 'reversed'/,
     'a row that has been undone no longer holds the reference — and a NULL status must count as standing, not as free',
   );
@@ -136,13 +151,13 @@ test('a row is allowed to keep the reference it already has', async () => {
     accountId: 'acc-1', referenceNumber: '555', eventDate: onDay, excludeId: 'tx-own',
   });
 
-  assert.match(calls[0].text, /t\.id <> \$5/);
-  assert.equal(calls[0].params[4], 'tx-own');
+  assert.match(calls[1].text, /t\.id <> \$5/);
+  assert.equal(calls[1].params[4], 'tx-own');
 
   // And the same check without an exclusion stays a four-parameter query.
   const bare = stub(null);
   await assertReferenceIsNew(bare.db, { accountId: 'acc-1', referenceNumber: '555', eventDate: onDay });
-  assert.equal(bare.calls[0].params.length, 4);
+  assert.equal(bare.calls[1].params.length, 4);
 });
 
 test('matching ignores the case the reference was typed in', async () => {
@@ -151,8 +166,8 @@ test('matching ignores the case the reference was typed in', async () => {
   const { db, calls } = stub(null);
   await assertReferenceIsNew(db, { accountId: 'acc-1', referenceNumber: 'gcX123', eventDate: onDay });
 
-  assert.match(calls[0].text, /UPPER\(t\.reference_number\) = UPPER\(\$4\)/);
-  assert.equal(calls[0].params[3], 'gcX123', 'the value is bound, never interpolated');
+  assert.match(calls[1].text, /UPPER\(t\.reference_number\) = UPPER\(\$4\)/);
+  assert.equal(calls[1].params[3], 'gcX123', 'the value is bound, never interpolated');
 });
 
 test('the lookup is limited to one row', async () => {
@@ -162,5 +177,5 @@ test('the lookup is limited to one row', async () => {
   const { db, calls } = stub(null);
   await assertReferenceIsNew(db, { accountId: 'acc-1', referenceNumber: '9', eventDate: onDay });
 
-  assert.match(calls[0].text, /LIMIT 1/);
+  assert.match(calls[1].text, /LIMIT 1/);
 });

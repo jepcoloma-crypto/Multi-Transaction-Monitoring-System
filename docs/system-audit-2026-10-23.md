@@ -126,7 +126,7 @@ From `docs/system-gaps-plan.md` (2026-10-17):
 |---|---|
 | Alerts never fire | ✅ **Fixed** — `startAlertScheduler()` runs at startup (`index.ts:118`), every 15 min with an overlap guard. |
 | Money arrives as strings | ✅ **Fixed** — `types.setTypeParser(1700, ...)` in `connection.ts:22`. |
-| Duplicate reference numbers accepted | ❌ **Still open** — no partial unique index; only the two shift partial indexes exist in migrations. |
+| Duplicate reference numbers accepted | 🟡 **Rule in place; now race-safe and applied to imports** — `services/referenceRule.ts` has refused a standing duplicate (same account, Manila day, case-insensitive, excluding reversed) on create and edit since `05f8d8f`. The remaining holes were concurrency and the import path, both closed on 2026-10-24 (transaction-scoped account lock + per-row check in the transactions import). Still no unique index: the rule's account/day/case/reversed semantics cannot be a plain index. |
 | Off-machine backups | ❌ **Still open** — scheduler has no backup hook; manual, same-disk. |
 
 ---

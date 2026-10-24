@@ -15,6 +15,15 @@
 // So the number stays taken only while another row still stands under it:
 // same account, same Manila day, and a status that is not 'reversed'. A reversed
 // row has been undone, and the reference is free for the entry that replaces it.
+//
+// A check-then-write is only as safe as the gap between its halves, so the check
+// takes a transaction-scoped advisory lock on the account first. Two submissions
+// carrying the same reference now queue on that lock: the second one's SELECT
+// runs after the first commits and finds its row. Scoped to the account rather
+// than to the reference so a bulk import holds one lock per account it touches,
+// not one per row — advisory locks are re-entrant within a transaction, and the
+// lock table is finite. Every path that writes an operator-typed reference
+// (creation, the administrator's edit, the transactions import) asks this.
 
 import { createError } from '../middleware/error';
 import { eventDateKey, parseDateKey } from './manilaTime';
@@ -53,6 +62,13 @@ export async function assertReferenceIsNew(db: ReferenceDb, check: ReferenceChec
   // becoming the reason a real transaction is refused.
   if (!dayStart) return;
   const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+  // Serialise the check against other checks on the same account, so the
+  // SELECT below cannot miss a row that a concurrent submission has written but
+  // not yet committed. Transaction-scoped: it is released at COMMIT/ROLLBACK,
+  // so a caller that does not run inside a transaction gets no protection —
+  // every current caller does (`BEGIN` on its own client).
+  await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [check.accountId]);
 
   const params: any[] = [check.accountId, dayStart.toISOString(), dayEnd.toISOString(), reference];
   const exclude = check.excludeId
