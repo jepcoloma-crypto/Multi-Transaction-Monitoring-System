@@ -3,9 +3,11 @@ interface PaginationProps {
   totalPages: number;
   total: number;
   onPageChange: (page: number) => void;
+  /** The page already prints the count in its header; skip repeating it here. */
+  showTotal?: boolean;
 }
 
-export default function Pagination({ page, totalPages, total, onPageChange }: PaginationProps) {
+export default function Pagination({ page, totalPages, total, onPageChange, showTotal = true }: PaginationProps) {
   if (totalPages <= 1) return null;
 
   const pages: (number | '...')[] = [];
@@ -20,8 +22,8 @@ export default function Pagination({ page, totalPages, total, onPageChange }: Pa
   }
 
   return (
-    <div className="flex items-center justify-between pt-4 border-t">
-      <p className="text-sm text-gray-500">{total} result(s)</p>
+    <div className={`flex items-center pt-4 border-t ${showTotal ? 'justify-between' : 'justify-end'}`}>
+      {showTotal && <p className="text-sm text-gray-500">{total} result(s)</p>}
       <div className="flex items-center gap-1">
         <button onClick={() => onPageChange(page - 1)} disabled={page <= 1}
           className="px-3 py-1.5 rounded-lg text-sm disabled:opacity-40 disabled:cursor-not-allowed bg-gray-100 text-gray-700 hover:bg-gray-200">

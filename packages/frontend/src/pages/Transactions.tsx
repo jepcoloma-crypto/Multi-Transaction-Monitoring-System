@@ -6,6 +6,7 @@ import { Link } from 'react-router-dom';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil, Ban, History } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
+import Pagination from '../components/Pagination';
 import { ShiftGatedButton } from '../components/ShiftGatedButton';
 import { feeRuleLabel, groupFeeRules } from '../lib/feeRuleLabel';
 
@@ -764,16 +765,17 @@ export default function Transactions() {
         </table>
       </div>
 
-      {pagination.totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2">
-          {Array.from({ length: pagination.totalPages }, (_, i) => i + 1).map((page) => (
-            <button key={page} onClick={() => fetchTransactions(page)}
-              className={`px-3 py-1 rounded-lg text-sm ${page === pagination.page ? 'bg-primary-600 text-white' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}>
-              {page}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* The shared windowed control, not one button per page: a busy month
+          reaches 28+ pages, and rendering them all pushed the row past the
+          card's width. The window keeps first/last and the pages around the
+          one you are on, with an ellipsis between. */}
+      <Pagination
+        page={pagination.page}
+        totalPages={pagination.totalPages}
+        total={pagination.total}
+        onPageChange={fetchTransactions}
+        showTotal={false}
+      />
 
       {showDetail && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
