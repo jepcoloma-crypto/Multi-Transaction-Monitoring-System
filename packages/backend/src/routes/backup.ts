@@ -1,5 +1,6 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { authenticate, authorize } from '../middleware/auth';
+import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -15,6 +16,28 @@ const BACKUP_DIR = path.join(process.cwd(), 'backups');
 
 if (!fs.existsSync(BACKUP_DIR)) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
+}
+
+// A backup name is only ever something the listing wrote — a timestamped
+// `.sql` file — so the accept set is deliberately narrow. `path.join` does not
+// confine a filename to its directory: `..%2F..%2F.env` decodes, normalizes
+// out of BACKUP_DIR, and `res.download` or `fs.unlinkSync` would happily act
+// on whatever it resolved to. The listing, the restore, the delete and the
+// download all route through this one gate, so a name that cannot be listed
+// cannot be acted on either.
+const BACKUP_FILENAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*\.sql$/;
+
+function backupPath(filename: unknown): string {
+  if (typeof filename !== 'string' || !BACKUP_FILENAME_RE.test(filename)) {
+    throw createError(400, 'Invalid backup filename');
+  }
+  const filepath = path.join(BACKUP_DIR, filename);
+  // The belt beside the regex: path normalization must not leave the backups
+  // directory even on a platform where a separator is not `/`.
+  if (!filepath.startsWith(BACKUP_DIR + path.sep)) {
+    throw createError(400, 'Invalid backup filename');
+  }
+  return filepath;
 }
 
 router.use(authenticate);
@@ -75,17 +98,31 @@ router.post('/create', authorize('settings.write'), async (req: Request, res: Re
 router.post('/restore', authorize('settings.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { filename } = req.body;
-    if (!filename) throw new Error('Filename is required');
+    if (!filename) throw createError(400, 'Filename is required');
 
-    const filepath = path.join(BACKUP_DIR, filename);
-    if (!fs.existsSync(filepath)) throw new Error('Backup file not found');
+    const filepath = backupPath(filename);
+    if (!fs.existsSync(filepath)) throw createError(404, 'Backup file not found');
 
     const dbHost = process.env.DB_HOST || 'localhost';
     const dbPort = process.env.DB_PORT || '5432';
     const dbName = process.env.DB_NAME || 'multi_account_monitor';
     const dbUser = process.env.DB_USER || 'postgres';
 
-    await execAsync(`psql -h ${dbHost} -p ${dbPort} -U ${dbUser} -d ${dbName} -f "${filepath}"`);
+    // A restore overwrites everything the books hold, so the current state is
+    // dumped first — the same invocation /create uses, under a name that says
+    // what it was for. A restore that goes wrong then has something to come
+    // back to; /clean already treats a backup as non-optional, and restore is
+    // the same shape of risk. If the safety dump fails, nothing is restored.
+    const safety = `pre-restore-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.sql`;
+    const safetyPath = path.join(BACKUP_DIR, safety);
+    await execAsync(
+      `pg_dump -h ${dbHost} -p ${dbPort} -U ${dbUser} -d ${dbName} --no-owner --no-acl --clean --if-exists -Fp -f "${safetyPath}"`
+    );
+
+    // The whole restore runs in one transaction, so a file that fails halfway
+    // rolls everything back instead of leaving the database in the state the
+    // dump reached — half old, half new, and recoverable only by guessing.
+    await execAsync(`psql -h ${dbHost} -p ${dbPort} -U ${dbUser} -d ${dbName} --single-transaction -f "${filepath}"`);
 
     await createAuditLog({
       userId: req.user!.userId,
@@ -93,7 +130,7 @@ router.post('/restore', authorize('settings.write'), async (req: Request, res: R
       entity: 'system',
       entityId: filename,
       ipAddress: req.ip,
-      newData: { filename },
+      newData: { filename, safetyDump: safety },
     });
 
     res.json({ success: true, data: { message: 'Database restored successfully' } });
@@ -193,8 +230,8 @@ router.post('/clean', authorize('settings.write'), async (req: Request, res: Res
 
 router.delete('/:filename', authorize('settings.write'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const filepath = path.join(BACKUP_DIR, req.params.filename);
-    if (!fs.existsSync(filepath)) throw new Error('Backup file not found');
+    const filepath = backupPath(req.params.filename);
+    if (!fs.existsSync(filepath)) throw createError(404, 'Backup file not found');
 
     fs.unlinkSync(filepath);
 
@@ -214,8 +251,8 @@ router.delete('/:filename', authorize('settings.write'), async (req: Request, re
 
 router.get('/download/:filename', authorize('settings.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const filepath = path.join(BACKUP_DIR, req.params.filename);
-    if (!fs.existsSync(filepath)) throw new Error('Backup file not found');
+    const filepath = backupPath(req.params.filename);
+    if (!fs.existsSync(filepath)) throw createError(404, 'Backup file not found');
 
     res.download(filepath);
   } catch (error: any) {
