@@ -1,13 +1,18 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { query, queryOne } from '../database/connection';
+import { query, queryOne, getClient } from '../database/connection';
 import { authenticate, authorize } from '../middleware/auth';
 import { branchClause } from '../middleware/scope';
 import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
+import { splitCustomerName, rejoinCustomerName, distinctContacts } from '../services/customerTransfer';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
 router.use(authenticate);
+
+// One run of the register action covers a whole backlog. Bounded so a
+// mistyped body cannot turn into an unbounded write loop.
+const MAX_REGISTRATIONS = 500;
 
 router.get('/', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -96,6 +101,18 @@ router.get('/from-transactions', authorize('transactions.read'), async (req: Req
               COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as total_fees,
               MAX(t.transaction_date) as last_transaction_date,
               MIN(t.transaction_date) as first_transaction_date,
+              -- Whether this name is already a registered customer, so the
+              -- tab can say so instead of listing the finished ones beside
+              -- the work left to do. Both ways it happens count: a row that
+              -- was chosen from the registered picker (customer_id), and a
+              -- typed name that happens to match one. LIMIT 1 on the lookup
+              -- because two customers sharing a name is one row to report,
+              -- not two.
+              bool_or(t.customer_id IS NOT NULL) as linked,
+              (SELECT c.id FROM customers c
+                WHERE btrim(c.first_name || ' ' || c.last_name) = t.customer_name
+                  AND c.status = 'active'
+                ORDER BY c.created_at LIMIT 1) as registered_customer_id,
               -- The contact belongs to the name, not to one row, and the same
               -- name is re-typed with a new number when it changes. So the one
               -- on the newest transaction is shown, not MAX(): that compares
@@ -130,6 +147,220 @@ router.get('/from-transactions', authorize('transactions.read'), async (req: Req
     });
   } catch (error) {
     next(error);
+  }
+});
+
+// The work list behind "Register customers…": every name typed through the
+// Type Manually tab that carries a mobile number and is not yet attached to a
+// registered customer.
+//
+// Scoped to the caller's branches the same way the tab above it is, so a
+// branch operator never sees — let alone registers — another branch's names.
+// Read permission rather than write, because this returns nothing the tab does
+// not already show; registering is the part that needs transactions.write.
+router.get('/from-transactions/unregistered', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const search = req.query.search as string;
+
+    const conditions: string[] = [
+      `t.customer_name IS NOT NULL AND btrim(t.customer_name) <> ''`,
+      `t.customer_id IS NULL`,
+      `t.customer_contact IS NOT NULL AND btrim(t.customer_contact) <> ''`,
+    ];
+    const params: any[] = [];
+    let paramIndex = 1;
+
+    if (search) {
+      conditions.push(`t.customer_name ILIKE $${paramIndex++}`);
+      params.push(`%${search}%`);
+    }
+    const scope = branchClause(req, 't', 'transactions.read_all', paramIndex);
+    if (scope.clause) {
+      conditions.push(scope.clause);
+      params.push(...scope.params);
+      paramIndex = scope.paramIndex;
+    }
+
+    const rows = await query(
+      `SELECT t.customer_name,
+              count(*)::int as transaction_count,
+              array_agg(t.customer_contact ORDER BY t.transaction_date DESC, t.transaction_number DESC) as contacts,
+              reg.id as registered_customer_id,
+              reg.first_name as registered_first_name,
+              reg.last_name as registered_last_name
+       FROM transactions t
+       -- LIMIT 1 inside the lateral, not because a name has several matches
+       -- today but because count(*) would silently multiply if it ever did.
+       LEFT JOIN LATERAL (
+         SELECT c.id, c.first_name, c.last_name
+         FROM customers c
+         WHERE btrim(c.first_name || ' ' || c.last_name) = t.customer_name
+           AND c.status = 'active'
+         ORDER BY c.created_at
+         LIMIT 1
+       ) reg ON true
+       WHERE ${conditions.join(' AND ')}
+       GROUP BY t.customer_name, reg.id, reg.first_name, reg.last_name
+       ORDER BY MAX(t.transaction_date) DESC`,
+      params
+    );
+
+    res.json({
+      success: true,
+      data: rows.map((row: any) => {
+        const contacts = distinctContacts(row.contacts);
+        // A name a registered customer already holds is filled in from that
+        // customer, so confirming it attaches rather than creating a second
+        // one with the same name. Everything else is the split of what was
+        // typed, for the operator to correct before anything is written.
+        const parts = row.registered_customer_id
+          ? { firstName: row.registered_first_name, lastName: row.registered_last_name }
+          : splitCustomerName(row.customer_name);
+        return {
+          customerName: row.customer_name,
+          transactionCount: row.transaction_count,
+          contacts,
+          phone: contacts[0] || '',
+          firstName: parts.firstName,
+          lastName: parts.lastName,
+          alreadyRegistered: Boolean(row.registered_customer_id),
+          customerId: row.registered_customer_id || null,
+        };
+      }),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// How a reviewed list becomes customers.
+//
+// One transaction, so a failure part way through leaves nothing half done:
+// either a name ends up as a customer with its history attached, or nothing
+// about it changed at all. The rows attached are the ones carrying that name —
+// and only those still unattached, so re-running the same list later links
+// nothing twice.
+//
+// Money is untouched by design. This writes a customers row and points
+// transactions at it; no amount, balance or ledger entry is involved.
+router.post('/from-transactions/register', authorize('transactions.write'), async (req: Request, res: Response, next: NextFunction) => {
+  const client = await getClient();
+  let started = false;
+  try {
+    const list = Array.isArray(req.body?.customers) ? req.body.customers : null;
+    if (!list || list.length === 0) throw createError(400, 'Nothing to register');
+    if (list.length > MAX_REGISTRATIONS) {
+      throw createError(400, `At most ${MAX_REGISTRATIONS} names per run — register them in batches`);
+    }
+
+    await client.query('BEGIN');
+    started = true;
+
+    // One run at a time. Two operators pressing Confirm together would each
+    // find "no such customer yet" and each create one. Transaction-scoped, so
+    // it releases itself at COMMIT or ROLLBACK.
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', ['customers:register']);
+
+    let created = 0;
+    let attached = 0;
+    let phonesFilled = 0;
+    const results: { customerName: string; customerId: string; action: 'created' | 'linked'; linkedTransactions: number; phoneFilled: boolean }[] = [];
+
+    for (const item of list) {
+      const customerName = String(item?.customerName ?? '').trim();
+      const firstName = String(item?.firstName ?? '').trim();
+      const lastName = String(item?.lastName ?? '').trim();
+      const phone = String(item?.phone ?? '').trim() || null;
+
+      if (!customerName) throw createError(400, 'Each entry needs the name it came from');
+      if (!firstName || !lastName) {
+        throw createError(400, `"${customerName}" needs both a first and a last name before it can be registered`);
+      }
+      if (firstName.length > 100 || lastName.length > 100) {
+        throw createError(400, `"${customerName}" — names are limited to 100 characters`);
+      }
+      if (phone && phone.length > 50) {
+        throw createError(400, `"${customerName}" — the contact number is limited to 50 characters`);
+      }
+
+      // A pair that rejoins to the name on the transactions is the person who
+      // is already registered — attach, do not add a second one. A pair the
+      // operator corrected no longer rejoins, and that is allowed: the
+      // attachment is by customer_id, which does not depend on the name
+      // matching afterwards.
+      const name = rejoinCustomerName({ firstName, lastName });
+      const existing = await client.query(
+        `SELECT id, phone FROM customers
+          WHERE btrim(first_name || ' ' || last_name) = $1 AND status = 'active'
+          ORDER BY created_at
+          LIMIT 1`,
+        [name],
+      );
+
+      let customerId: string;
+      let action: 'created' | 'linked';
+      let phoneFilled = false;
+      if (existing.rows[0]) {
+        customerId = existing.rows[0].id;
+        action = 'linked';
+        // The registered picker never asks for a mobile number, so a customer
+        // registered through it has none on file. Filling the empty field is
+        // the transfer this action is named for; a number already there is
+        // the operator's and is left alone.
+        if (phone && !existing.rows[0].phone) {
+          await client.query(
+            'UPDATE customers SET phone = $1, updated_at = NOW() WHERE id = $2',
+            [phone, customerId],
+          );
+          phoneFilled = true;
+        }
+      } else {
+        const inserted = await client.query(
+          `INSERT INTO customers (first_name, last_name, phone, created_by)
+           VALUES ($1, $2, $3, $4) RETURNING id`,
+          [firstName, lastName, phone, req.user!.userId],
+        );
+        customerId = inserted.rows[0].id;
+        action = 'created';
+        created++;
+      }
+
+      // On the caller's branch scope, so a branch operator cannot attach rows
+      // it could not see in the list this came from.
+      const linkScope = branchClause(req, 't', 'transactions.read_all', 3);
+      const linked = await client.query(
+        `UPDATE transactions t SET customer_id = $1, updated_at = NOW()
+          WHERE t.customer_name = $2 AND t.customer_id IS NULL${linkScope.clause ? ` AND ${linkScope.clause}` : ''}`,
+        [customerId, customerName, ...linkScope.params],
+      );
+      const linkedCount = linked.rowCount ?? 0;
+      attached += linkedCount;
+      if (phoneFilled) phonesFilled++;
+
+      results.push({ customerName, customerId, action, linkedTransactions: linkedCount, phoneFilled });
+    }
+
+    await client.query('COMMIT');
+    started = false;
+
+    // One entry for the whole run, written after the commit. Per-name entries
+    // inside the transaction would run on the pool and outlive a rollback,
+    // recording registrations that never happened — the one thing an audit
+    // trail must not do.
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'customer.registered',
+      entity: 'customer',
+      ipAddress: req.ip,
+      newData: { created, attached, phonesFilled, customers: results },
+    });
+
+    res.json({ success: true, data: { created, attached, phonesFilled, customers: results } });
+  } catch (error) {
+    if (started) await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
   }
 });
 

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, manilaDayLabel, transactionTypeLabel } from '../lib/format';
-import { Plus, Search, Edit2, Trash2, X, Phone, Mail, MapPin, ArrowUpRight, ArrowDownLeft } from 'lucide-react';
+import { Plus, Search, Edit2, Trash2, X, Phone, Mail, MapPin, ArrowUpRight, ArrowDownLeft, UserPlus } from 'lucide-react';
 
 interface Customer {
   id: string;
@@ -30,6 +30,22 @@ interface TxCustomer {
   total_fees: number;
   last_transaction_date: string;
   first_transaction_date: string;
+  linked: boolean;
+  registered_customer_id: string | null;
+}
+
+// One row of the register review: what was typed on the transactions, split
+// into the two columns `customers` requires, for the operator to correct
+// before anything is written.
+interface RegisterRow {
+  customerName: string;
+  transactionCount: number;
+  contacts: string[];
+  phone: string;
+  firstName: string;
+  lastName: string;
+  alreadyRegistered: boolean;
+  selected: boolean;
 }
 
 interface TxDetail {
@@ -54,6 +70,10 @@ export default function Customers() {
   const [formData, setFormData] = useState({
     firstName: '', lastName: '', email: '', phone: '', address: '', idType: '', idNumber: '', notes: '',
   });
+  const [registerRows, setRegisterRows] = useState<RegisterRow[]>([]);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [registerLoading, setRegisterLoading] = useState(false);
+  const [registerBusy, setRegisterBusy] = useState(false);
 
   const fetchCustomers = async (page = 1) => {
     setLoading(true);
@@ -134,6 +154,73 @@ export default function Customers() {
     setFormData({ firstName: '', lastName: '', email: '', phone: '', address: '', idType: '', idNumber: '', notes: '' });
     setShowModal(true);
   };
+
+  const openRegister = async () => {
+    setRegisterOpen(true);
+    setRegisterLoading(true);
+    try {
+      const rows = await api.get<RegisterRow[]>('/customers/from-transactions/unregistered');
+      setRegisterRows(rows.map((r) => ({ ...r, selected: true })));
+    } catch (err: any) {
+      alert(err.message);
+      setRegisterOpen(false);
+    } finally {
+      setRegisterLoading(false);
+    }
+  };
+
+  const updateRegisterRow = (customerName: string, patch: Partial<RegisterRow>) => {
+    setRegisterRows((rows) => rows.map((r) => (r.customerName === customerName ? { ...r, ...patch } : r)));
+  };
+
+  const submitRegister = async () => {
+    const chosen = registerRows.filter((r) => r.selected);
+    if (chosen.length === 0) {
+      alert('Nothing is selected.');
+      return;
+    }
+    // Caught here rather than left to the server to refuse the whole run over:
+    // a single-token name has no surname to split, and the operator decides
+    // what it is — or unchecks it.
+    const incomplete = chosen.filter((r) => !r.firstName.trim() || !r.lastName.trim());
+    if (incomplete.length > 0) {
+      alert(`These still need a last name: ${incomplete.map((r) => r.customerName).join(', ')}`);
+      return;
+    }
+    if (!confirm(
+      `Register ${chosen.length} customer(s)? The transactions already recorded under those names ` +
+      'will be attached to them. Amounts and balances are not touched.',
+    )) return;
+
+    setRegisterBusy(true);
+    try {
+      const result = await api.post<{ created: number; attached: number; phonesFilled: number }>(
+        '/customers/from-transactions/register',
+        {
+          customers: chosen.map((r) => ({
+            customerName: r.customerName,
+            firstName: r.firstName.trim(),
+            lastName: r.lastName.trim(),
+            phone: r.phone.trim(),
+          })),
+        },
+      );
+      alert(
+        `Created ${result.created} customer(s), attached ${result.attached} transaction(s)` +
+        `${result.phonesFilled ? `, and filled ${result.phonesFilled} missing number(s) on customers already on file` : ''}.`,
+      );
+      setRegisterOpen(false);
+      fetchTxCustomers(txPagination.page);
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setRegisterBusy(false);
+    }
+  };
+
+  const registerSelected = registerRows.filter((r) => r.selected).length;
+  const registerNew = registerRows.filter((r) => r.selected && !r.alreadyRegistered).length;
+  const registerLinkOnly = registerRows.filter((r) => r.selected && r.alreadyRegistered).length;
 
   return (
     <div className="space-y-6">
@@ -241,6 +328,9 @@ export default function Customers() {
                 className="input pl-10" />
             </div>
             <button onClick={() => fetchTxCustomers(1)} className="btn-secondary">Search</button>
+            <button onClick={openRegister} className="btn-primary flex items-center gap-2 ml-auto">
+              <UserPlus className="w-4 h-4" /> Register customers…
+            </button>
           </div>
 
           <div className="card overflow-x-auto">
@@ -267,6 +357,11 @@ export default function Customers() {
                     <tr key={i} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleViewTxDetail(c.customer_name)}>
                       <td className="px-4 py-3">
                         <p className="text-sm font-medium text-primary-600 hover:underline">{c.customer_name}</p>
+                        {(c.linked || c.registered_customer_id) && (
+                          <span className="inline-flex items-center mt-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-green-100 text-green-700">
+                            Registered
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-sm text-gray-600">
                         {c.customer_contact
@@ -431,6 +526,102 @@ export default function Customers() {
                   ))}
                 </div>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Register customers from transactions */}
+      {registerOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg w-full max-w-4xl max-h-[90vh] flex flex-col">
+            <div className="flex items-center justify-between p-4 border-b">
+              <div>
+                <h3 className="text-lg font-semibold">Register customers from transactions</h3>
+                <p className="text-sm text-gray-500">
+                  {registerLoading || registerRows.length > 0
+                    ? `${registerRows.length} name(s) with a contact number · ${registerNew} new · ${registerLinkOnly} already registered`
+                    : 'Nothing left to register'}
+                </p>
+              </div>
+              <button onClick={() => setRegisterOpen(false)} disabled={registerBusy}><X className="w-5 h-5" /></button>
+            </div>
+            <div className="p-4 overflow-y-auto flex-1">
+              {registerLoading ? (
+                <p className="text-center text-gray-500 py-8">Loading...</p>
+              ) : registerRows.length === 0 ? (
+                <p className="text-center text-gray-500 py-8">
+                  Every name that carries a contact number is already registered.
+                </p>
+              ) : (
+                <table className="w-full min-w-[720px]">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-2 py-2">
+                        <input type="checkbox" aria-label="Select all"
+                          checked={registerRows.every((r) => r.selected)}
+                          onChange={(e) => setRegisterRows((rows) => rows.map((r) => ({ ...r, selected: e.target.checked })))} />
+                      </th>
+                      <th className="text-left px-2 py-2 text-xs font-medium text-gray-500 uppercase">As typed</th>
+                      <th className="text-left px-2 py-2 text-xs font-medium text-gray-500 uppercase">First name</th>
+                      <th className="text-left px-2 py-2 text-xs font-medium text-gray-500 uppercase">Last name</th>
+                      <th className="text-left px-2 py-2 text-xs font-medium text-gray-500 uppercase">Mobile</th>
+                      <th className="text-right px-2 py-2 text-xs font-medium text-gray-500 uppercase">Txns</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {registerRows.map((r, i) => (
+                      <tr key={r.customerName} className={r.selected ? '' : 'opacity-50'}>
+                        <td className="px-2 py-2">
+                          <input type="checkbox" aria-label={`Select ${r.customerName}`} checked={r.selected}
+                            onChange={(e) => updateRegisterRow(r.customerName, { selected: e.target.checked })} />
+                        </td>
+                        <td className="px-2 py-2">
+                          <p className="text-sm font-medium text-gray-900">{r.customerName}</p>
+                          {r.alreadyRegistered && (
+                            <span className="inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-blue-100 text-blue-700">
+                              link only
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          <input type="text" value={r.firstName} disabled={!r.selected}
+                            onChange={(e) => updateRegisterRow(r.customerName, { firstName: e.target.value })}
+                            className="input text-sm" />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input type="text" value={r.lastName} disabled={!r.selected}
+                            onChange={(e) => updateRegisterRow(r.customerName, { lastName: e.target.value })}
+                            className="input text-sm" />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input type="tel" value={r.phone} list={`contacts-${i}`} disabled={!r.selected}
+                            onChange={(e) => updateRegisterRow(r.customerName, { phone: e.target.value })}
+                            className="input text-sm" />
+                          {/* Every number that name has ever carried, so the
+                              one on the newest transaction is preselected and
+                              the older ones are still one click away. */}
+                          <datalist id={`contacts-${i}`}>
+                            {r.contacts.map((c) => <option key={c} value={c} />)}
+                          </datalist>
+                        </td>
+                        <td className="px-2 py-2 text-sm text-right text-gray-500">{r.transactionCount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div className="flex items-center justify-between gap-2 p-4 border-t">
+              <p className="text-xs text-gray-400">
+                Registers the customer and attaches their transactions. Amounts and balances are not touched.
+              </p>
+              <div className="flex gap-2">
+                <button onClick={() => setRegisterOpen(false)} disabled={registerBusy} className="btn-secondary text-sm">Cancel</button>
+                <button onClick={submitRegister} disabled={registerBusy || registerLoading || registerSelected === 0} className="btn-primary text-sm">
+                  {registerBusy ? 'Registering…' : `Register ${registerSelected}`}
+                </button>
+              </div>
             </div>
           </div>
         </div>
