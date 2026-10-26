@@ -11,6 +11,7 @@ import { errorHandler } from './middleware/error';
 import { sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security';
 import routes from './routes';
 import { startAlertScheduler } from './services/scheduler';
+import { checkSecrets } from './services/configGuard';
 
 const app = express();
 
@@ -100,6 +101,18 @@ app.use(errorHandler);
 
 async function startServer() {
   try {
+    // Before the database is touched, not after: a refusal here leaves pm2
+    // with a failed process to report instead of a running server that is
+    // quietly signing tokens with a published constant. Everything is printed
+    // first so the reason survives the generic catch below, and no message
+    // ever contains a value that could be a real secret.
+    const { errors, warnings } = checkSecrets(process.env);
+    for (const warning of warnings) console.warn(`Configuration warning: ${warning}`);
+    if (errors.length > 0) {
+      for (const error of errors) console.error(`Configuration error: ${error}`);
+      throw new Error('Refusing to start with an unsafe production configuration');
+    }
+
     const client = await pool.connect();
     console.log('Database connected successfully');
     client.release();
