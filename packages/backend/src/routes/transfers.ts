@@ -8,6 +8,7 @@ import { createError } from '../middleware/error';
 import { createAuditLog } from '../services/audit';
 import { lookupProviderCharge } from '../services/providerCharge';
 import { mintTransferReference } from '../services/transferReference';
+import { withTransaction } from '../services/withTransaction';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -284,17 +285,37 @@ router.post('/:id/reject', authorize('transfers.approve'), async (req: Request, 
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
     if (!reason) throw createError(400, 'Rejection reason is required');
 
-    const transfer = await queryOne('SELECT * FROM transfers WHERE id = $1', [req.params.id]);
-    if (!transfer) throw createError(404, 'Transfer not found');
-    await assertBranch(req, transfer.source_account_id, 'transfers.write_all', 'Transfer not found');
-    if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be rejected');
-    if (transfer.created_by === req.user!.userId) throw createError(400, 'You cannot reject your own transfer');
+    const updated = await withTransaction(async (client) => {
+      // Rejection has to be serialised against approval, and this lock is what
+      // does it. Approve already takes it (see above); reject read without one,
+      // so it could observe a transfer still 'pending', wait out approve's row
+      // lock, and then write 'rejected' over a transfer whose funds had already
+      // moved — the books and the status line disagreeing about money. Held for
+      // the whole transaction, so the decision and the write it authorises are
+      // one indivisible step.
+      const transfer = (await client.query('SELECT * FROM transfers WHERE id = $1 FOR UPDATE', [req.params.id])).rows[0];
+      if (!transfer) throw createError(404, 'Transfer not found');
+      await assertBranch(req, transfer.source_account_id, 'transfers.write_all', 'Transfer not found');
+      if (transfer.status !== 'pending') throw createError(400, 'Only pending transfers can be rejected');
+      if (transfer.created_by === req.user!.userId) throw createError(400, 'You cannot reject your own transfer');
 
-    const updated = await queryOne(
-      `UPDATE transfers SET status = 'rejected', failure_reason = $1, rejected_by = $2, updated_at = NOW() WHERE id = $3 RETURNING *`,
-      [reason, req.user!.userId, req.params.id]
-    );
+      // Belt and braces on top of the lock. The FOR UPDATE above already means
+      // nothing can have changed the status underneath this read, so the guard
+      // cannot fire today — it exists so that the invariant lives in the WHERE
+      // clause rather than in a check someone must not delete, and so a future
+      // caller who drops the lock still cannot write over a completed transfer.
+      const row = (await client.query(
+        `UPDATE transfers SET status = 'rejected', failure_reason = $1, rejected_by = $2, updated_at = NOW()
+          WHERE id = $3 AND status = 'pending' RETURNING *`,
+        [reason, req.user!.userId, req.params.id]
+      )).rows[0];
+      if (!row) throw createError(409, 'This transfer has already been actioned');
+      return row;
+    });
 
+    // After the commit, and only one entry for the run: an entry written inside
+    // the transaction runs on that connection and would outlive a rollback,
+    // recording a rejection that never happened.
     await createAuditLog({
       userId: req.user!.userId, action: 'transfer.rejected', entity: 'transfer', entityId: req.params.id, ipAddress: req.ip,
       oldData: { status: 'pending' }, newData: { reason },
