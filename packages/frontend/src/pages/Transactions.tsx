@@ -6,6 +6,8 @@ import { Link } from 'react-router-dom';
 import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil, Ban, History } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
+import CustomerSelect from '../components/CustomerSelect';
+import type { CustomerOption } from '../components/CustomerSelect';
 import Pagination from '../components/Pagination';
 import { ShiftGatedButton } from '../components/ShiftGatedButton';
 import { feeRuleLabel, groupFeeRules } from '../lib/feeRuleLabel';
@@ -94,7 +96,8 @@ interface FeeRule {
   tiers?: { id: string; min_amount: number; max_amount: number | null; fee_value: number; fee_type: string }[];
 }
 interface Account { id: string; name: string; provider_name: string; status: string; current_balance: number; masked_account_number: string; }
-interface CustomerOption { id: string; first_name: string; last_name: string; phone: string | null; }
+// CustomerOption comes from components/CustomerSelect — the picker owns the
+// shape it reads, so the form cannot drift away from it.
 interface Summary { totalMoneyIn: number; totalMoneyOut: number; totalFees: number; transactionCount: number; netMovement: number; }
 
 // What POST /transactions/preview promises: the rows the save would write,
@@ -1128,16 +1131,16 @@ export default function Transactions() {
                     </div>
                   </div>
                     {formData.customerMode === 'select' ? (
-                      <select value={formData.customerId} onChange={(e) => {
-                        const cid = e.target.value;
-                        const cust = customers.find(c => c.id === cid);
-                        setFormData({ ...formData, customerId: cid, customerName: cust ? `${cust.first_name} ${cust.last_name}` : '' });
-                      }} className="input text-sm">
-                        <option value="">-- Select a customer --</option>
-                        {customers.map(c => (
-                          <option key={c.id} value={c.id}>{c.last_name}, {c.first_name} {c.phone ? `(📱 ${c.phone})` : ''}</option>
-                        ))}
-                      </select>
+                      <CustomerSelect
+                        customers={customers}
+                        value={formData.customerId}
+                        onChange={(cid) => {
+                          const cust = customers.find(c => c.id === cid);
+                          setFormData({ ...formData, customerId: cid, customerName: cust ? `${cust.first_name} ${cust.last_name}` : '' });
+                        }}
+                        placeholder="-- Select a customer --"
+                        className="input text-sm"
+                      />
                     ) : (
                       <div className="grid grid-cols-2 gap-2">
                         <input type="text" value={formData.customerName} onChange={(e) => setFormData({ ...formData, customerName: e.target.value })} className="input text-sm" placeholder="Customer name" />
