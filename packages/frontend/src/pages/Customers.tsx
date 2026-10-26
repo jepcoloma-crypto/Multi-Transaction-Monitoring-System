@@ -23,13 +23,13 @@ interface Customer {
 
 interface TxCustomer {
   customer_name: string;
+  customer_contact: string | null;
   transaction_count: number;
   total_in: number;
   total_out: number;
   total_fees: number;
   last_transaction_date: string;
   first_transaction_date: string;
-  phone?: string | null;
 }
 
 interface TxDetail {
@@ -244,10 +244,11 @@ export default function Customers() {
           </div>
 
           <div className="card overflow-x-auto">
-            <table className="w-full min-w-[900px]">
+            <table className="w-full min-w-[1000px]">
               <thead className="bg-gray-50">
                 <tr>
                   <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Customer Name</th>
+                  <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase">Contact #</th>
                   <th className="text-center px-4 py-3 text-xs font-medium text-gray-500 uppercase">Transactions</th>
                   <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total In</th>
                   <th className="text-right px-4 py-3 text-xs font-medium text-gray-500 uppercase">Total Out</th>
@@ -258,15 +259,19 @@ export default function Customers() {
               </thead>
               <tbody className="divide-y divide-gray-200">
                 {loading ? (
-                  <tr><td colSpan={7} className="text-center py-8 text-gray-500">Loading...</td></tr>
+                  <tr><td colSpan={8} className="text-center py-8 text-gray-500">Loading...</td></tr>
                 ) : txCustomers.length === 0 ? (
-                  <tr><td colSpan={7} className="text-center py-8 text-gray-500">No manually-typed customers found</td></tr>
+                  <tr><td colSpan={8} className="text-center py-8 text-gray-500">No manually-typed customers found</td></tr>
                 ) : (
                   txCustomers.map((c, i) => (
                     <tr key={i} className="hover:bg-gray-50 cursor-pointer" onClick={() => handleViewTxDetail(c.customer_name)}>
                       <td className="px-4 py-3">
                         <p className="text-sm font-medium text-primary-600 hover:underline">{c.customer_name}</p>
-                        {c.phone && <p className="text-xs text-gray-400">{c.phone}</p>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-gray-600">
+                        {c.customer_contact
+                          ? <span className="flex items-center gap-1"><Phone className="w-3 h-3" /> {c.customer_contact}</span>
+                          : <span className="text-gray-400">—</span>}
                       </td>
                       <td className="px-4 py-3 text-sm text-center">{c.transaction_count}</td>
                       <td className="px-4 py-3 text-sm text-right text-green-600">{formatCurrency(c.total_in)}</td>

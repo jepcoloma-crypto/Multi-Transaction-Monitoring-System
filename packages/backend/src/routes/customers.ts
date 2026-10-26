@@ -95,7 +95,13 @@ router.get('/from-transactions', authorize('transactions.read'), async (req: Req
               COALESCE(SUM(CASE WHEN tt.direction = 'out' THEN t.amount + chg.total ELSE 0 END), 0) as total_out,
               COALESCE(SUM(COALESCE(t.fee, 0) + chg.total), 0) as total_fees,
               MAX(t.transaction_date) as last_transaction_date,
-              MIN(t.transaction_date) as first_transaction_date
+              MIN(t.transaction_date) as first_transaction_date,
+              -- The contact belongs to the name, not to one row, and the same
+              -- name is re-typed with a new number when it changes. So the one
+              -- on the newest transaction is shown, not MAX(): that compares
+              -- phone numbers as text and would silently pick the largest.
+              (array_agg(t.customer_contact ORDER BY t.transaction_date DESC, t.transaction_number DESC)
+                 FILTER (WHERE t.customer_contact IS NOT NULL AND btrim(t.customer_contact) <> ''))[1] as customer_contact
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN LATERAL (
