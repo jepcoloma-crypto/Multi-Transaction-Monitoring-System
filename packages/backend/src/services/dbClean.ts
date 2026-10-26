@@ -123,11 +123,20 @@ export interface BackupFile {
 // Back up before anything is cleaned. Plain-SQL pg_dump to the shared backups
 // directory, verified by exit code and a non-trivial size — the same bar the
 // existing backup route holds itself to.
-export async function takeBackup(): Promise<BackupFile> {
+//
+// `filename` overrides the default timestamped name. Only the scheduled
+// backup uses it (backupScheduler.ts names its file for the Manila day, so a
+// rerun of the same day cannot produce a second dump); every other caller
+// wants the timestamp. A supplied name is validated rather than trusted —
+// this function builds a path from it.
+export async function takeBackup(filename?: string): Promise<BackupFile> {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const filename = `backup_${timestamp}.sql`;
-  const filepath = path.join(BACKUP_DIR, filename);
+  const name = filename ?? `backup_${timestamp}.sql`;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.sql$/.test(name)) {
+    throw new Error(`Invalid backup filename: ${JSON.stringify(filename)}`);
+  }
+  const filepath = path.join(BACKUP_DIR, name);
 
   const conn = [
     '-h', config.db.host,
@@ -151,7 +160,7 @@ export async function takeBackup(): Promise<BackupFile> {
     throw new Error(`Backup is only ${stats.size} bytes — refusing to treat that as a real backup.`);
   }
 
-  return { filename, filepath, size: stats.size };
+  return { filename: name, filepath, size: stats.size };
 }
 
 export interface CleanResult {

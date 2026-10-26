@@ -11,6 +11,7 @@ import { errorHandler } from './middleware/error';
 import { sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security';
 import routes from './routes';
 import { startAlertScheduler } from './services/scheduler';
+import { startBackupScheduler } from './services/backupScheduler';
 import { checkSecrets } from './services/configGuard';
 
 const app = express();
@@ -129,6 +130,10 @@ async function startServer() {
     // being true if `instances` is ever raised, and the scheduler would then
     // need a lock rather than this comment.
     startAlertScheduler();
+
+    // The nightly database backup, at 3 AM Manila. Same reasoning as above
+    // for starting it here; same single-instance assumption.
+    startBackupScheduler();
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);

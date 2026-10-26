@@ -79,6 +79,21 @@ It only acts with `--commit`, and a real clean takes a verified backup before it
 
 Because the CLI runs outside PM2 it reads `.env`, where `NODE_ENV` is still `development`, so the production guard (`clean.ts:114`) does not trip and `--allow-production` is not needed. If you instead export `NODE_ENV=production` in that shell, the guard will refuse without it.
 
+### The nightly database backup
+
+`services/backupScheduler.ts` (started in `startServer()`) takes a database backup automatically **every day at 3:00 AM Philippine time** — the quietest hour this system has, so the dump is a clean end-of-day snapshot. Manila has no DST, so the time is computed from the constant +8 offset, not the host clock (the host runs Asia/Riyadh).
+
+- **Files** land in the same `backups/` directory as `backup_auto_<YYYY-MM-DD>.sql` (the Manila day), produced by the same `takeBackup()` the admin endpoint uses — so they appear in the admin backup list and restore through the same endpoint.
+- **Retention:** the 15 most recent days are kept; older `backup_auto_*` files are deleted after each run. Set `BACKUP_RETENTION_DAYS` in `packages/backend/.env` to change it (1–3650; an invalid value logs a warning and falls back to 15). Only `backup_auto_*` files are ever pruned — manual backups in that directory are untouched regardless of age. **Note:** adding it to `.env` requires `pm2 startOrReload ecosystem.config.js --update-env`, since the scheduler runs inside the PM2 process.
+- **Restart-safe and catch-up:** restarting at any hour is safe (the day's filename makes the run idempotent). If the process was down at 3 AM, the next boot takes the missed backup immediately.
+- **Failure is visible:** a failed dump logs to the PM2 error log and writes a `backup.auto.failed` entry to the audit trail; a successful one writes `backup.auto`. Check last night's result on the audit page or:
+
+```powershell
+Get-ChildItem "C:\Projects\Mutli-Account Balance & Transaction Monitoring System\backups\backup_auto_*.sql" | Sort-Object LastWriteTime -Descending | Select-Object -First 3 Name, Length, LastWriteTime
+```
+
+This is an **on-machine** backup: it defends against a bad query, clean, or migration — not against losing the machine. Off-machine copies remain an open gap (`docs/system-gaps-plan.md`).
+
 **Startup messages** appear in `~/.pm2/logs/monitor-backend-out.log` and `-error.log`. Request-log lines are timestamped; startup lines are not.
 
 ---
