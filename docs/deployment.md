@@ -63,7 +63,7 @@ So:
 |---|---|---|
 | Startup secret guard | `services/configGuard.ts`, called at the top of `startServer()` (`index.ts`) | Refuses to start when `JWT_SECRET` is missing, shorter than 32 characters, or a placeholder published in this repository. Prints a warning — not a refusal — when `DB_PASSWORD` is unset or still `development`'s `postgres`. |
 | `POST /api/backup/clean` | `routes/backup.ts:174` | Returns **403**. This is designed, not a regression: wiping live data is not something the running server should offer. Use the CLI below. |
-| CORS | `index.ts:37-41` | `CORS_ORIGIN` unset → `false`, browsers blocked entirely. `*` → reflect any origin. Otherwise a comma-separated list of origins. Currently `*`. |
+| CORS | `index.ts:37-41` | `CORS_ORIGIN` unset → `false`, browsers blocked entirely. `*` → reflect any origin. Otherwise a comma-separated list of origins. Currently `https://monitor.primeclc.com` (the Vercel frontend); see the note below. |
 | Startup log | `index.ts:109` | Prints `Environment: production`. |
 
 Development is deliberately never refused by the guard: a fresh clone with no `.env` runs on `dev-jwt-secret`, and that first run should work.
@@ -99,6 +99,6 @@ Both suites must be fully green. The backend count moves as tests are added, so 
 
 ## Operational follow-ups still open
 
-- **`DB_PASSWORD` is still `postgres`.** Acceptable only while the database listens on localhost. Until it is rotated, every production start prints a configuration warning — that warning is the reminder, not noise.
-- **`CORS_ORIGIN='*'` with `credentials: true`** reflects any origin while cookies are accepted (tracked as H-SEC-5 in `docs/system-audit-2026-10-23.md`). Setting `CORS_ORIGIN` to the real frontend origin and the API host closes it without any code change — but note that removing the variable entirely blocks browsers outright (see the CORS row above).
+- **Database authentication is not enforced at all — `DB_PASSWORD` is decorative.** The live PostgreSQL 18 (`C:\Program Files\PostgreSQL\18\data\pg_hba.conf`) authenticates loopback with `trust`, so the server accepts the `postgres` role with a wrong password or with none. Rotating `DB_PASSWORD` on its own therefore changes nothing; the config-guard warning about the default password is pointing at a value that is never checked. The real work is `trust` → `scram-sha-256`, and it is **not a single-project change**: four projects share this instance and three of them supply no password in their connection string (see `docs/db-auth-hardening-plan.md` before touching `pg_hba.conf`). `listen_addresses` is `'*'` on both instances, so the only thing between 5432 and the LAN is the Windows firewall.
+- **CORS is locked to the real frontend origin (H-SEC-5, closed).** `CORS_ORIGIN` was `*` with `credentials: true`, which reflected any origin — verified live before the change: `https://evil.example.com` received its own `Access-Control-Allow-Origin` back. It is now `https://monitor.primeclc.com`, the Vercel frontend, identified by its `x-vercel-id` response header and by the deployed bundle calling `https://mapi.primeclc.com/api`. Because a wrong value here blocks every browser outright, verify after any edit: the legitimate origin must be echoed on GET, on POST (including a 401, so the login form can read its own error), and on the `OPTIONS` preflight that precedes any `Authorization` request.
 - **Off-machine backups are not in place.** Skipped deliberately for now; `docs/system-gaps-plan.md` records the gap.
