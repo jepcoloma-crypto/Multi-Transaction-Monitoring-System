@@ -97,6 +97,25 @@
     margin: 10mm;
   }
 
+  /* The cash receipt is the one sheet here that prints on a roll: 80mm wide,
+     the opposite of the landscape reports above. A named page carries these
+     rules for exactly the elements marked `page: receipt` (Chrome 110+), so a
+     receipt print never resizes the reports and a report print never shrinks
+     to 80mm.
+     Two lengths, not `80mm auto`: Chrome drops that form as invalid and the
+     receipt would silently print landscape. 200mm is the page, not the paper
+     — tall enough that no realistic receipt paginates; a continuous roll
+     feeds what is printed. Width is the roll width: change it here when the
+     paper stock changes. */
+  @page receipt {
+    size: 80mm 200mm;
+    margin: 0;
+  }
+
+  .receipt-sheet {
+    page: receipt;
+  }
+
   * {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;

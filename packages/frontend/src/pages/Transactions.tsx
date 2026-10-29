@@ -3,13 +3,15 @@ import type { ReactNode } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, manilaDateTimeValue, paymentMethodCell, paymentMethodOptions, movementPaymentMethodOptions, isCashMovementCode, manilaDayLabel, manilaDateTimeLabel, manilaInputToIso, transactionTypeLabel, cashBehaviorLabel } from '../lib/format';
 import { Link } from 'react-router-dom';
-import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil, Ban, History } from 'lucide-react';
+import { Plus, Search, Eye, X, ArrowUpRight, ArrowDownLeft, Trash2, Pencil, Ban, History, Printer } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import AccountSelect from '../components/AccountSelect';
 import CustomerSelect from '../components/CustomerSelect';
 import type { CustomerOption } from '../components/CustomerSelect';
 import Pagination from '../components/Pagination';
 import { ShiftGatedButton } from '../components/ShiftGatedButton';
+import CashReceipt from '../components/CashReceipt';
+import type { ReceiptTx } from '../components/CashReceipt';
 import { feeRuleLabel, groupFeeRules } from '../lib/feeRuleLabel';
 
 const DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1, 0.25, 0.1, 0.05, 0.01];
@@ -129,6 +131,10 @@ interface PreviewResult {
 export default function Transactions() {
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
+  // The receipt names a branch only when the operator's access names exactly
+  // one: an admin who can see every branch would otherwise stamp a receipt
+  // with a branch this transaction may not belong to.
+  const receiptBranch = user && user.branches.length === 1 ? user.branches[0].name : null;
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [feeRules, setFeeRules] = useState<FeeRule[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -140,6 +146,19 @@ export default function Transactions() {
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [showDetail, setShowDetail] = useState<Transaction | null>(null);
+  // Which receipt, if any, is on the paper — the Transactions twin of
+  // CashManagement's printSheet. window.print() prints the whole document, so
+  // the sheet has to be in it for one frame and then gone again — left
+  // standing it would ride along on the next print, wanted or not.
+  const [printReceipt, setPrintReceipt] = useState<ReceiptTx | null>(null);
+  useEffect(() => {
+    if (!printReceipt) return;
+    const frame = requestAnimationFrame(() => {
+      window.print();
+      setPrintReceipt(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [printReceipt]);
   const [editingCharges, setEditingCharges] = useState(false);
   const [chargeItems, setChargeItems] = useState<{ description: string; amount: string }[]>([]);
   const [feeMode, setFeeMode] = useState<'auto' | 'manual'>('auto');
@@ -493,11 +512,27 @@ export default function Transactions() {
     if (!formData.accountId) { setError('Please select an account'); return; }
     if (movementRequested && !formData.paymentMethod) { setError('Please select a payment method'); return; }
     try {
-      await api.post('/transactions', buildCreateBody());
+      const created = await api.post<ReceiptTx>('/transactions', buildCreateBody());
       setShowModal(false);
       setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: 'cash' });
       fetchTransactions(pagination.page);
       fetchSummary();
+
+      // Cash is the tender that gets paper, and the receipt prints itself. The
+      // create answer is the raw table row — no account, type or cashier names
+      // — so the joined view the detail modal reads is fetched back before the
+      // sheet goes up. That read failing must not undo a save that already
+      // happened: the receipt then prints from the row itself, and the number,
+      // amount, status and time — what the counter actually needs — are on it.
+      if (created?.payment_method === 'cash') {
+        let receipt = created;
+        try {
+          receipt = await api.get<ReceiptTx>(`/transactions/${created.id}`);
+        } catch {
+          // the raw row, missing names and all, beats no receipt at all
+        }
+        setPrintReceipt(receipt);
+      }
     } catch (err: any) { setError(err.message); }
   };
 
@@ -558,7 +593,8 @@ export default function Transactions() {
   };
 
   return (
-    <div className="space-y-6">
+    <>
+    <div className={`space-y-6${printReceipt ? ' print:hidden' : ''}`}>
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-gray-900">Transactions</h2>
@@ -901,6 +937,14 @@ export default function Transactions() {
                   </div>
                 )}
               </div>
+
+              {showDetail.payment_method === 'cash' && (
+                <div className="pt-3 border-t">
+                  <button onClick={() => setPrintReceipt(showDetail)} className="btn-secondary text-sm">
+                    <Printer className="mr-1 inline h-3 w-3" /> Print Receipt
+                  </button>
+                </div>
+              )}
 
               {showDetail.status === 'completed' && showDetail.type_code !== 'adjustment_in' && showDetail.type_code !== 'adjustment_out' && (
                 <div className="pt-3 border-t">
@@ -1435,5 +1479,18 @@ export default function Transactions() {
         </div>
       )}
     </div>
+
+    {/* Outside the page root deliberately — window.print() prints the document,
+        and the root above carries print:hidden for exactly as long as a receipt
+        is mounted. */}
+    {printReceipt && (
+      <CashReceipt
+        tx={printReceipt}
+        branchName={receiptBranch}
+        printedBy={user?.username ?? ''}
+        printedAt={new Date()}
+      />
+    )}
+    </>
   );
 }

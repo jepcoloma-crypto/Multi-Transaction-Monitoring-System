@@ -98,6 +98,38 @@ This is an **on-machine** backup: it defends against a bad query, clean, or migr
 
 ---
 
+## Cash receipt printing (thermal)
+
+Saving a transaction whose **payment method is Cash** prints a receipt on the cashier PC's thermal printer, and every cash row in the transaction detail has a **Print Receipt** button for reprints. This is **frontend-only** — no backend change, no PM2 restart; it ships with the normal Vercel deploy.
+
+How it works, for anyone touching the code: the receipt (`src/components/CashReceipt.tsx`) renders outside the Transactions page root for exactly the frame `window.print()` runs, with the root carrying `print:hidden` — the same arrangement as the shift sheets in CashManagement (the sidebar and header are already `print:hidden` in Layout). The paper is a CSS named page: `@page receipt { size: 80mm 200mm; margin: 0 }` in `src/index.css` applies only to elements marked `page: receipt`, so a receipt print never resizes the landscape reports and vice versa. The create response is the raw table row, so after a cash save the app re-reads `GET /transactions/:id` for the joined names; if that read fails the receipt still prints with the figures it has.
+
+### Cashier PC setup (once per machine)
+
+1. Install the printer driver and set the thermal printer as the **Windows default printer** (required only for kiosk printing below).
+2. **Roll width is 80mm** and must match the CSS: `@page receipt { size: 80mm 200mm }` in `packages/frontend/src/index.css`. For 58mm stock change it to `size: 58mm 200mm` and redeploy the frontend. The 200mm is the page height, not a cut length — it only has to exceed the longest receipt.
+3. **Chrome 110 or newer** on that PC (named pages require it; verify with `chrome://version`).
+4. In any Chrome print dialog → *More settings*: scale **100%**, headers and footers **off**.
+5. **Fully automatic (no dialog):** start Chrome with the kiosk-printing flag, e.g. edit the shortcut target to
+   `"C:\Program Files\Google\Chrome\Application\chrome.exe" --kiosk-printing https://monitor.primeclc.com`.
+   **This silences every print from that Chrome window**, not just receipts — shift count sheets and reports also go straight to the default printer with no dialog. That is usually right for a cashier PC (default printer = thermal) and wrong for a manager who prints reports; without the flag, `window.print()` still opens the dialog by itself with the receipt already sized — one click on Print.
+
+### Verification
+
+- Save a cash transaction: paper within a second, headed TRANSACTION RECEIPT, with the branch (when the operator has exactly one), amount, fee, status and cashier.
+- Open the same row from the list → **Print Receipt** → identical sheet (this is the reprint path).
+- Print a report or a shift sheet afterwards: still landscape, unchanged.
+- A non-cash save (GCash, bank, Maya) prints nothing.
+
+### If the paper comes out wrong
+
+- **Landscape / full-size page:** Chrome older than 110, or the `@page receipt` rule was edited away — `@page { size: landscape }` (the reports' rule) is winning.
+- **Blank paper after the receipt:** the driver is feeding the full 200mm page height; shorten it in the same CSS line. The width (80mm) is the part that must be exact.
+- **Receipt clipped or squeezed:** "Fit to page"/scale is on, or the driver paper width is not 80mm — check the dialog's paper size.
+- Printing is entirely client-side; there is nothing about it in the app's logs.
+
+---
+
 ## Before shipping anything
 
 ```powershell
