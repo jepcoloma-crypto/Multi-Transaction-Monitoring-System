@@ -38,9 +38,10 @@ export interface ReceiptTx {
  * arrangement as the shift sheets in CashManagement). `index.css` carries the
  * matching `@page receipt` that sizes the paper to the roll.
  *
- * Every figure here is read straight off the row or computed with the same
- * expression the detail view prints as Account Movement — the receipt must
- * never be the one place that disagrees with the app about money.
+ * Every figure here is read straight off the row. The bottom line is the
+ * total the customer hands over — the price, not a claim about the balance —
+ * so it must agree with the create form's "Customer pays" and the cash
+ * figure the detail drawer prints for this movement.
  */
 export default function CashReceipt(props: {
   tx: ReceiptTx;
@@ -65,13 +66,14 @@ export default function CashReceipt(props: {
   const charges = tx.additional_charges || [];
   const chargesTotal = charges.reduce((sum, c) => sum + Number(c.amount || 0), 0);
 
-  // The detail view's Account Movement, expression for expression, including
-  // its condition: a pending row has moved nothing, so stating a movement for
-  // it would tell the customer the balance changed when it has not.
-  const moved =
-    tx.status === 'completed' || tx.status === 'reversed'
-      ? (tx.fee_added_to_balance ? tx.amount : tx.amount - tx.fee) + chargesTotal
-      : null;
+  // What the customer pays: the amount plus the additional charges printed
+  // above, plus the fee only when it was charged on top
+  // (fee_added_to_balance). A fee carved out of the amount is already inside
+  // `amount`, so adding it there would double-count. Shown for every status —
+  // this is the price of the transaction, not a movement claim; the status
+  // note below is what tells the customer whether the money has moved yet.
+  const total =
+    tx.amount + chargesTotal + (tx.fee_added_to_balance ? tx.fee : 0);
 
   // Same sentences the detail banners read, because a receipt handed across a
   // counter is exactly where "pending" must not look like "done".
@@ -114,7 +116,7 @@ export default function CashReceipt(props: {
         {row('Fee', formatCurrency(tx.fee))}
         {charges.map((c, i) => row(c.description || `Charge ${i + 1}`, formatCurrency(Number(c.amount))))}
         {charges.length > 0 && row('Total additional charges', formatCurrency(chargesTotal), true)}
-        {moved !== null && row('Account movement', formatCurrency(moved), true)}
+        {row('Total', formatCurrency(total), true)}
       </div>
 
       {statusNote && (

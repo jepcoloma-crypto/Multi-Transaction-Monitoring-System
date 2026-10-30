@@ -56,26 +56,31 @@ describe('CashReceipt', () => {
     expect(screen.getByText(`Printed ${manilaDateTimeLabel('2026-10-29T06:05:10.000Z')}`)).toBeTruthy();
   });
 
-  it('moves the account exactly the way the detail view computes it — fee deducted, charges added', () => {
+  it('totals what the customer pays — amount plus charges, fee already inside', () => {
     renderReceipt(sold);
     expect(screen.getByText('₱500.00')).toBeTruthy();
     expect(screen.getByText('₱10.00')).toBeTruthy();
     // The charge appears as its own line and again as the section total.
     expect(screen.getAllByText('₱5.00')).toHaveLength(2);
     expect(screen.getByText('Total additional charges')).toBeTruthy();
-    // 500 − 10 + 5 — the same expression detail view labels Account Movement.
-    expect(screen.getByText('₱495.00')).toBeTruthy();
-  });
-
-  it('adds the fee instead of deducting it when the account carries the fee', () => {
-    renderReceipt({ ...sold, fee_added_to_balance: true });
-    // 500 + 5 — fee rides on top of the amount rather than inside it.
+    // 500 + 5 — the fee was carved from the amount, so it is not added again.
+    expect(screen.getByText('Total')).toBeTruthy();
     expect(screen.getByText('₱505.00')).toBeTruthy();
   });
 
-  it('says plainly that a pending receipt has moved no money', () => {
+  it('adds the fee on top of the amount when the customer paid it separately', () => {
+    renderReceipt({ ...sold, fee_added_to_balance: true });
+    // 500 + 10 + 5 — amount, the on-top fee, and the charge.
+    expect(screen.getByText('₱515.00')).toBeTruthy();
+  });
+
+  it('still totals the price on a pending receipt while saying no money moved', () => {
     renderReceipt({ ...sold, status: 'pending' });
+    // The total is what the customer owes, pending or not — it is not a
+    // claim that the balance changed, which is the note's job.
     expect(screen.queryByText(/Account movement/)).toBeNull();
+    expect(screen.getByText('Total')).toBeTruthy();
+    expect(screen.getByText('₱505.00')).toBeTruthy();
     expect(screen.getByText(/account balance has not changed/)).toBeTruthy();
   });
 
@@ -102,7 +107,10 @@ describe('CashReceipt', () => {
     };
     renderReceipt(rawRow, { branchName: null, printedBy: 'admin' });
     expect(screen.getByText('#44')).toBeTruthy();
-    expect(screen.getByText('₱500.00')).toBeTruthy();
+    // Amount and Total are both ₱500 here (no charges, fee inside the
+    // amount), so the figure legitimately appears twice.
+    expect(screen.getAllByText('₱500.00')).toHaveLength(2);
+    expect(screen.getByText('Total')).toBeTruthy();
     // Account and type are the joins the raw row lacks: said, not invented.
     // The cashier of record isn't missing — it falls back to the session.
     expect(screen.getAllByText('—')).toHaveLength(2);
