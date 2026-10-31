@@ -79,6 +79,16 @@ interface Transaction {
   notes: string | null;
   payment_method: string | null;
   rejection_reason: string | null;
+  // Cash claim: why a pending row waits, who opened the shift the row was
+  // stamped with at creation (the duty operator), and who finally took the
+  // cash. The joined names come from the list/detail SELECTs.
+  pending_reason: string | null;
+  shift_id: string | null;
+  claimed_by: string | null;
+  claimed_at: string | null;
+  claimed_by_username: string | null;
+  shift_opener: string | null;
+  shift_opener_name: string | null;
 }
 
 interface CustomerHistory {
@@ -122,6 +132,8 @@ interface PreviewResult {
   providerCharge: number;
   status: string;
   requiresApproval: boolean;
+  /** Why the previewed row would wait: approval, or cash that has not arrived. */
+  pendingReason: 'approval' | 'cash_receipt' | null;
   paymentMethod: string | null;
   cashBehavior: 'in' | 'out' | 'none';
   accountBalance: number;
@@ -131,6 +143,7 @@ interface PreviewResult {
 export default function Transactions() {
   const { user } = useAuth();
   const isAdmin = user?.roles?.includes('administrator') ?? false;
+  const isManager = user?.roles?.includes('manager') ?? false;
   // The receipt names a branch only when the operator's access names exactly
   // one: an admin who can see every branch would otherwise stamp a receipt
   // with a branch this transaction may not belong to.
@@ -141,7 +154,7 @@ export default function Transactions() {
   const [customers, setCustomers] = useState<CustomerOption[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [pagination, setPagination] = useState({ page: 1, totalPages: 1, total: 0 });
-  const [filters, setFilters] = useState({ search: '', typeId: '', status: '', feeMode: '', accountId: '', startDate: '', endDate: '', minAmount: '', maxAmount: '' });
+  const [filters, setFilters] = useState({ search: '', typeId: '', status: '', feeMode: '', accountId: '', startDate: '', endDate: '', minAmount: '', maxAmount: '', pendingReason: '' });
   const [filterTypes, setFilterTypes] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -168,7 +181,7 @@ export default function Transactions() {
     accountId: '', feeRuleId: '', amount: '',
     fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(),
     feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select' as 'select' | 'manual', customerPhone: '',
-    providerCharge: '', paymentMethod: 'cash',
+    providerCharge: '', paymentMethod: 'cash', cashReceived: true,
   });
   const [error, setError] = useState('');
   const [preview, setPreview] = useState<PreviewResult | null>(null);
@@ -198,6 +211,7 @@ export default function Transactions() {
       if (filters.endDate) params.set('endDate', filters.endDate);
       if (filters.minAmount) params.set('minAmount', filters.minAmount);
       if (filters.maxAmount) params.set('maxAmount', filters.maxAmount);
+      if (filters.pendingReason) params.set('pendingReason', filters.pendingReason);
       const result = await api.get<{ data: Transaction[]; pagination: any }>(`/transactions?${params}`);
       setTransactions(result.data);
       setPagination(result.pagination);
@@ -221,6 +235,27 @@ export default function Transactions() {
   };
 
   const canEdit = (tx: Transaction) => isAdmin && tx.status === 'pending';
+
+  // Cash claim (C1): confirming the cash arrived settles the row through the
+  // same posting path approval uses — this button only says "yes, I have it".
+  const handleClaim = async (id: string) => {
+    if (!confirm('Confirm the cash has been received? This completes the transaction and moves the money.')) return;
+    try {
+      await api.post(`/transactions/${id}/claim`);
+      alert('Cash receipt confirmed — the transaction is completed.');
+      setShowDetail(null);
+      fetchTransactions(pagination.page);
+      fetchSummary();
+    } catch (err: any) { alert(err.message); }
+  };
+
+  // Cash claim (C2): the duty operator — whoever opened the shift this row was
+  // stamped with at creation, since they are the one the cash was handed to —
+  // plus managers and administrators, who cover the times they cannot.
+  const canClaim = (tx: Transaction) =>
+    tx.status === 'pending' &&
+    tx.pending_reason === 'cash_receipt' &&
+    (isAdmin || isManager || (!!user?.id && tx.shift_opener === user.id));
 
   const toInputDateTime = (iso: string) => manilaDateTimeValue(new Date(iso));
 
@@ -437,7 +472,7 @@ export default function Transactions() {
       accountId: accounts.find(a => a.status === 'active')?.id || '', feeRuleId: '',
       amount: '', fee: '0', referenceNumber: '', description: '', customerName: '',
       transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '',
-      providerCharge: '', paymentMethod: 'cash',
+      providerCharge: '', paymentMethod: 'cash', cashReceived: true,
     });
     setCreateCharges([]);
     setFeeMode('auto');
@@ -469,6 +504,12 @@ export default function Transactions() {
       feeAddedToBalance: formData.feeAddedToBalance,
       additionalCharges: validCharges.length > 0 ? validCharges : [],
       providerCharge: chargeApplies ? formData.providerCharge || undefined : undefined,
+      // Cash claim: only a cash tender on a cash-in may declare the cash has
+      // not arrived — the server refuses the flag anywhere else, so it is not
+      // sent there at all.
+      cashReceived: movementRequested && selectedDirection === 'in' && formData.paymentMethod === 'cash'
+        ? formData.cashReceived
+        : undefined,
       notes: formData.notes || undefined,
       customerId: formData.customerMode === 'select' ? formData.customerId || undefined : undefined,
       paymentMethod: movementRequested ? (formData.paymentMethod || undefined) : undefined,
@@ -514,7 +555,7 @@ export default function Transactions() {
     try {
       const created = await api.post<ReceiptTx>('/transactions', buildCreateBody());
       setShowModal(false);
-      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: 'cash' });
+      setFormData({ accountId: '', feeRuleId: '', amount: '', fee: '0', referenceNumber: '', description: '', customerName: '', transactionDate: manilaDateTimeValue(), feeAddedToBalance: true, notes: '', customerId: '', customerMode: 'select', customerPhone: '', providerCharge: '', paymentMethod: 'cash', cashReceived: true });
       fetchTransactions(pagination.page);
       fetchSummary();
 
@@ -536,8 +577,10 @@ export default function Transactions() {
     } catch (err: any) { setError(err.message); }
   };
 
-  const handleReverse = async (id: string) => {
-    const reason = prompt('Reason for reversal:');
+  const handleReverse = async (id: string, presetReason?: string) => {
+    // The cash-claim shortcut (C5) arrives pre-filled but editable: it is the
+    // same reversal flow, just remembering why it was opened.
+    const reason = presetReason ? prompt('Reason for reversal:', presetReason) : prompt('Reason for reversal:');
     if (!reason) return;
     try {
       await api.post(`/transactions/${id}/reverse`, { reason });
@@ -670,6 +713,13 @@ export default function Transactions() {
           <option value="added">Fee on top</option>
           <option value="deducted">Fee inside</option>
         </select>
+        {/* The unclaimed queue (cash claim): the two things a pending row can
+            be waiting for, each named the way the badge names it. */}
+        <select value={filters.pendingReason} onChange={(e) => setFilters({ ...filters, pendingReason: e.target.value })} className="input w-auto" title="Waiting For">
+          <option value="">All Waiting For</option>
+          <option value="cash_receipt">Unclaimed cash</option>
+          <option value="approval">Approval</option>
+        </select>
         <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })}
           className="input w-auto" title="Start Date" />
         <input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })}
@@ -679,7 +729,7 @@ export default function Transactions() {
         <input type="number" placeholder="Max ₱" value={filters.maxAmount} onChange={(e) => setFilters({ ...filters, maxAmount: e.target.value })}
           className="input w-24" />
         <button onClick={() => fetchTransactions(1)} className="btn-secondary">Search</button>
-        <button onClick={() => { setFilters({ search: '', typeId: '', status: '', feeMode: '', accountId: '', startDate: '', endDate: '', minAmount: '', maxAmount: '' }); setTimeout(() => fetchTransactions(1), 0); }}
+        <button onClick={() => { setFilters({ search: '', typeId: '', status: '', feeMode: '', accountId: '', startDate: '', endDate: '', minAmount: '', maxAmount: '', pendingReason: '' }); setTimeout(() => fetchTransactions(1), 0); }}
           className="btn-secondary text-gray-500">Clear</button>
       </div>
 
@@ -746,7 +796,14 @@ export default function Transactions() {
                     ) : <span className="text-gray-400 text-xs">-</span>}
                   </td>
                   <td className="px-4 py-3">
-                    <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' || tx.status === 'rejected' ? 'red' : 'yellow'}`}>{tx.status}</span>
+                    {/* Unclaimed reads as its own thing, not as a slow
+                        approval: the cash has not arrived, and a yellow
+                        "pending" badge hides that behind the ordinary wait. */}
+                    {tx.status === 'pending' && tx.pending_reason === 'cash_receipt' ? (
+                      <span className="badge-orange" title="Cash not yet received — no money has entered the drawer">unclaimed</span>
+                    ) : (
+                      <span className={`badge-${tx.status === 'completed' ? 'green' : tx.status === 'reversed' || tx.status === 'rejected' ? 'red' : 'yellow'}`}>{tx.status}</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-sm text-gray-600">{tx.created_by_username || <span className="text-gray-400">-</span>}</td>
                   {/* The icons must stay on one line. They are inline elements
@@ -824,14 +881,55 @@ export default function Transactions() {
               <button onClick={() => setShowDetail(null)}><X className="w-5 h-5" /></button>
             </div>
             <div className="p-4 space-y-3">
-              {showDetail.status === 'pending' && (
+              {showDetail.status === 'pending' && showDetail.pending_reason === 'cash_receipt' ? (
+                /* Cash claim (C1): not a slow approval — the cash has not
+                   arrived, so nothing has moved and nothing will until the
+                   duty operator confirms it. */
+                <div className="bg-orange-50 border border-orange-200 px-3 py-2 rounded-lg text-sm space-y-2">
+                  <p className="text-orange-800 font-semibold">
+                    UNCLAIMED — cash not yet received; no money has entered the drawer.
+                  </p>
+                  <p className="text-orange-700 text-xs">
+                    Recorded by {showDetail.created_by_username || '—'}
+                    {showDetail.shift_opener_name ? ` · duty operator: ${showDetail.shift_opener_name}` : ''}.
+                  </p>
+                  {canClaim(showDetail) ? (
+                    <button onClick={() => handleClaim(showDetail.id)} className="btn-primary text-sm py-1.5 w-full">
+                      Claim — cash received
+                    </button>
+                  ) : (
+                    <p className="text-xs text-orange-600">
+                      Only the duty operator of the open shift, a manager or an administrator can confirm receipt.
+                    </p>
+                  )}
+                </div>
+              ) : showDetail.status === 'pending' ? (
                 <div className="bg-amber-50 border border-amber-200 text-amber-800 px-3 py-2 rounded-lg text-sm">
                   Awaiting admin approval — the account balance has not changed yet.
+                </div>
+              ) : null}
+              {showDetail.status === 'completed' && showDetail.claimed_at && (
+                <div className="bg-green-50 border border-green-200 text-green-800 px-3 py-2 rounded-lg text-sm">
+                  Cash received by {showDetail.claimed_by_username || '—'} · {manilaDateTimeLabel(showDetail.claimed_at)}
                 </div>
               )}
               {showDetail.status === 'rejected' && (
                 <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg text-sm">
                   Rejected{showDetail.rejection_reason ? `: ${showDetail.rejection_reason}` : ' — no money moved.'}
+                </div>
+              )}
+              {/* Cash claim (C5): the books completed but the cash never
+                  arrived. Never a flag-flip — the only correct undo is the
+                  reversal flow, offered here pre-filled. */}
+              {showDetail.status === 'completed' && showDetail.payment_method === 'cash' && (
+                <div className="bg-gray-50 border border-gray-200 px-3 py-2 rounded-lg text-xs text-gray-500 flex items-center justify-between gap-2">
+                  <span>Turns out the cash never arrived?</span>
+                  <button
+                    onClick={() => handleReverse(showDetail.id, 'Cash never received')}
+                    className="text-red-600 hover:text-red-700 font-medium whitespace-nowrap"
+                  >
+                    Undo via reversal
+                  </button>
                 </div>
               )}
               <div className="grid grid-cols-2 gap-3">
@@ -1098,6 +1196,43 @@ export default function Transactions() {
                       </select>
                     </div>
                   )}
+                  {/* Cash claim (C1): the one question that decides whether
+                      this cash-in completes now or waits unclaimed. Only a
+                      cash-in is asked — an e-wallet tender never touches the
+                      till, and a cash-out means the money is already gone. */}
+                  {movementRequested && selectedDirection === 'in' && formData.paymentMethod === 'cash' && (
+                    <div>
+                      <RequiredLabel>Has the cash been received?</RequiredLabel>
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        <label className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-sm ${formData.cashReceived ? 'border-primary-600 bg-primary-50 text-primary-700' : 'border-gray-300 text-gray-600'}`}>
+                          <input
+                            type="radio"
+                            name="cashReceived"
+                            checked={formData.cashReceived}
+                            onChange={() => setFormData({ ...formData, cashReceived: true })}
+                            className="sr-only peer"
+                          />
+                          Cash received — record it now
+                        </label>
+                        <label className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer text-sm ${!formData.cashReceived ? 'border-amber-600 bg-amber-50 text-amber-700' : 'border-gray-300 text-gray-600'}`}>
+                          <input
+                            type="radio"
+                            name="cashReceived"
+                            checked={!formData.cashReceived}
+                            onChange={() => setFormData({ ...formData, cashReceived: false })}
+                            className="sr-only peer"
+                          />
+                          Not yet — record as unclaimed
+                        </label>
+                      </div>
+                      {!formData.cashReceived && (
+                        <p className="text-[11px] text-amber-700 mt-1.5">
+                          Saved as <strong>UNCLAIMED</strong>: no money enters the drawer, income or any balance until the
+                          duty operator confirms the cash arrived. The customer has not paid yet — reject it instead if they never will.
+                        </p>
+                      )}
+                    </div>
+                  )}
                   </FormSection>
                 </div>
 
@@ -1307,8 +1442,12 @@ export default function Transactions() {
                       </ul>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 bg-gray-50 px-3 py-2 border-t text-xs text-gray-600">
                         <span>Fee: <strong>{formatCurrency(preview.fee)}</strong></span>
-                        <span className={preview.status === 'completed' ? 'badge-green' : 'badge-yellow'}>
-                          {preview.status === 'completed' ? 'Completes now' : 'Pending \u2014 needs approval'}
+                        <span className={preview.status === 'completed' ? 'badge-green' : preview.pendingReason === 'cash_receipt' ? 'badge-orange' : 'badge-yellow'}>
+                          {preview.status === 'completed'
+                            ? 'Completes now'
+                            : preview.pendingReason === 'cash_receipt'
+                              ? 'Unclaimed \u2014 waits for the cash'
+                              : 'Pending \u2014 needs approval'}
                         </span>
                         <span>{cashBehaviorLabel(preview.cashBehavior) || 'No cash moves'}</span>
                       </div>
