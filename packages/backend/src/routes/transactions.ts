@@ -9,7 +9,7 @@ import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccoun
 import type { CounterpartyLeg } from '../services/balance';
 import { drawerLeg, drawerLegs, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod, isControlledType, HEAD_OFFICE_APPROVAL_CODES, approvalAuditAction } from '../services/cashManagement';
 import type { RecordedLedgerRow } from '../services/cashManagement';
-import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, feeOnDrawerOf } from '../services/movementPlan';
+import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, feeOnDrawerOf, entryTypeOf } from '../services/movementPlan';
 import { resolveMovementFee } from '../services/movementFee';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -1419,8 +1419,11 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     const charges = (row.additional_charges || [])
       .reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
     const totalAmount = parseFloat(row.net_amount || row.amount) + charges;
-    const entryType: 'debit' | 'credit' =
-      row.direction === 'in' || row.direction === 'adjustment' ? 'credit' : 'debit';
+    // Code-aware, not direction-only: an Adjustment Out shares the
+    // 'adjustment' direction with an Adjustment In, and settling it off the
+    // family value credited money into the drawer it was meant to leave
+    // (TXN #1669 — the approve path was the one still asking the old way).
+    const entryType = entryTypeOf(row.direction, row.code);
 
     // Resolved before any account is locked, so this path and the creation path
     // take the two locks in the same order. Locking the primary first here and

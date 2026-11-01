@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf } from '../services/movementPlan';
+import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, entryTypeOf } from '../services/movementPlan';
 import { drawerLeg } from '../services/cashManagement';
 
 // The posting matrix the owner confirmed, in the figures from his own books,
@@ -196,6 +196,27 @@ test('an Adjustment Out debits the account it lands on; an Adjustment In credits
 
   const intoWallet = walletPlan({ direction: 'adjustment', code: 'adjustment_in', amount: 20, fee: 0 });
   assert.equal(intoWallet.entryType, 'credit', 'money in still credits the account it lands on');
+});
+
+// TXN #1669: an Adjustment Out of 122,963.34 from the drawer was CREDITED
+// into it when an admin approved it. Creation always signed adjustments off
+// the code, but the approve route settled off the shared 'adjustment'
+// direction alone — and an operator-created adjustment waits for approval by
+// design, so only that path ever reached the wrong arithmetic.
+test('an Adjustment Out debits its account: the sign follows the code, not the shared direction', () => {
+  const outOfWallet = walletPlan({ direction: 'adjustment', code: 'adjustment_out', amount: 122963.34, fee: 0 });
+  assert.equal(outOfWallet.entryType, 'debit', 'money out of the account is a debit, drawer or wallet');
+  assert.deepEqual(outOfWallet.problems, [], 'the movement itself is legal; only its sign was in question');
+});
+
+test('entryTypeOf answers the approve path exactly as creation answers it', () => {
+  // The pair that shares one direction value — this is the whole bug.
+  assert.equal(entryTypeOf('adjustment', 'adjustment_out'), 'debit');
+  assert.equal(entryTypeOf('adjustment', 'adjustment_in'), 'credit');
+  // And every other family is unchanged.
+  assert.equal(entryTypeOf('in', 'cash_in'), 'credit');
+  assert.equal(entryTypeOf('out', 'cash_out'), 'debit');
+  assert.equal(entryTypeOf('out', 'operating_expense'), 'debit');
 });
 
 test('a charge cannot ride on a row that waits for approval', () => {

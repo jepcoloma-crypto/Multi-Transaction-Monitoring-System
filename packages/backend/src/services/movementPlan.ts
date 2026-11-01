@@ -37,6 +37,24 @@ export function entryTypeFor(direction: string): 'debit' | 'credit' {
 }
 
 /**
+ * The same question asked of the direction *and* the code, because one
+ * direction family answers two opposite movements.
+ *
+ * The adjustment pair shares the single direction value 'adjustment' — the
+ * family says "adjustment", not which way — so direction alone books every
+ * adjustment as money in: an Adjustment Out meant to take cash out of the
+ * drawer was credited into it. `paymentPlan` always knew this (its own inline
+ * override), but the approve route settled with the direction-only rule, so
+ * an operator-created Adjustment Out — which waits for approval by design —
+ * posted the wrong way the moment an admin released it, while an
+ * admin-created one (settled immediately, correct sign) looked fine. One
+ * function, used by both paths, so the two cannot disagree again.
+ */
+export function entryTypeOf(direction: string, code: string): 'debit' | 'credit' {
+  return code === 'adjustment_out' ? 'debit' : entryTypeFor(direction);
+}
+
+/**
  * What the balance moves: a cash-in lands the amount and never the fee (D46).
  *
  * A cash-in's fee is the till's income whichever way the tender carried it, so
@@ -225,14 +243,14 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
   }
 
   // The adjustment pair shares one direction value — the family says
-  // "adjustment", not which way — so the code has to carry the sign: an
-  // Adjustment In credits the account it lands on, an Adjustment Out debits
-  // it. Planning both off the family value booked every adjustment as money
-  // in, which would have put cash INTO the drawer an "Adjustment Out" is
-  // meant to take it out of. The reversal flow writes its own rows (mirroring
-  // the original) and never asks this question; the entry route, its preview
-  // and the cash-event form do.
-  const entryType = input.code === 'adjustment_out' ? 'debit' : entryTypeFor(input.direction);
+  // "adjustment", not which way — so the code has to carry the sign (see
+  // `entryTypeOf`): an Adjustment In credits the account it lands on, an
+  // Adjustment Out debits it. Planning both off the family value booked every
+  // adjustment as money in, which would have put cash INTO the drawer an
+  // "Adjustment Out" is meant to take it out of. The reversal flow writes its
+  // own rows (mirroring the original) and never asks this question; the entry
+  // route, its preview and the cash-event form do.
+  const entryType = entryTypeOf(input.direction, input.code);
   const net = netAmountOf({
     direction: input.direction,
     amount: input.amount,
