@@ -65,7 +65,7 @@ interface PreviewData {
     corrections: { accountId: string; entryType: string; amount: number }[];
     balances: { accountId: string; before: number; after: number }[];
     problems: string[];
-    affectedAccountsAfter: { id: string; name: string; reconciled: boolean; gap: number }[];
+    affectedAccountsAfter: { id: string; name: string; balanced: boolean; gap: number; chainBreaks: number }[];
   };
   /**
    * The fee's own line moving to the side the declared mode names — a cash-in's
@@ -276,7 +276,16 @@ export default function FeeAudit() {
 
   const impact = (preview?.simulation.balances ?? []).map((b) => {
     const account = preview!.simulation.affectedAccountsAfter.find((a) => a.id === b.accountId);
-    return { ...b, name: account?.name ?? b.accountId, reconciled: account?.reconciled, gap: account?.gap };
+    const gap = account?.gap ?? 0;
+    const chainBreaks = account?.chainBreaks ?? 0;
+    // The chip answers the gate's question — will this write leave the books
+    // balancing? — so a history it did not touch never tints it red.
+    const label = account?.balanced
+      ? 'reconciles'
+      : [gap !== 0 ? `gap ${money(gap)}` : null, chainBreaks > 0 ? `${chainBreaks} chain break(s)` : null]
+          .filter(Boolean)
+          .join(' · ') || 'out of balance';
+    return { ...b, name: account?.name ?? b.accountId, balanced: account?.balanced ?? false, label };
   });
 
   const canApply = Boolean(
@@ -608,10 +617,10 @@ export default function FeeAudit() {
                             </div>
                             <span
                               className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                i.reconciled ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                                i.balanced ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
                               }`}
                             >
-                              {i.reconciled ? 'reconciles' : `gap ${money(i.gap ?? 0)}`}
+                              {i.label}
                             </span>
                           </div>
                         ))}

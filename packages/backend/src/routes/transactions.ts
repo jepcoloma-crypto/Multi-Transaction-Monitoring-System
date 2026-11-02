@@ -18,6 +18,7 @@ import { withTransaction } from '../services/withTransaction';
 import { movementTotalOf, planLoadingCancel, planTransactionCancel } from '../services/cancelPlan';
 import { executeLoadingCancel } from '../services/loadingReversal';
 import { auditInside, closedAccountNames } from '../services/ledgerGates';
+import { unbalancedAfter } from '../services/ledgerAudit';
 import { PaginatedResponse } from '../types';
 
 const router = Router();
@@ -1912,13 +1913,15 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
     if (approved.rowCount !== 1) throw createError(409, 'This reversal request was already processed');
 
     // The belt on the suspenders: commit only when every affected account
-    // still reconciles after the mirror landed — chain, balance and last row
+    // still balances after the mirror landed — chain, balance and last row
     // (the gate every correction commits behind, now on approvals too: the
     // answer to "check all the affected accounts" happens inside the very
-    // transaction that would post them).
+    // transaction that would post them). `balanced`, not `reconciled`: a
+    // negative row already in the history is not something this write did,
+    // and gating on it refused every write to Revolving Fund forever.
     const verdict = await auditInside(client, closingIds);
-    if (!verdict.accounts.every((a) => a.reconciled)) {
-      const bad = verdict.accounts.filter((a) => !a.reconciled).map((a) => `${a.name} (gap ${a.gap})`);
+    const bad = unbalancedAfter(verdict.accounts);
+    if (bad.length > 0) {
       throw createError(409, `Refusing to commit — ${bad.join(', ')} did not reconcile after reversal`);
     }
 

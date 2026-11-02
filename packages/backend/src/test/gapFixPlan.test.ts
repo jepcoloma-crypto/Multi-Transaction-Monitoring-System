@@ -23,6 +23,7 @@ function audit(overrides: Partial<AccountAudit> = {}): AccountAudit {
     lastLedgerBalance: null,
     issues: [],
     reconciled: true,
+    balanced: true,
     ...overrides,
   };
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { auditLedger } from '../services/ledgerAudit';
+import { auditLedger, unbalancedAfter } from '../services/ledgerAudit';
 import type { LedgerAuditAccount, LedgerAuditEntry } from '../services/ledgerAudit';
 
 const SOURCE = '00000000-0000-0000-0000-000000000099';
@@ -97,6 +97,65 @@ test('a negative balance_after is counted and reported', () => {
 
   assert.equal(acc.negativeBalances, 1);
   assert.ok(acc.issues.includes('1 negative balance(s)'));
+});
+
+// The report's question and the write gate's question are different questions.
+// Revolving Fund carried 134 negative rows from a bad day while its books
+// balanced perfectly — gap 0, chain intact, last row ending at the balance —
+// and the commit gate, asking the report's question, refused every future
+// write to it forever while printing "(gap 0)" as the reason.
+test('history the write did not touch never fails the write gate', () => {
+  const entries = [
+    entry('e1', 'a1', {
+      entry_type: 'debit', amount: '1050.00', balance_after: '-50.00',
+      created_at: new Date('2026-01-01T00:00:00Z'),
+    }),
+    entry('e2', 'a1', {
+      entry_type: 'credit', amount: '150.00', balance_after: '100.00',
+      created_at: new Date('2026-01-02T00:00:00Z'),
+    }),
+  ];
+  const acc = auditLedger([account('a1', 1000, 100)], entries).accounts[0];
+
+  assert.equal(acc.gap, 0);
+  assert.equal(acc.chainBreaks, 0);
+  assert.equal(acc.negativeBalances, 1);
+  assert.ok(acc.issues.includes('1 negative balance(s)'));
+  assert.equal(acc.reconciled, false); // the report still flags the history
+  assert.equal(acc.balanced, true); // the write gate does not refuse on it
+  assert.deepEqual(unbalancedAfter([acc]), []);
+});
+
+test('the write gate names the structural reason instead of a bare gap', () => {
+  const entries = [entry('e1', 'a1', { amount: '100.00', balance_after: '1300.00' })];
+  const acc = auditLedger([account('a1', 1000, 1100)], entries).accounts[0];
+
+  assert.equal(acc.gap, 0);
+  assert.equal(acc.balanced, false);
+  assert.deepEqual(unbalancedAfter([acc]), ['account-a1 (last row 1300.00 vs balance 1100.00)']);
+});
+
+test('a real gap still refuses the write, and says the gap', () => {
+  const entries = [entry('e1', 'a1', { amount: '50.00', balance_after: '900.00' })];
+  const acc = auditLedger([account('a1', 1000, 900)], entries).accounts[0];
+
+  assert.equal(acc.gap, 150);
+  assert.equal(acc.lastLedgerBalance, 900); // ends where the balance says — only the gap is wrong
+  assert.equal(acc.balanced, false);
+  assert.deepEqual(unbalancedAfter([acc]), ['account-a1 (gap 150)']);
+});
+
+test('a broken chain still refuses the write, and says the chain', () => {
+  const entries = [
+    entry('e1', 'a1', { amount: '100.00', balance_after: '1100.00', created_at: new Date('2026-01-01T00:00:00Z') }),
+    entry('e2', 'a1', { amount: '50.00', balance_after: '1200.00', created_at: new Date('2026-01-02T00:00:00Z') }),
+  ];
+  const acc = auditLedger([account('a1', 1000, 1200)], entries).accounts[0];
+
+  assert.equal(acc.chainBreaks, 1);
+  assert.equal(acc.balanced, false);
+  // Every structural reason found is named, not just the first.
+  assert.deepEqual(unbalancedAfter([acc]), ['account-a1 (gap -50, 1 broken chain link(s))']);
 });
 
 test('an unlinked row is counted without inventing an issue', () => {

@@ -36,6 +36,18 @@ export interface AccountAudit {
   lastLedgerBalance: number | null;
   issues: string[];
   reconciled: boolean;
+  /**
+   * The bar a *write* gate asks: after this write the books still balance —
+   * gap 0, chain intact, last row ends at the account's balance.
+   *
+   * `reconciled` also counts historical negative-balance rows, which is right
+   * for the integrity report but wrong for a commit gate: a negative row
+   * already in the books cannot be un-written, so refusing on it refuses every
+   * future write to that account forever (Revolving Fund: gap 0, chain intact,
+   * still refused with "gap 0"). History stays in `reconciled`; a gate reads
+   * `balanced`.
+   */
+  balanced: boolean;
 }
 
 export interface LedgerAuditSummary {
@@ -97,6 +109,10 @@ function auditAccount(account: LedgerAuditAccount, entries: LedgerAuditEntry[]):
   if (negatives > 0) issues.push(`${negatives} negative balance(s)`);
   if (last !== null && last !== actual) issues.push(`last ledger row ${last.toFixed(2)} differs from balance ${actual.toFixed(2)}`);
 
+  // What this write would be judged on: the three structural checks only.
+  // A negative row in the history does not unbalance the books.
+  const balanced = gap === 0 && chainBreaks === 0 && (last === null || last === actual);
+
   return {
     id: account.id,
     name: account.name,
@@ -113,7 +129,25 @@ function auditAccount(account: LedgerAuditAccount, entries: LedgerAuditEntry[]):
     lastLedgerBalance: last,
     issues,
     reconciled: issues.length === 0,
+    balanced,
   };
+}
+
+/**
+ * The accounts that fail the write gate, each named with the structural
+ * reason it fails — the message the old gate wished it could print instead of
+ * `(gap 0)`, which was true and useless at the same time.
+ */
+export function unbalancedAfter(accounts: AccountAudit[]): string[] {
+  return accounts.filter((a) => !a.balanced).map((a) => {
+    const reasons: string[] = [];
+    if (a.gap !== 0) reasons.push(`gap ${a.gap}`);
+    if (a.chainBreaks > 0) reasons.push(`${a.chainBreaks} broken chain link(s)`);
+    if (a.lastLedgerBalance !== null && a.lastLedgerBalance !== a.currentBalance) {
+      reasons.push(`last row ${a.lastLedgerBalance.toFixed(2)} vs balance ${a.currentBalance.toFixed(2)}`);
+    }
+    return `${a.name} (${reasons.join(', ') || 'out of balance'})`;
+  });
 }
 
 export function auditLedger(accounts: LedgerAuditAccount[], entries: LedgerAuditEntry[]): LedgerAuditResult {

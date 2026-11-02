@@ -12,6 +12,7 @@ import { updateAccountBalance, lockAccounts } from './balance';
 import { planLoadingCancel } from './cancelPlan';
 import type { CancelImpact } from './cancelPlan';
 import { auditInside } from './ledgerGates';
+import { unbalancedAfter } from './ledgerAudit';
 
 export interface LoadingCancelResult {
   affected: CancelImpact[];
@@ -88,10 +89,12 @@ export async function executeLoadingCancel(
   if (flipped.rowCount !== 1) throw createError(409, 'This loading sale was already processed');
 
   // The belt on the suspenders: commit only when every affected account still
-  // reconciles — chain, balance and last row — after the mirrors landed.
+  // balances — chain, balance and last row — after the mirrors landed.
+  // `balanced`, not `reconciled`: history already in the books is not
+  // something this cancellation did.
   const verdict = await auditInside(client, accountIds);
-  if (!verdict.accounts.every((a) => a.reconciled)) {
-    const bad = verdict.accounts.filter((a) => !a.reconciled).map((a) => `${a.name} (gap ${a.gap})`);
+  const bad = unbalancedAfter(verdict.accounts);
+  if (bad.length > 0) {
     throw createError(409, `Refusing to commit — ${bad.join(', ')} did not reconcile after cancellation`);
   }
 

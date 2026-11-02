@@ -4,7 +4,7 @@ import { authenticate, authorize } from '../middleware/auth';
 import { branchClause } from '../middleware/scope';
 import { assertOpenShift } from '../middleware/shiftGate';
 import { createError } from '../middleware/error';
-import { auditLedger } from '../services/ledgerAudit';
+import { auditLedger, unbalancedAfter } from '../services/ledgerAudit';
 import { auditInside, closedAccountNames, loadAccountsAndEntries } from '../services/ledgerGates';
 import { loadScopedLedger, loadLedgerRowsBySource } from '../services/ledgerQuery';
 import { strategyFor, verifyShape } from '../services/correctionStrategy';
@@ -344,7 +344,7 @@ router.post('/fee-repost/preview', authorize('transactions.correct'), async (req
       frozen.length === 0 &&
       !nothingToDo &&
       simulation.problems.length === 0 &&
-      simulation.affectedAccountsAfter.every((a) => a.reconciled);
+      simulation.affectedAccountsAfter.every((a) => a.balanced);
 
     res.json({
       success: true,
@@ -454,9 +454,9 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
     if (simulation.corrections.length === 0 && !plan.recarve && !changed) {
       throw createError(400, 'Those values do not change anything');
     }
-    if (!simulation.affectedAccountsAfter.every((a) => a.reconciled)) {
-      const bad = simulation.affectedAccountsAfter.filter((a) => !a.reconciled).map((a) => a.name);
-      throw createError(409, `Refusing to re-post — ${bad.join(', ')} would not reconcile`);
+    const badRepost = unbalancedAfter(simulation.affectedAccountsAfter);
+    if (badRepost.length > 0) {
+      throw createError(409, `Refusing to re-post — ${badRepost.join(', ')} would not reconcile`);
     }
 
     const postedBefore = {
@@ -540,8 +540,8 @@ router.post('/fee-repost/:sourceId/apply', authorize('transactions.correct'), as
     }
 
     const verdict = await auditInside(client, accountIds);
-    if (!verdict.accounts.every((a) => a.reconciled)) {
-      const bad = verdict.accounts.filter((a) => !a.reconciled).map((a) => `${a.name} (gap ${a.gap})`);
+    const bad = unbalancedAfter(verdict.accounts);
+    if (bad.length > 0) {
       throw createError(409, `Refusing to commit — ${bad.join(', ')} did not reconcile after re-post`);
     }
 
@@ -744,8 +744,9 @@ router.post('/gap-fixes/:fixId/approve', authorize('transactions.correct'), asyn
 
     const verdict = await auditInside(client, [fix.account_id]);
     const after = verdict.accounts[0];
-    if (!after.reconciled) {
-      throw createError(409, `Refusing to commit — ${after.name} does not reconcile after the fix (${after.issues.join('; ')})`);
+    const badFix = unbalancedAfter([after]);
+    if (badFix.length > 0) {
+      throw createError(409, `Refusing to commit — ${badFix.join(', ')} does not reconcile after the fix`);
     }
 
     const updated = (
@@ -884,7 +885,7 @@ router.post('/preview', authorize('transactions.correct'), async (req: Request, 
       simulation !== null &&
       !nothingToDo &&
       simulation.problems.length === 0 &&
-      simulation.affectedAccountsAfter.every((a) => a.reconciled);
+      simulation.affectedAccountsAfter.every((a) => a.balanced);
 
     res.json({
       success: true,
@@ -1106,9 +1107,9 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     if (simulation.corrections.length === 0 && !recordChanged) {
       throw createError(400, 'Those values do not change anything');
     }
-    if (!simulation.affectedAccountsAfter.every((a) => a.reconciled)) {
-      const bad = simulation.affectedAccountsAfter.filter((a) => !a.reconciled).map((a) => a.name);
-      throw createError(409, `Refusing to correct — ${bad.join(', ')} would not reconcile`);
+    const badCorrect = unbalancedAfter(simulation.affectedAccountsAfter);
+    if (badCorrect.length > 0) {
+      throw createError(409, `Refusing to correct — ${badCorrect.join(', ')} would not reconcile`);
     }
 
     for (const correction of simulation.corrections) {
@@ -1175,8 +1176,8 @@ router.post('/:sourceType/:sourceId/apply', authorize('transactions.correct'), a
     }
 
     const verdict = await auditInside(client, accountIds);
-    if (!verdict.accounts.every((a) => a.reconciled)) {
-      const bad = verdict.accounts.filter((a) => !a.reconciled).map((a) => `${a.name} (gap ${a.gap})`);
+    const bad = unbalancedAfter(verdict.accounts);
+    if (bad.length > 0) {
       throw createError(409, `Refusing to commit — ${bad.join(', ')} did not reconcile after correction`);
     }
 
@@ -1368,7 +1369,7 @@ router.post('/re-enter/preview', authorize('transactions.correct'), async (req: 
       frozen.length === 0 &&
       simulation !== null &&
       simulation.problems.length === 0 &&
-      simulation.after.every((a) => a.reconciled);
+      simulation.after.every((a) => a.balanced);
 
     res.json({
       success: true,
@@ -1445,9 +1446,9 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
       throw createError(409, `Refusing to re-enter: ${appended.problems.join('; ')}`);
     }
     const proposed = auditLedger(appended.simulatedAccounts, appended.simulatedEntries);
-    if (!proposed.accounts.every((a) => a.reconciled)) {
-      const bad = proposed.accounts.filter((a) => !a.reconciled).map((a) => a.name);
-      throw createError(409, `Refusing to re-enter — ${bad.join(', ')} would not reconcile`);
+    const badEnter = unbalancedAfter(proposed.accounts);
+    if (badEnter.length > 0) {
+      throw createError(409, `Refusing to re-enter — ${badEnter.join(', ')} would not reconcile`);
     }
 
     const minted = sourceType === 'transfer' ? await mintNextTransfer(client) : undefined;
@@ -1512,8 +1513,8 @@ router.post('/:sourceType/:sourceId/re-enter', authorize('transactions.correct')
     }
 
     const verdict = await auditInside(client, involved);
-    if (!verdict.accounts.every((a) => a.reconciled)) {
-      const bad = verdict.accounts.filter((a) => !a.reconciled).map((a) => `${a.name} (gap ${a.gap})`);
+    const bad = unbalancedAfter(verdict.accounts);
+    if (bad.length > 0) {
       throw createError(409, `Refusing to commit — ${bad.join(', ')} did not reconcile after re-entry`);
     }
 
