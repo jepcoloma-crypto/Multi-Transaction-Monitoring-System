@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../lib/api';
 import { formatCurrency, manilaDateTimeLabel } from '../lib/format';
+import { hasOpenGap } from '../lib/gapFixQueue';
 import { useAuth } from '../contexts/AuthContext';
 import {
   ShieldAlert, Inbox, Plus, Check, X, AlertTriangle, RefreshCw, Activity,
@@ -65,7 +66,10 @@ export default function GapFixes() {
         api.get<{ data: GapFix[] }>('/corrections/gap-fixes'),
       ]);
       if (audit.status === 'fulfilled') {
-        setAccounts(audit.value.accounts.filter((a) => !a.reconciled));
+        // Not "!reconciled": that is the report's question and it counts
+        // history a gap fix cannot move, which left accounts with gap 0
+        // listed under a disabled button. See gapFixQueue.
+        setAccounts(audit.value.accounts.filter(hasOpenGap));
         setSummary(audit.value.summary);
       }
       if (queue.status === 'fulfilled') setProposals(queue.value.data);
@@ -200,7 +204,7 @@ export default function GapFixes() {
       <section className="bg-white rounded-lg border border-gray-200 overflow-hidden">
         <div className="px-4 py-3 border-b border-gray-200 flex items-center gap-2">
           <Activity className="w-4 h-4 text-red-500" />
-          <h4 className="text-sm font-semibold text-gray-900">Accounts that do not reconcile</h4>
+          <h4 className="text-sm font-semibold text-gray-900">Accounts with an open balance gap</h4>
           {summary && (
             <span className="text-xs text-gray-500">
               {summary.reconciled}/{summary.totalAccounts} reconciled · net gap {formatCurrency(summary.totalGap)}
@@ -212,7 +216,7 @@ export default function GapFixes() {
         ) : accounts.length === 0 ? (
           <div className="p-8 text-center">
             <Check className="w-8 h-8 text-green-400 mx-auto mb-2" />
-            <p className="text-sm text-gray-500">Every account reconciles. Nothing to fix.</p>
+            <p className="text-sm text-gray-500">No account has an open balance gap. Nothing to fix.</p>
           </div>
         ) : (
           <div className="overflow-x-auto">
