@@ -55,6 +55,31 @@ export function entryTypeOf(direction: string, code: string): 'debit' | 'credit'
 }
 
 /**
+ * The sign a reversal of this movement posts: always the mirror of the
+ * original — money that left comes back, money that landed returns. Asked of
+ * direction AND code for the same reason `entryTypeOf` is: the adjustment
+ * pair shares one direction value, so a family-only rule reverses an
+ * Adjustment In with a credit — handing money back to an account it was
+ * landing in, doubling it instead of removing it. Every other family comes
+ * out exactly where the old ternary put it.
+ */
+export function mirrorEntryTypeOf(direction: string, code: string): 'debit' | 'credit' {
+  return entryTypeOf(direction, code) === 'credit' ? 'debit' : 'credit';
+}
+
+/**
+ * The type code a reversal row carries. The adjustment pair swaps members —
+ * the mirror of an Adjustment Out is an Adjustment In and the other way
+ * around — and every other movement mirrors through the pair by its family,
+ * exactly as it always has.
+ */
+export function mirrorTypeCodeOf(direction: string, code: string): string {
+  if (code === 'adjustment_out') return 'adjustment_in';
+  if (code === 'adjustment_in') return 'adjustment_out';
+  return direction === 'in' ? 'adjustment_out' : 'adjustment_in';
+}
+
+/**
  * What the balance moves: a cash-in lands the amount and never the fee (D46).
  *
  * A cash-in's fee is the till's income whichever way the tender carried it, so

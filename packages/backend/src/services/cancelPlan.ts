@@ -8,6 +8,7 @@
 
 import { unwindDrawerLeg } from './cashManagement';
 import type { RecordedLedgerRow } from './cashManagement';
+import { mirrorEntryTypeOf } from './movementPlan';
 
 export interface CancelRow {
   id?: string;
@@ -169,14 +170,17 @@ export function planTransactionCancel(
 
   if (record.status === 'reversed') problems.push('This transaction is already reversed');
   else if (record.status !== 'completed') problems.push('Only completed transactions can be reversed');
-  if (record.code === 'adjustment_in' || record.code === 'adjustment_out') {
-    problems.push('Adjustment transactions cannot be reversed');
-  }
+  // Adjustments plan like any other movement: this decides what an approval
+  // would post, while the route decides who may ask (everyone files a request;
+  // a second administrator has to release it — two-person, same as creating
+  // one). The old refusal lived here too, which is why an adjustment could
+  // neither be requested nor previewed even by an administrator.
 
-  const reversesIn = record.direction === 'in';
+  // The mirror off the movement's own sign and code — the family value alone
+  // cannot carry the adjustment pair's sign (see mirrorEntryTypeOf).
   const accountLeg: CancelLeg = {
     accountId: record.account_id,
-    entryType: reversesIn ? 'debit' : 'credit',
+    entryType: mirrorEntryTypeOf(record.direction ?? '', record.code ?? ''),
     amount: total,
   };
 

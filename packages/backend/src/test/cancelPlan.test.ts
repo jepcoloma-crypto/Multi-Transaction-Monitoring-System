@@ -211,14 +211,39 @@ test('a record whose rows disagree with its columns says so, in pesos', () => {
   assert.equal(plan.safe, true);
 });
 
-test('already reversed, unsettled and adjustment records are refused', () => {
+test('already reversed and unsettled records are refused', () => {
   const accounts = [account(CHANNEL, 10000)];
 
   assert.equal(planTransactionCancel(cashIn({ status: 'reversed' }) as any, [], [], accounts).safe, false);
   assert.deepEqual(planTransactionCancel(cashIn({ status: 'pending' }) as any, [], [], accounts).problems,
     ['Only completed transactions can be reversed']);
-  assert.deepEqual(planTransactionCancel(cashIn({ code: 'adjustment_in' }) as any, [], [], accounts).problems,
-    ['Adjustment transactions cannot be reversed']);
+});
+
+// TXN #1669 proved the direction family cannot carry the adjustment pair's
+// sign, and the mirror answers the same question the same way. The wrong sign
+// here would not merely misstate the undo: a credit posted to reverse an
+// Adjustment In hands money back to an account it was landing in — doubling it
+// instead of removing it. What approval posts is decided here; who may ask is
+// the route's rule (everyone files a request, a second administrator releases
+// it — two-person, same as creating the adjustment).
+test('an adjustment mirrors off its code: Adjustment Out back as a credit, Adjustment In back as a debit', () => {
+  const outPlan = planTransactionCancel(
+    cashIn({ code: 'adjustment_out', direction: 'adjustment', net_amount: '1000.00', amount: '1000.00' }) as any,
+    [row('a1', CHANNEL, 'debit', 1000)],
+    [],
+    [account(CHANNEL, 5000)],
+  );
+  assert.equal(outPlan.safe, true);
+  assert.deepEqual(outPlan.accountLeg, { accountId: CHANNEL, entryType: 'credit', amount: 1000 });
+
+  const inPlan = planTransactionCancel(
+    cashIn({ code: 'adjustment_in', direction: 'adjustment', net_amount: '1000.00', amount: '1000.00' }) as any,
+    [row('a1', CHANNEL, 'credit', 1000)],
+    [],
+    [account(CHANNEL, 5000)],
+  );
+  assert.equal(inPlan.safe, true);
+  assert.deepEqual(inPlan.accountLeg, { accountId: CHANNEL, entryType: 'debit', amount: 1000 });
 });
 
 test('an account that would drop below zero refuses the approval', () => {
