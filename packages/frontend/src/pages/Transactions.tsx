@@ -153,11 +153,41 @@ export default function Transactions() {
   const [printReceipt, setPrintReceipt] = useState<ReceiptTx | null>(null);
   useEffect(() => {
     if (!printReceipt) return;
-    const frame = requestAnimationFrame(() => {
-      window.print();
+    // The sheet comes down when the browser says the print job is finished —
+    // not the instant window.print() returns. Print-to-PDF flows and some
+    // browsers snapshot the page asynchronously AFTER that return, and
+    // unmounting the receipt in that window — lifting print:hidden off the
+    // page and removing the sheet — printed the whole screen instead of the
+    // receipt: exactly what an operator reported coming out of the printer.
+    //
+    // afterprint is the browser's own "this print is done" signal, fired on
+    // dialog close whether printed or cancelled. The timer is a safety net
+    // for engines that never fire it, deliberately long: a dialog left open
+    // while a printer or paper size is chosen must not lose its sheet. A
+    // print() that throws (some embedded webviews refuse it) clears too, or
+    // the page would stay print:hidden for every later manual print.
+    let done = false;
+    const clear = () => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('afterprint', clear);
+      clearTimeout(fallback);
       setPrintReceipt(null);
+    };
+    const fallback = setTimeout(clear, 120_000);
+    window.addEventListener('afterprint', clear);
+    const frame = requestAnimationFrame(() => {
+      try {
+        window.print();
+      } catch {
+        clear();
+      }
     });
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('afterprint', clear);
+      clearTimeout(fallback);
+    };
   }, [printReceipt]);
   const [editingCharges, setEditingCharges] = useState(false);
   const [chargeItems, setChargeItems] = useState<{ description: string; amount: string }[]>([]);
