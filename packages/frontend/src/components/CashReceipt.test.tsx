@@ -84,6 +84,25 @@ describe('CashReceipt', () => {
     expect(screen.getByText(/account balance has not changed/)).toBeTruthy();
   });
 
+  // Cash claim: the two things a pending row can be waiting for read
+  // differently on paper — a receipt handed across the counter must not make
+  // "the customer has not paid" look like slow paperwork.
+  it('says the cash has not arrived on an unclaimed receipt, keeping the price', () => {
+    renderReceipt({ ...sold, status: 'pending', pending_reason: 'cash_receipt' });
+    expect(screen.getByText('UNCLAIMED')).toBeTruthy();
+    expect(screen.getByText(/cash not yet received/)).toBeTruthy();
+    expect(screen.queryByText(/Awaiting admin approval/)).toBeNull();
+    expect(screen.getByText('Total')).toBeTruthy();
+    expect(screen.getByText('₱505.00')).toBeTruthy();
+  });
+
+  it('keeps the approval sentence for a row that waits on approval', () => {
+    renderReceipt({ ...sold, status: 'pending', pending_reason: 'approval' });
+    expect(screen.getByText('PENDING')).toBeTruthy();
+    expect(screen.getByText(/account balance has not changed/)).toBeTruthy();
+    expect(screen.queryByText(/cash not yet received/)).toBeNull();
+  });
+
   it('explains a rejection, carrying the reason when the row has one', () => {
     renderReceipt({ ...sold, status: 'rejected', rejection_reason: 'duplicate entry' });
     expect(screen.getByText(/Rejected: duplicate entry/)).toBeTruthy();

@@ -251,7 +251,52 @@ test('a non-administrator cannot create an ordinary movement as pending', () => 
 
   assert.equal(
     plan.problems[0],
-    'Only owner fund movements, operating expenses, cash payments and borrowings can be created as pending'
+    'Only owner fund movements, operating expenses, cash payments, borrowings and unclaimed cash-ins can be created as pending'
+  );
+});
+
+// Cash claim (C1): the one door an ordinary movement has into `pending`.
+test('a cash-in whose cash has not arrived waits as unclaimed and posts nothing', () => {
+  const plan = walletPlan({ cashReceived: false });
+
+  assert.deepEqual(plan.problems, [], 'asking to wait is legal — it is not an error');
+  assert.equal(plan.finalStatus, 'pending', 'the row does not complete yet');
+  assert.equal(plan.pendingReason, 'cash_receipt', 'it waits for the cash, not for approval');
+});
+
+test('the same cash-in completes untouched when the cash did arrive', () => {
+  const plan = walletPlan({});
+
+  assert.equal(plan.finalStatus, 'completed', 'blank cashReceived means the default: money in hand');
+  assert.equal(plan.pendingReason, null, 'nothing to wait for');
+});
+
+test('a cash-out cannot wait for cash that was never handed over', () => {
+  const plan = walletPlan({ direction: 'out', code: 'cash_out', amount: 30000, fee: 300, cashReceived: false });
+
+  assert.equal(plan.problems[0], 'Only a cash-in paid in cash can wait for cash that has not arrived');
+});
+
+test('an e-wallet tender cannot wait as unclaimed — the cash never touches the till', () => {
+  const plan = walletPlan({ paymentMethod: 'gcash', cashReceived: false });
+
+  assert.equal(plan.problems[0], 'Only a cash-in paid in cash can wait for cash that has not arrived');
+});
+
+test('a controlled type that waits still waits for approval, not for cash', () => {
+  const plan = walletPlan({ code: 'operating_expense', amount: 50000, direction: 'out', cashReceived: false });
+
+  assert.equal(plan.finalStatus, 'pending');
+  assert.equal(plan.pendingReason, 'approval', 'cashReceived changes nothing where approval rules already apply');
+  assert.deepEqual(plan.problems, []);
+});
+
+test('an unclaimed cash-in still refuses a provider charge — nothing completed yet', () => {
+  const plan = walletPlan({ cashReceived: false, providerCharge: 25 });
+
+  assert.equal(
+    plan.problems[0],
+    'A provider charge can only be recorded on a transaction that completes now'
   );
 });
 

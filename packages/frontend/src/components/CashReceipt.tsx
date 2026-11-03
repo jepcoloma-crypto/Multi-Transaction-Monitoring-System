@@ -26,6 +26,8 @@ export interface ReceiptTx {
   category_name?: string | null;
   created_by_username?: string | null;
   rejection_reason?: string | null;
+  /** Why a pending row waits: approval rules, or cash that never arrived (cash claim). */
+  pending_reason?: string | null;
 }
 
 /**
@@ -76,10 +78,14 @@ export default function CashReceipt(props: {
     tx.amount + chargesTotal + (tx.fee_added_to_balance ? tx.fee : 0);
 
   // Same sentences the detail banners read, because a receipt handed across a
-  // counter is exactly where "pending" must not look like "done".
+  // counter is exactly where "pending" must not look like "done". An unclaimed
+  // cash-in gets its own sentence: it is not slow approval, the cash has
+  // simply not been handed over, and the paper must say so in those words.
   const statusNote =
     tx.status === 'pending'
-      ? 'Awaiting admin approval \u2014 the account balance has not changed yet.'
+      ? tx.pending_reason === 'cash_receipt'
+        ? 'UNCLAIMED — cash not yet received; no money has entered the till.'
+        : 'Awaiting admin approval \u2014 the account balance has not changed yet.'
       : tx.status === 'rejected'
         ? `Rejected${tx.rejection_reason ? `: ${tx.rejection_reason}` : ' \u2014 no money moved.'}`
         : null;
@@ -98,7 +104,7 @@ export default function CashReceipt(props: {
       <div className="mt-2 space-y-0.5 border-t border-black pt-1.5">
         {row('Date', manilaDateTimeLabel(tx.transaction_date))}
         {row('Receipt #', `#${tx.transaction_number}`)}
-        {row('Status', tx.status.toUpperCase())}
+        {row('Status', tx.status === 'pending' && tx.pending_reason === 'cash_receipt' ? 'UNCLAIMED' : tx.status.toUpperCase())}
         {row('Method', paymentMethodCell(tx.payment_method))}
       </div>
 

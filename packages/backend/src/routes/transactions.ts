@@ -8,6 +8,7 @@ import { createAuditLog } from '../services/audit';
 import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccounts } from '../services/balance';
 import type { CounterpartyLeg } from '../services/balance';
 import { drawerLeg, drawerLegs, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod, isControlledType, HEAD_OFFICE_APPROVAL_CODES, approvalAuditAction } from '../services/cashManagement';
+import { claimGate } from '../services/cashClaim';
 import type { RecordedLedgerRow } from '../services/cashManagement';
 import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, feeOnDrawerOf, entryTypeOf, mirrorEntryTypeOf, mirrorTypeCodeOf } from '../services/movementPlan';
 import { resolveMovementFee } from '../services/movementFee';
@@ -37,6 +38,10 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
     // 'deducted' = it was inside the amount the customer sent. Anything else
     // is refused rather than quietly returning every row.
     const feeMode = req.query.feeMode as string;
+    // Cash claim: the queue staff work from. Both values are refused otherwise,
+    // for the same reason feeMode is — an unknown value must not silently
+    // return every row.
+    const pendingReason = req.query.pendingReason as string;
     const startDate = req.query.startDate as string;
     const endDate = req.query.endDate as string;
     const search = req.query.search as string;
@@ -62,6 +67,13 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
       conditions.push(`t.fee_added_to_balance = $${paramIndex++} AND t.fee > 0`);
       params.push(feeMode === 'added');
     }
+    if (pendingReason) {
+      if (pendingReason !== 'approval' && pendingReason !== 'cash_receipt') {
+        throw createError(400, "pendingReason must be 'approval' or 'cash_receipt'");
+      }
+      conditions.push(`t.pending_reason = $${paramIndex++}`);
+      params.push(pendingReason);
+    }
     if (search) {
       conditions.push(`(t.reference_number ILIKE $${paramIndex} OR t.description ILIKE $${paramIndex} OR t.customer_name ILIKE $${paramIndex} OR CAST(t.transaction_number AS TEXT) ILIKE $${paramIndex})`);
       params.push(`%${search}%`);
@@ -84,13 +96,18 @@ router.get('/', authorize('transactions.read'), async (req: Request, res: Respon
     const transactions = await query(
       `SELECT t.*, tt.name as type_name, tt.code as type_code, tt.direction,
               tc.name as category_name, a.name as account_name,
-              u1.username as created_by_username, u2.email as approved_by_email
+              u1.username as created_by_username, u2.email as approved_by_email,
+              u3.username as claimed_by_username, s.opened_by as shift_opener,
+              u4.username as shift_opener_name
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN transaction_categories tc ON t.transaction_category_id = tc.id
        JOIN accounts a ON t.account_id = a.id
        LEFT JOIN users u1 ON t.created_by = u1.id
        LEFT JOIN users u2 ON t.approved_by = u2.id
+       LEFT JOIN users u3 ON t.claimed_by = u3.id
+       LEFT JOIN shifts s ON t.shift_id = s.id
+       LEFT JOIN users u4 ON s.opened_by = u4.id
        ${whereClause}
        ORDER BY t.created_at DESC
        LIMIT $${paramIndex++} OFFSET $${paramIndex++}`,
@@ -203,6 +220,7 @@ router.get('/today', authorize('transactions.read'), async (req: Request, res: R
         COALESCE(SUM(CASE WHEN t.status = 'completed' THEN COALESCE(t.fee, 0) ELSE 0 END), 0) as fees_collected,
         COUNT(CASE WHEN t.status = 'completed' THEN 1 END) as completed_count,
         COUNT(CASE WHEN t.status = 'pending' THEN 1 END) as pending_count,
+        COUNT(CASE WHEN t.status = 'pending' AND t.pending_reason = 'cash_receipt' THEN 1 END) as unclaimed_count,
         COUNT(CASE WHEN t.status = 'reversed' THEN 1 END) as reversed_count
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
@@ -226,6 +244,7 @@ router.get('/today', authorize('transactions.read'), async (req: Request, res: R
           feesCollected: parseFloat(summary?.fees_collected || '0'),
           completedCount: parseInt(summary?.completed_count || '0'),
           pendingCount: parseInt(summary?.pending_count || '0'),
+          unclaimedCount: parseInt(summary?.unclaimed_count || '0'),
           reversedCount: parseInt(summary?.reversed_count || '0'),
         },
       },
@@ -299,13 +318,18 @@ router.get('/:id', authorize('transactions.read'), async (req: Request, res: Res
     const transaction = await queryOne(
       `SELECT t.*, tt.name as type_name, tt.code as type_code, tt.direction,
               tc.name as category_name, a.name as account_name,
-              u1.username as created_by_username, u2.email as approved_by_email
+              u1.username as created_by_username, u2.email as approved_by_email,
+              u3.username as claimed_by_username, s.opened_by as shift_opener,
+              u4.username as shift_opener_name
        FROM transactions t
        JOIN transaction_types tt ON t.transaction_type_id = tt.id
        LEFT JOIN transaction_categories tc ON t.transaction_category_id = tc.id
        JOIN accounts a ON t.account_id = a.id
        LEFT JOIN users u1 ON t.created_by = u1.id
        LEFT JOIN users u2 ON t.approved_by = u2.id
+       LEFT JOIN users u3 ON t.claimed_by = u3.id
+       LEFT JOIN shifts s ON t.shift_id = s.id
+       LEFT JOIN users u4 ON s.opened_by = u4.id
        WHERE t.id = $1`,
       [req.params.id]
     );
@@ -446,7 +470,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       accountId, transactionTypeId, transactionCategoryId, feeRuleId, amount, fee, manualFee,
       referenceNumber, externalReference, transactionDate, description,
       customerName, customerContact, status, feeAddedToBalance, additionalCharges, notes, customerId,
-      paymentMethod, providerCharge, payee,
+      paymentMethod, providerCharge, payee, cashReceived,
     } = req.body;
 
     // Parsed once and reused three times — the shift gate, the row and the
@@ -558,6 +582,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
       paymentMethod,
       providerCharge,
       requestedStatus: status,
+      cashReceived,
       expenseThreshold,
       isAdminCreator: (req.user!.roles || []).includes('administrator'),
     });
@@ -619,11 +644,24 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
 
     const txNumber = await queryOne<{ nextval: string }>("SELECT nextval('transactions_transaction_number_seq') as nextval");
 
+    // Cash claim (C3): the row is stamped with the shift it belongs to, looked
+    // up the same way the gate above found it — so each movement permanently
+    // belongs to the duty operator's shift, and "the duty operator may claim"
+    // becomes a lookup instead of a guess. Owner funding and owner returns are
+    // exempt from the gate and can find no open shift at all; those rows simply
+    // keep NULL, which is why this lookup is best-effort rather than a guard.
+    const shiftStamp = await queryOne<{ id: string }>(
+      `SELECT s.id FROM shifts s JOIN accounts a ON a.branch_id = s.branch_id
+        WHERE a.id = $1 AND s.status = 'open' LIMIT 1`,
+      [accountId]
+    );
+
     const transaction = await queryOne(
       `INSERT INTO transactions (transaction_number, account_id, transaction_type_id, transaction_category_id,
        amount, fee, net_amount, reference_number, external_reference, transaction_date, description,
-       customer_name, customer_contact, status, created_by, fee_added_to_balance, additional_charges, notes, customer_id, payment_method, payee)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+       customer_name, customer_contact, status, created_by, fee_added_to_balance, additional_charges, notes, customer_id, payment_method, payee,
+       shift_id, pending_reason)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
        RETURNING *`,
       [
         txNumber!.nextval, accountId, resolvedTypeId, resolvedCategoryId,
@@ -632,6 +670,7 @@ router.post('/', authorize('transactions.write'), async (req: Request, res: Resp
         customerName || null, customerContact || null, finalStatus, req.user!.userId,
         feeAddedToBalance !== false, JSON.stringify(additionalCharges || []), notes || null, customerId || null,
         paymentMethodValue, payee || null,
+        shiftStamp?.id ?? null, plan.pendingReason,
       ]
     );
 
@@ -717,6 +756,7 @@ router.post('/preview', authorize('transactions.write'), async (req: Request, re
     const {
       accountId, transactionTypeId, transactionCategoryId, feeRuleId, amount, fee, manualFee,
       transactionDate, additionalCharges, paymentMethod, providerCharge, status, feeAddedToBalance,
+      cashReceived,
     } = req.body;
 
     const problems: string[] = [];
@@ -799,6 +839,7 @@ router.post('/preview', authorize('transactions.write'), async (req: Request, re
       paymentMethod,
       providerCharge,
       requestedStatus: status,
+      cashReceived,
       expenseThreshold,
       isAdminCreator: (req.user!.roles || []).includes('administrator'),
     });
@@ -875,6 +916,7 @@ router.post('/preview', authorize('transactions.write'), async (req: Request, re
         providerCharge: plan.providerCharge,
         status: plan.finalStatus,
         requiresApproval: plan.requiresApproval,
+        pendingReason: plan.pendingReason,
         paymentMethod: plan.paymentMethod,
         cashBehavior: plan.cashBehavior,
         accountBalance,
@@ -1386,6 +1428,77 @@ router.get('/owner-funds/pending', authorize('transactions.approve'), async (req
 });
 
 // Approve an owner fund movement — funds move only here, never at creation
+/**
+ * Posts the legs a pending movement has been holding back, inside the caller's
+ * transaction: the fee's own side, the drawer's counterparties, the account
+ * locks in the creation path's order, the balance check and the debit/credit
+ * itself. Returns the figures the audit entry names.
+ *
+ * Extracted verbatim from the approve route because claiming (cash claim, C1)
+ * settles a row through exactly these steps — two copies of this arithmetic
+ * would drift the first time fee rows or lock order changed, and "approve"
+ * versus "claim" must never be a difference in what the books post.
+ */
+async function settlePendingMovement(
+  client: Awaited<ReturnType<typeof getClient>>,
+  row: any
+): Promise<{ totalAmount: number; accountName: string; newBalance: number }> {
+  const charges = (row.additional_charges || [])
+    .reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
+  const totalAmount = parseFloat(row.net_amount || row.amount) + charges;
+  // Code-aware, not direction-only: an Adjustment Out shares the 'adjustment'
+  // direction with an Adjustment In, and settling it off the family value
+  // credited money into the drawer it was meant to leave (TXN #1669). Asked of
+  // the code here exactly as the approve route asked it inline before this
+  // helper existed, so extraction cannot regress the sign rule — approve and
+  // claim both settle through this line.
+  const entryType = entryTypeOf(row.direction, row.code);
+
+  // Resolved before any account is locked, so this path and the creation path
+  // take the two locks in the same order. Locking the primary first here and
+  // letting processTransaction sort them afterwards would give the two paths
+  // opposite orders whenever the drawer sorts ahead of the wallet.
+
+  // The same rule as creation (D37/D46): whether the fee takes its own row on
+  // the till or rides the account is decided by the tender, not by who is
+  // posting — pending rows carry neither leg yet, so this is decided here,
+  // where they are written.
+  const feeOnDrawer = feeOnDrawerOf({
+    direction: row.direction,
+    fee: parseFloat(row.fee || 0),
+    feeAddedToBalance: row.fee_added_to_balance !== false,
+  });
+
+  const counterparties = await resolveDrawerLeg(
+    row.account_id, row.payment_method,
+    entryType === 'credit' ? totalAmount : -totalAmount, parseFloat(row.fee || 0), feeOnDrawer
+  );
+
+  const feeOnAccount =
+    row.direction === 'in' && parseFloat(row.fee || 0) > 0 && counterparties.length > 0 && !feeOnDrawer;
+
+  await lockAccounts(client, [row.account_id, ...counterparties.map((leg) => leg.accountId)]);
+
+  const account = (await client.query(
+    'SELECT id, name, current_balance, status FROM accounts WHERE id = $1',
+    [row.account_id]
+  )).rows[0];
+  if (!account) throw createError(404, 'Account not found');
+  if (account.status !== 'active') throw createError(400, 'Account is not active');
+
+  if (entryType === 'debit' && parseFloat(account.current_balance) < totalAmount) {
+    throw createError(400, 'Insufficient balance');
+  }
+
+  const { newBalance } = await processTransaction(
+    row.account_id, row.transaction_type_id, totalAmount, parseFloat(row.fee || 0), entryType,
+    row.id, row.reference_number, row.description, new Date(row.transaction_date), client,
+    counterparties, feeOnAccount
+  );
+
+  return { totalAmount, accountName: account.name, newBalance };
+}
+
 router.post('/:id/approve', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
   const client = await getClient();
   try {
@@ -1423,56 +1536,7 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
     if (row.status !== 'pending') throw createError(400, 'Only pending fund movements can be approved');
     if (row.created_by === req.user!.userId) throw createError(400, 'You cannot approve your own request');
 
-    const charges = (row.additional_charges || [])
-      .reduce((sum: number, c: any) => sum + (parseFloat(c.amount) || 0), 0);
-    const totalAmount = parseFloat(row.net_amount || row.amount) + charges;
-    // Code-aware, not direction-only: an Adjustment Out shares the
-    // 'adjustment' direction with an Adjustment In, and settling it off the
-    // family value credited money into the drawer it was meant to leave
-    // (TXN #1669 — the approve path was the one still asking the old way).
-    const entryType = entryTypeOf(row.direction, row.code);
-
-    // Resolved before any account is locked, so this path and the creation path
-    // take the two locks in the same order. Locking the primary first here and
-    // letting processTransaction sort them afterwards would give the two paths
-    // opposite orders whenever the drawer sorts ahead of the wallet.
-
-    // The same rule as creation (D37/D46): whether the fee takes its own row on
-    // the till or rides the account is decided by the tender, not by who is
-    // posting — pending rows carry neither leg yet, so this is decided here,
-    // where they are written.
-    const feeOnDrawer = feeOnDrawerOf({
-      direction: row.direction,
-      fee: parseFloat(row.fee || 0),
-      feeAddedToBalance: row.fee_added_to_balance !== false,
-    });
-
-    const counterparties = await resolveDrawerLeg(
-      row.account_id, row.payment_method,
-      entryType === 'credit' ? totalAmount : -totalAmount, parseFloat(row.fee || 0), feeOnDrawer
-    );
-
-    const feeOnAccount =
-      row.direction === 'in' && parseFloat(row.fee || 0) > 0 && counterparties.length > 0 && !feeOnDrawer;
-
-    await lockAccounts(client, [row.account_id, ...counterparties.map((leg) => leg.accountId)]);
-
-    const account = (await client.query(
-      'SELECT id, name, current_balance, status FROM accounts WHERE id = $1',
-      [row.account_id]
-    )).rows[0];
-    if (!account) throw createError(404, 'Account not found');
-    if (account.status !== 'active') throw createError(400, 'Account is not active');
-
-    if (entryType === 'debit' && parseFloat(account.current_balance) < totalAmount) {
-      throw createError(400, 'Insufficient balance');
-    }
-
-    const { newBalance } = await processTransaction(
-      row.account_id, row.transaction_type_id, totalAmount, parseFloat(row.fee || 0), entryType,
-      row.id, row.reference_number, row.description, new Date(row.transaction_date), client,
-      counterparties, feeOnAccount
-    );
+    const settled = await settlePendingMovement(client, row);
 
     const updated = (await client.query(
       `UPDATE transactions SET status = 'completed', approved_by = $1, updated_at = NOW()
@@ -1489,8 +1553,8 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
       entityId: req.params.id,
       ipAddress: req.ip,
       newData: {
-        transactionNumber: updated.transaction_number, accountName: account.name,
-        amount: totalAmount, direction: row.direction, newBalance,
+        transactionNumber: updated.transaction_number, accountName: settled.accountName,
+        amount: settled.totalAmount, direction: row.direction, newBalance: settled.newBalance,
       },
     });
 
@@ -1504,6 +1568,92 @@ router.post('/:id/approve', authorize('transactions.approve'), async (req: Reque
 });
 
 // Reject an owner fund movement — no money ever moves
+// Cash claim (C1/C2): the physical cash has now been handed over, so the
+// unclaimed row settles — through the exact same posting path approval uses
+// (`settlePendingMovement`), because "the customer paid" must post precisely
+// what an immediate completion would have.
+//
+// Authorization is deliberately NOT `transactions.approve`: confirming
+// receipt is not approving money, and the duty operator who opened the
+// branch's shift is exactly the person the cash was handed to — often the
+// recorder, by design. So the gates kept from approve are the ones about
+// safety and the world (branch scope, the open shift at the row's own date,
+// FOR UPDATE + status guard); the three about approval semantics
+// (controlled-type, head-office, own-request) do not apply and are absent.
+router.post('/:id/claim', authorize('transactions.read'), async (req: Request, res: Response, next: NextFunction) => {
+  const client = await getClient();
+  try {
+    await client.query('BEGIN');
+
+    const row = (await client.query(
+      `SELECT t.*, tt.code, tt.direction
+       FROM transactions t JOIN transaction_types tt ON t.transaction_type_id = tt.id
+       WHERE t.id = $1 FOR UPDATE OF t`,
+      [req.params.id]
+    )).rows[0];
+    if (!row) throw createError(404, 'Transaction not found');
+    // Checked before anything else so the route cannot probe rows — or the
+    // pending-queue rule — outside the caller's branches (same reason as
+    // approve): a scoped caller is told the transaction does not exist.
+    await assertBranch(req, row.account_id, 'transactions.write', 'Transaction not found');
+
+    // The duty operator, resolved from the branch's open shift — the same
+    // lookup the stamp at creation used. Admins and managers pass regardless
+    // (C2): the duty operator may be absent, and every claim is stamped with
+    // who did it either way.
+    const openShift = await queryOne<{ opened_by: string }>(
+      `SELECT s.opened_by FROM shifts s JOIN accounts a ON a.branch_id = s.branch_id
+        WHERE a.id = $1 AND s.status = 'open' LIMIT 1`,
+      [row.account_id]
+    );
+    if (!claimGate({ roles: req.user!.roles, userId: req.user!.userId, shiftOpenerId: openShift?.opened_by ?? null })) {
+      throw createError(403, 'Only the duty operator of the open shift, a manager or an administrator can confirm cash receipt');
+    }
+
+    // After the permission check, not before: a stranger is refused for who
+    // they are, not for the state of a row they may not touch.
+    if (row.status !== 'pending' || row.pending_reason !== 'cash_receipt') {
+      throw createError(400, 'This transaction is not waiting for cash');
+    }
+
+    // The same D17 gate settle already held at creation: the claim posts the
+    // legs now, so a shift has to be open for the row's own date — the date
+    // the settlement entries carry. A row that outlived its shift is refused
+    // with the same remedy a late approval gets (an administrator may open a
+    // shift for that date retroactively).
+    await assertOpenShift(row.account_id, row.code, { eventDate: row.transaction_date });
+
+    const settled = await settlePendingMovement(client, row);
+
+    const updated = (await client.query(
+      `UPDATE transactions SET status = 'completed', claimed_by = $1, claimed_at = NOW(), updated_at = NOW()
+       WHERE id = $2 RETURNING *`,
+      [req.user!.userId, req.params.id]
+    )).rows[0];
+
+    await client.query('COMMIT');
+
+    await createAuditLog({
+      userId: req.user!.userId,
+      action: 'transaction.claimed',
+      entity: 'transaction',
+      entityId: req.params.id,
+      ipAddress: req.ip,
+      newData: {
+        transactionNumber: updated.transaction_number, accountName: settled.accountName,
+        amount: settled.totalAmount, direction: row.direction, newBalance: settled.newBalance,
+      },
+    });
+
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
 router.post('/:id/reject', authorize('transactions.approve'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { reason } = req.body;

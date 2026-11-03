@@ -190,6 +190,12 @@ export interface PaymentPlanInput {
   paymentMethod?: unknown;
   providerCharge?: unknown;
   requestedStatus?: unknown;
+  /**
+   * Cash claim (C1): has the physical cash actually been handed over? Only a
+   * cash-in answered "no" may be recorded as pending instead of completing;
+   * blank and absent both mean yes — the default is unchanged behaviour.
+   */
+  cashReceived?: unknown;
   expenseThreshold: number;
   isAdminCreator: boolean;
 }
@@ -209,6 +215,8 @@ export interface PaymentPlan {
   /** What the movement's own status will be once approval rules are applied. */
   finalStatus: string;
   requiresApproval: boolean;
+  /** Why the row waits: approval rules, or cash that has not arrived (cash claim, C1). */
+  pendingReason: 'approval' | 'cash_receipt' | null;
   /** Signed for `drawerLeg`: positive when the account's leg is a credit. */
   drawerSignedAmount: number;
   /** The drawer's own row, before the route checks the account's identity. */
@@ -301,10 +309,33 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
     input.expenseThreshold,
     input.isAdminCreator
   );
-  const finalStatus = requiresApproval ? 'pending' : (input.requestedStatus as string) || 'completed';
 
-  if (finalStatus !== 'completed' && !isControlled) {
-    problems.push('Only owner fund movements, operating expenses, cash payments and borrowings can be created as pending');
+  // Cash claim (C1): the one case an ordinary movement may be created
+  // pending. The operator states the physical cash has not arrived, so the row
+  // waits as UNCLAIMED and posts no legs until someone claims it — narrower
+  // than the old refusal by design: cash tender, money in, not a controlled
+  // type (those already wait for approval, which is a different question).
+  // Everything else keeps the refusal below, because its money has already
+  // changed hands somewhere the system cannot see.
+  const cashReceived =
+    input.cashReceived === undefined || input.cashReceived === null
+      ? true
+      : !(input.cashReceived === false || String(input.cashReceived).toLowerCase() === 'false');
+  const awaitingCash = !requiresApproval && !cashReceived && method === 'cash' && input.direction === 'in';
+  // Refused rather than quietly ignored when the tender or the direction
+  // cannot wait at all: the form only offers the choice where it is legal, so
+  // a request claiming otherwise is not something an operator chose.
+  if (!requiresApproval && !cashReceived && !awaitingCash) {
+    problems.push('Only a cash-in paid in cash can wait for cash that has not arrived');
+  }
+
+  let finalStatus = requiresApproval ? 'pending' : (input.requestedStatus as string) || 'completed';
+  let pendingReason: 'approval' | 'cash_receipt' | null = requiresApproval ? 'approval' : null;
+  if (awaitingCash) {
+    finalStatus = 'pending';
+    pendingReason = 'cash_receipt';
+  } else if (finalStatus !== 'completed' && !isControlled) {
+    problems.push('Only owner fund movements, operating expenses, cash payments, borrowings and unclaimed cash-ins can be created as pending');
   }
   // A charge the operator typed in and the books then forgot would be worse
   // than one refused up front.
@@ -349,6 +380,7 @@ export function paymentPlan(input: PaymentPlanInput): PaymentPlan {
     providerCharge: providerChargeNum,
     finalStatus,
     requiresApproval,
+    pendingReason: finalStatus === 'pending' ? pendingReason : null,
     drawerSignedAmount,
     drawerLeg: drawerLegRow,
     cashBehavior,
