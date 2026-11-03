@@ -1079,20 +1079,21 @@ export default function CashManagement() {
   };
 
   // The reason is asked the way the Transactions screen asks it, and the
-  // outcome is reported the way it reports one: an administrator's reversal
-  // executes immediately, anyone else's files a request that waits for
-  // approval. Both answers are the server's — this screen does not decide
-  // which it is, because the endpoint does.
+  // outcome is the server's to declare — this screen never guesses it from
+  // the role: an executed reversal returns the reversing transaction, a request
+  // returns the pending row that waits for a second signature, which is what
+  // every reversal of an adjustment files, administrators included, because
+  // adjustments are two-person to create and two-person to undo.
   const reverseRecord = async (row: CashRecord) => {
     if (!row.transactionId || reversingRecord) return;
     const reason = window.prompt('Reason for reversal:');
     if (!reason) return;
     setReversingRecord(true);
     try {
-      await api.post(`/transactions/${row.transactionId}/reverse`, { reason });
-      window.alert(isAdmin
-        ? 'Transaction reversed successfully.'
-        : 'Reversal request submitted. Waiting for admin approval.');
+      const result = await api.post<{ status?: string }>(`/transactions/${row.transactionId}/reverse`, { reason });
+      window.alert(result?.status === 'pending'
+        ? 'Reversal request submitted. Waiting for admin approval.'
+        : 'Transaction reversed successfully.');
       setRecordDetail(null);
       // Both, because an executed reversal moves money the position is totalling
       // while a request only adds a row to the register. Refreshing the wrong

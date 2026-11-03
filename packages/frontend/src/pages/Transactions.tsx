@@ -540,12 +540,14 @@ export default function Transactions() {
     const reason = prompt('Reason for reversal:');
     if (!reason) return;
     try {
-      await api.post(`/transactions/${id}/reverse`, { reason });
-      if (isAdmin) {
-        alert('Transaction reversed successfully.');
-      } else {
-        alert('Reversal request submitted. Waiting for admin approval.');
-      }
+      // The outcome is the server's to declare, not this page's to guess from
+      // the role: an executed reversal returns the reversing transaction, a
+      // request returns the pending row that waits for a second signature —
+      // which is what an administrator's reversal of an adjustment files too.
+      const result = await api.post<{ status?: string }>(`/transactions/${id}/reverse`, { reason });
+      alert(result?.status === 'pending'
+        ? 'Reversal request submitted. Waiting for admin approval.'
+        : 'Transaction reversed successfully.');
       setShowDetail(null);
       fetchTransactions(pagination.page);
       fetchSummary();

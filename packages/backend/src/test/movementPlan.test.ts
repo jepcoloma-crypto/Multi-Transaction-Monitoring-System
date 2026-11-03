@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, entryTypeOf } from '../services/movementPlan';
+import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, entryTypeOf, mirrorEntryTypeOf, mirrorTypeCodeOf } from '../services/movementPlan';
 import { drawerLeg } from '../services/cashManagement';
 
 // The posting matrix the owner confirmed, in the figures from his own books,
@@ -217,6 +217,23 @@ test('entryTypeOf answers the approve path exactly as creation answers it', () =
   assert.equal(entryTypeOf('in', 'cash_in'), 'credit');
   assert.equal(entryTypeOf('out', 'cash_out'), 'debit');
   assert.equal(entryTypeOf('out', 'operating_expense'), 'debit');
+});
+
+// A reversal is the movement's mirror: its own sign flipped, its code swapped
+// across the adjustment pair. Everything else mirrors through the pair by
+// family exactly as the old ternary always did — the only behaviour change is
+// the case that ternary had backwards (reversing an Adjustment In used to post
+// a credit: doubling the money instead of removing it).
+test('a reversal mirrors the movement: sign flipped, adjustment pair swapped', () => {
+  assert.equal(mirrorEntryTypeOf('adjustment', 'adjustment_out'), 'credit');
+  assert.equal(mirrorEntryTypeOf('adjustment', 'adjustment_in'), 'debit');
+  assert.equal(mirrorEntryTypeOf('in', 'cash_in'), 'debit');
+  assert.equal(mirrorEntryTypeOf('out', 'cash_out'), 'credit');
+
+  assert.equal(mirrorTypeCodeOf('adjustment', 'adjustment_out'), 'adjustment_in');
+  assert.equal(mirrorTypeCodeOf('adjustment', 'adjustment_in'), 'adjustment_out');
+  assert.equal(mirrorTypeCodeOf('in', 'cash_in'), 'adjustment_out');
+  assert.equal(mirrorTypeCodeOf('out', 'cash_out'), 'adjustment_in');
 });
 
 test('a charge cannot ride on a row that waits for approval', () => {

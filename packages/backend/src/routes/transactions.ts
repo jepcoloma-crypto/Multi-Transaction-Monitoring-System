@@ -9,7 +9,7 @@ import { processTransaction, updateAccountBalance, createLedgerEntry, lockAccoun
 import type { CounterpartyLeg } from '../services/balance';
 import { drawerLeg, drawerLegs, unwindDrawerLeg, chargeDrawerLeg, resolveCashAccountMethod, isControlledType, HEAD_OFFICE_APPROVAL_CODES, approvalAuditAction } from '../services/cashManagement';
 import type { RecordedLedgerRow } from '../services/cashManagement';
-import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, feeOnDrawerOf, entryTypeOf } from '../services/movementPlan';
+import { validateMovementInputs, movementRefusals, paymentPlan, fundingProblem, netAmountOf, feeOnDrawerOf, entryTypeOf, mirrorEntryTypeOf, mirrorTypeCodeOf } from '../services/movementPlan';
 import { resolveMovementFee } from '../services/movementFee';
 import { parseManilaDateTime, manilaDateKey } from '../services/manilaTime';
 import { expenseApprovalThreshold } from '../services/settings';
@@ -1206,9 +1206,12 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
     const txType = await queryOne<{ code: string }>(
       'SELECT code FROM transaction_types WHERE id = $1', [original.transaction_type_id]
     );
-    if (txType?.code === 'adjustment_in' || txType?.code === 'adjustment_out') {
-      throw createError(400, 'Adjustment transactions cannot be reversed');
-    }
+    // Adjustments are the books' own correction mechanism, so unwinding one is
+    // never a one-signature act: nobody reverses an adjustment on the spot —
+    // administrators included. Every request files into the queue and waits for
+    // a second administrator to release it, the same two-person shape the
+    // adjustment itself is created under.
+    const isAdjustment = txType?.code === 'adjustment_in' || txType?.code === 'adjustment_out';
 
     // Unwinding moves money back, so it is gated like the movement it undoes —
     // which means a mistake made under a closed shift waits for the next open
@@ -1218,7 +1221,7 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
     const isAdmin = req.user!.roles.includes('administrator');
     const { reason } = req.body;
 
-    if (isAdmin) {
+    if (isAdmin && !isAdjustment) {
       // Admin: execute reversal immediately. The status flip, the reversing row
       // and the balance move it causes are one unit of work on one connection,
       // so none of them can land without the others — the difference between a
@@ -1244,10 +1247,13 @@ router.post('/:id/reverse', authorize('transactions.write'), async (req: Request
           [req.params.id]
         );
 
-        const reverseEntryType = original.direction === 'in' ? 'debit' : 'credit';
+        // The mirror off the movement's own sign and code — the same rule the
+        // plan and the approval path ask, so the three cannot disagree the way
+        // the sign rule once did (see mirrorEntryTypeOf).
+        const reverseEntryType = mirrorEntryTypeOf(original.direction, txType?.code ?? '');
         const reverseTypeId = (await client.query<{ id: string }>(
           `SELECT id FROM transaction_types WHERE code = $1`,
-          [original.direction === 'in' ? 'adjustment_out' : 'adjustment_in']
+          [mirrorTypeCodeOf(original.direction, txType?.code ?? '')]
         )).rows[0];
 
         const created = (await client.query(
@@ -1863,10 +1869,13 @@ router.post('/reversals/:reversalId/approve', authorize('transactions.write'), a
       [pending.entity_id]
     );
 
-    const reverseEntryType = original.direction === 'in' ? 'debit' : 'credit';
+    // The mirror off the movement's own sign and code — the family value alone
+    // cannot carry the adjustment pair's sign, and an adjustment reaches this
+    // path only through the two-person queue (see mirrorEntryTypeOf).
+    const reverseEntryType = mirrorEntryTypeOf(original.direction, original.code);
     const reverseTypeId = (await client.query<{ id: string }>(
       `SELECT id FROM transaction_types WHERE code = $1`,
-      [original.direction === 'in' ? 'adjustment_out' : 'adjustment_in']
+      [mirrorTypeCodeOf(original.direction, original.code)]
     )).rows[0];
 
     const reverseTx = (await client.query(
