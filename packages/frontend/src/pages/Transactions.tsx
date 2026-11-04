@@ -1090,7 +1090,7 @@ export default function Transactions() {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg w-full max-w-4xl max-h-[94vh] overflow-y-auto">
+          <div className="bg-white rounded-lg w-full max-w-6xl max-h-[94vh] overflow-y-auto">
             <div className="flex items-center justify-between p-4 border-b">
               <h3 className="text-lg font-semibold">New Transaction</h3>
               <button onClick={() => setShowModal(false)}><X className="w-5 h-5" /></button>
@@ -1212,9 +1212,8 @@ export default function Transactions() {
                     <div>
                       <RequiredLabel htmlFor="paymentMethod">Payment Method</RequiredLabel>
                       <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
-                        How the money actually changed hands. <strong>Cash</strong> means the operator took it out of or
-                        put it into the branch's cash drawer, and it is the only method that moves the drawer balance.
-                        GCash, Bank Transfer and Maya land in the wallet without touching it.
+                        How the money actually changed hands. Only <strong>Cash</strong> moves the branch's drawer
+                        balance — GCash, Bank Transfer and Maya land in the wallet without touching it.
                       </p>
                       <select
                         id="paymentMethod"
@@ -1270,6 +1269,15 @@ export default function Transactions() {
 
                 <div className="lg:flex-1 space-y-5">
                   <FormSection title="Summary">
+                  {/* The column's top section renders nothing until a rule and
+                      an amount exist, which read as a hole in the form rather
+                      than a field still to come — so the empty state says what
+                      will appear here instead of showing a bare header. */}
+                  {!(selectedRule && parseFloat(formData.amount) > 0) && (
+                    <p className="text-xs text-gray-500">
+                      Choose a fee rule and enter an amount — the breakdown appears here.
+                    </p>
+                  )}
                   {selectedRule && parseFloat(formData.amount) > 0 && (
                     <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
                       <div className="flex justify-between">
@@ -1375,65 +1383,69 @@ export default function Transactions() {
                     <textarea value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })} className="input text-sm" rows={2} placeholder="Internal notes (not visible to customer)" />
                   </div>
                   </FormSection>
+
+                  {/* These two used to sit full-width below both columns,
+                      but their content is short: stretched across the whole
+                      modal they left the hole the right column ended in, while
+                      this column still had room. Filled here, both columns end
+                      at the same depth. */}
+                  <FormSection title="Additional Charges">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      {chargeTypes.length > 0 && (
+                        <select onChange={e => { if (e.target.value) { addPredefinedCharge(e.target.value); e.target.value = ''; } }} className="input py-1 text-xs w-auto">
+                          <option value="">+ Select charge type</option>
+                          {chargeTypes.map(ct => (
+                            <option key={ct.id} value={ct.id}>{ct.name} ({formatCurrency(ct.default_amount)})</option>
+                          ))}
+                        </select>
+                      )}
+                      <button type="button" onClick={() => setCreateCharges([...createCharges, { description: '', amount: '' }])}
+                        className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
+                        <Plus className="w-3 h-3" /> Custom Charge
+                      </button>
+                    </div>
+                    {createCharges.length > 0 && (
+                      <div className="space-y-1.5">
+                        {createCharges.map((c, i) => (
+                          <div key={i} className="flex gap-2 items-center">
+                            <input type="text" value={c.description} onChange={e => {
+                              const updated = [...createCharges]; updated[i] = { ...updated[i], description: e.target.value }; setCreateCharges(updated);
+                            }} className="input text-sm flex-1 py-1" placeholder="Charge description" />
+                            <input type="number" step="0.01" min="0" value={c.amount} onChange={e => {
+                              const updated = [...createCharges]; updated[i] = { ...updated[i], amount: e.target.value }; setCreateCharges(updated);
+                            }} className="input text-sm w-28 py-1" placeholder="Amount" />
+                            <button type="button" onClick={() => setCreateCharges(createCharges.filter((_, idx) => idx !== i))} className="p-1 text-gray-400 hover:text-red-600">
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ))}
+                        <p className="text-[11px] text-gray-500">Total charges: {formatCurrency(createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0))}</p>
+                      </div>
+                    )}
+                  </FormSection>
+
+                  {chargeApplies && (
+                    <FormSection title="Provider Charge">
+                      <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
+                        Only when the provider deducted from the account balance without billing the
+                        customer — a separate linked <strong>Expense</strong> row (shows in Cash
+                        Transactions, totals on the Expense Report).
+                      </p>
+                      <input
+                        id="providerCharge"
+                        aria-label="Provider charge"
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={formData.providerCharge}
+                        onChange={(e) => setFormData({ ...formData, providerCharge: e.target.value })}
+                        className="input text-sm w-40"
+                        placeholder="0.00"
+                      />
+                    </FormSection>
+                  )}
                 </div>
               </div>
-
-              <FormSection title="Additional Charges">
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  {chargeTypes.length > 0 && (
-                    <select onChange={e => { if (e.target.value) { addPredefinedCharge(e.target.value); e.target.value = ''; } }} className="input py-1 text-xs w-auto">
-                      <option value="">+ Select charge type</option>
-                      {chargeTypes.map(ct => (
-                        <option key={ct.id} value={ct.id}>{ct.name} ({formatCurrency(ct.default_amount)})</option>
-                      ))}
-                    </select>
-                  )}
-                  <button type="button" onClick={() => setCreateCharges([...createCharges, { description: '', amount: '' }])}
-                    className="text-xs text-primary-600 hover:text-primary-700 flex items-center gap-1">
-                    <Plus className="w-3 h-3" /> Custom Charge
-                  </button>
-                </div>
-                {createCharges.length > 0 && (
-                  <div className="space-y-1.5">
-                    {createCharges.map((c, i) => (
-                      <div key={i} className="flex gap-2 items-center">
-                        <input type="text" value={c.description} onChange={e => {
-                          const updated = [...createCharges]; updated[i] = { ...updated[i], description: e.target.value }; setCreateCharges(updated);
-                        }} className="input text-sm flex-1 py-1" placeholder="Charge description" />
-                        <input type="number" step="0.01" min="0" value={c.amount} onChange={e => {
-                          const updated = [...createCharges]; updated[i] = { ...updated[i], amount: e.target.value }; setCreateCharges(updated);
-                        }} className="input text-sm w-28 py-1" placeholder="Amount" />
-                        <button type="button" onClick={() => setCreateCharges(createCharges.filter((_, idx) => idx !== i))} className="p-1 text-gray-400 hover:text-red-600">
-                          <X className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
-                    <p className="text-[11px] text-gray-500">Total charges: {formatCurrency(createCharges.reduce((sum, c) => sum + (parseFloat(c.amount) || 0), 0))}</p>
-                  </div>
-                )}
-              </FormSection>
-
-              {chargeApplies && (
-                <FormSection title="Provider Charge">
-                  <p className="text-[11px] text-gray-500 mt-0.5 mb-1.5">
-                    Only when the provider deducted a fee from the account balance for this movement and did not
-                    bill the customer for it. It is written as a separate linked <strong>Expense</strong> row: the
-                    balance drops by this much with nothing credited in return, it shows in Cash Transactions, and it
-                    totals on the Expense Report.
-                  </p>
-                  <input
-                    id="providerCharge"
-                    aria-label="Provider charge"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={formData.providerCharge}
-                    onChange={(e) => setFormData({ ...formData, providerCharge: e.target.value })}
-                    className="input text-sm w-40"
-                    placeholder="0.00"
-                  />
-                </FormSection>
-              )}
 
               {/* §6's leg preview: the rows the save would write, answered by
                   the server that will write them. Refusals come first — a
